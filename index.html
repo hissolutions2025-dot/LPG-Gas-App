@@ -181,7 +181,7 @@
 <body>
 <header>
   <button id="backBtn" onclick="goHome()">‹ Back</button>
-  <div class="logo" title="v39">GS</div>
+  <div class="logo" title="v41">GS</div>
   <div><h1 id="hTitle">Gas Sales — Operator</h1><div class="sub" id="hSub">Daily capture</div></div>
   <div id="who" style="display:none"></div>
 </header>
@@ -204,7 +204,7 @@
     </div>
     <!-- NORMAL LOGIN -->
     <div class="loginCard" id="loginCard">
-      <span class="demoTag">DEMO LOGIN · v39/span><h2>Sign in</h2>
+      <span class="demoTag">DEMO LOGIN · v41/span><h2>Sign in</h2>
       <label class="mLabel">User</label>
       <select class="mField" id="loginUser" onchange="loginUserChanged()"><option value="">Select your name…</option></select>
       <label class="mLabel">Password</label>
@@ -502,7 +502,8 @@
     </div>
 
     <div class="histSection"><h4>Void a captured seal</h4>
-      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Correct a wrongly-captured seal number. You'll choose whether the number is reusable (mis-entry) or destroyed (retired).</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Correct a wrongly-captured seal number. Tap a used seal below to select it, then choose reusable (mis-entry) or destroyed (retired).</div>
+      <div id="usedSealList" style="margin-bottom:10px"></div>
       <div class="adminRow">
         <input type="number" class="mField grow" id="voidSealNo" placeholder="Seal number to void">
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--navy);font-weight:700"><input type="checkbox" id="voidClosedDay"> Closed/prior day</label>
@@ -565,7 +566,7 @@
   <div id="mLines"></div>
   <div id="mForm"></div>
   <button class="mAddBtn" id="mAddBtn" onclick="addLine()">Add</button>
-  <button class="mDone" onclick="closeModal()">Done</button>
+  <button class="mDone" onclick="doneModal()">Done</button>
 </div></div>
 
 <div id="corrModal" class="modal"><div class="modalCard">
@@ -636,6 +637,12 @@ function newRollId(){return 'R'+Date.now()+Math.floor(Math.random()*1000);}
 // active roll for a branch (brand currently ignored for draw source under single-active model,
 // but stored on the roll so per-brand can be switched on later)
 function activeRoll(br){return sealsLoad().filter(function(r){return r.branch===br&&r.status==='Active';})[0]||null;}
+// brand-aware active roll: the active roll for this branch whose brand matches the cylinder brand
+function activeRollForBrand(br,brand){
+  var rolls=sealsLoad().filter(function(r){return r.branch===br&&r.status==='Active';});
+  var m=rolls.filter(function(r){return (r.brand||'')===(brand||'');})[0];
+  return m||null;
+}
 function queuedRoll(br){return sealsLoad().filter(function(r){return r.branch===br&&r.status==='Queued';})[0]||null;}
 function rollUsedList(id){return sealUsedLoad()[id]||[];}
 function rollUsedCount(id){return rollUsedList(id).length;}
@@ -663,10 +670,26 @@ function promoteQueued(br){
 // VALIDATE a seal at capture time. Returns {ok, reject, flag, msg, needReason, boundary}
 // reject=hard stop (duplicate). flag=allow with reason (out of range / out of sequence).
 // boundary=no active roll or roll exhausted -> needs override.
-function sealValidate(br,seal){
+function sealValidate(br,seal,brand){
   seal=num(seal);
-  var r=activeRoll(br);
-  if(!r) return {ok:false, boundary:true, msg:'No active seal roll for '+br+'. A manager/owner must activate one, or authorise an override.'};
+  // #7 brand match: if a cylinder brand is given, the seal MUST come from that brand's active roll
+  var r;
+  if(brand!==undefined && brand!==''){
+    r=activeRollForBrand(br,brand);
+    if(!r){
+      var anyActive=activeRoll(br);
+      if(anyActive) return {ok:false, reject:true, msg:'No active '+brand+' seal roll for '+br+'. A '+brand+' cylinder needs a '+brand+' seal. (Active roll is '+(anyActive.brand||'?')+'.) Activate a '+brand+' roll in Admin.'};
+      return {ok:false, boundary:true, msg:'No active seal roll for '+br+'. A manager/owner must activate one, or authorise an override.'};
+    }
+  } else {
+    r=activeRoll(br);
+    if(!r) return {ok:false, boundary:true, msg:'No active seal roll for '+br+'. A manager/owner must activate one, or authorise an override.'};
+  }
+  // #7: if the seal falls inside a DIFFERENT brand's active roll, it's a brand violation
+  if(brand!==undefined && brand!==''){
+    var other=sealsLoad().filter(function(x){return x.branch===br&&x.status==='Active'&&x.id!==r.id&&seal>=x.start&&seal<=x.end;})[0];
+    if(other) return {ok:false, reject:true, msg:'Seal '+seal+' belongs to the '+(other.brand||'?')+' roll, but this is a '+brand+' cylinder. Use a '+brand+' seal.'};
+  }
   var used=rollUsedList(r.id);
   if(used.indexOf(seal)>-1) return {ok:false, reject:true, msg:'Seal '+seal+' already used in this roll. Duplicate rejected.'};
   try{var _ret=JSON.parse(localStorage.getItem('gs_seal_retired')||'[]');
@@ -772,6 +795,7 @@ function createRoll(){
   renderRolls();
 }
 function renderRolls(){
+  renderUsedSeals();
   var box=document.getElementById('rollList');if(!box)return;
   var rolls=sealsLoad().filter(function(r){return r.branch===adminBranch;})
     .sort(function(a,b){var o={Active:0,Queued:1,Depleted:2,Closed:3};return (o[a.status]-o[b.status])||(a.start-b.start);});
@@ -867,11 +891,27 @@ function addSupplier(){
   var v=document.getElementById('newSupplier').value;
   if(suppliersAddPersist(v)){document.getElementById('newSupplier').value='';renderSuppliers();fillBrandPicker();toast('Supplier added \u2713');}
 }
+function renderUsedSeals(){
+  var box=document.getElementById('usedSealList');if(!box)return;
+  var rolls=sealsLoad().filter(function(r){return r.branch===adminBranch;});
+  var chips=[];
+  rolls.forEach(function(r){
+    rollUsedList(r.id).slice().sort(function(a,b){return a-b;}).forEach(function(s){
+      chips.push('<button class="sigClear" style="padding:4px 10px;font-size:12px;margin:0 4px 4px 0" onclick="pickVoidSeal('+s+')">'+s+' <span style="color:#888">('+(r.brand||'')+')</span></button>');
+    });
+  });
+  // retired seals shown struck-through, non-clickable
+  try{var ret=JSON.parse(localStorage.getItem('gs_seal_retired')||'[]').filter(function(x){return x.branch===adminBranch;});
+    ret.forEach(function(x){chips.push('<span style="padding:4px 10px;font-size:12px;margin:0 4px 4px 0;color:#B00;text-decoration:line-through;display:inline-block">'+x.seal+' (retired)</span>');});
+  }catch(e){}
+  box.innerHTML=chips.length?('<div style="font-size:11px;color:var(--muted);margin-bottom:4px">Used seals (tap to select):</div>'+chips.join('')):'<div style="font-size:12px;color:var(--muted)">No seals captured yet for '+adminBranch+'.</div>';
+}
+function pickVoidSeal(s){document.getElementById('voidSealNo').value=s;}
 function doVoidSeal(){
   var sn=num(document.getElementById('voidSealNo').value);
   if(!(sn>0)){toast('Enter a seal number',true);return;}
   var closed=document.getElementById('voidClosedDay').checked;
-  if(voidSeal(adminBranch, sn, closed)){document.getElementById('voidSealNo').value='';document.getElementById('voidClosedDay').checked=false;renderRolls();}
+  if(voidSeal(adminBranch, sn, closed)){document.getElementById('voidSealNo').value='';document.getElementById('voidClosedDay').checked=false;renderRolls();renderUsedSeals();}
 }
 
 // ===== USER STORE (demo, localStorage) =====
@@ -1610,7 +1650,16 @@ function cCommit(){
   // #4 OPENING vs previous-day CLOSE (expected opening). Per size+brand+state exact match.
   computeOpeningMismatches(cBranch);
   var mm=(store._openMismatch||[]).filter(function(m){return m.branch===cBranch;});
-  syncPush('Counts',syncRowsCount(store.count.filter(function(r){return r.branch===cBranch;}),cBranch));
+  // FIX (Kleinmond + duplicates + removals): sync EVERY branch present in this commit,
+  // each as a REPLACE-SET for that branch+date. Apps Script deletes that branch+date's
+  // existing rows then writes the fresh set, so nothing is dropped or duplicated.
+  var branchesInCommit={};
+  store.count.forEach(function(r){branchesInCommit[r.branch]=true;});
+  Object.keys(branchesInCommit).forEach(function(bn){
+    var rowsForBn=syncRowsCount(store.count.filter(function(r){return r.branch===bn;}),bn);
+    // mark replace-set so the sheet clears old rows for this branch+date first
+    syncPush('Counts', rowsForBn.map(function(x){x._replaceKey=(x.date+'|'+x.branch);return x;}));
+  });
   saveWorkingStore();auditLog('Count committed',store.count.length+' line(s) — '+cBranch+' (Opening/Closing)'+(mm.length?(' · '+mm.length+' opening mismatch(es) flagged'):''));
   updateBadges();
   if(mm.length){
@@ -1967,7 +2016,7 @@ function buildPopupForm(c){
     if(f.type==='auto')html+='<input class="mField auto" id="pf-'+f.k+'" readonly value="—">';
     else if(f.type==='select')html+='<select class="mField" id="pf-'+f.k+'" onchange="popCalc()"><option value="">Select…</option>'+f.opts.map(function(o){return '<option>'+o+'</option>';}).join('')+'</select>';
     else if(f.type==='gasType')html+='<select class="mField" id="pf-'+f.k+'" onchange="popCalc()"><option value="">Select…</option></select><div class="mNote" id="pf-gasNote"></div>';
-    else if(f.type==='number')html+='<input class="mField" type="number" inputmode="decimal" id="pf-'+f.k+'" oninput="popCalc()">';
+    else if(f.type==='number')html+='<input class="mField" type="number" inputmode="decimal" step="any" id="pf-'+f.k+'" oninput="popCalc()" onwheel="this.blur()">';
     else if(f.type==='text')html+='<input class="mField" type="text" id="pf-'+f.k+'">';
     else if(f.type==='photo')html+='<input type="file" accept="image/*" capture="environment" id="pf-'+f.k+'" style="display:none" onchange="onPhotoPick(this,\''+f.k+'\')"><button type="button" class="sigClear" id="pf-'+f.k+'-btn" style="width:100%" onclick="document.getElementById(\'pf-'+f.k+'\').click()">📷 Add photo (0/3)</button><div id="pf-'+f.k+'-thumb" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap"></div>';
     html+='</div>';
@@ -2034,7 +2083,7 @@ function addLine(){
   var c=CAP[capType];var d=popCollect();
   // ---- SEAL ENFORCEMENT (refill only) ----
   if(capType==='refill'){
-    var sres=sealValidate(capBranch, d.seal);
+    var sres=sealValidate(capBranch, d.seal, d.brand);
     if(sres.reject){toast(sres.msg,true);return;}
     if(sres.boundary){
       // needs manager/owner password override + reason, logged
@@ -2088,6 +2137,32 @@ function addLine(){
 function resetPopupInputs(c){popPhoto={};c.popupFields.forEach(function(f){var el=document.getElementById('pf-'+f.k);if(el&&f.type!=='auto')el.value='';var th=document.getElementById('pf-'+f.k+'-thumb');if(th)th.innerHTML='';});popCalc();}
 function removeLine(i){var b=dataBucket();b[modalItem].splice(i,1);if(b[modalItem].length===0)delete b[modalItem];renderModalLines();renderGrid();}
 function closeModal(){document.getElementById('capModal').classList.remove('show');renderGrid();}
+// #9: pressing Done should not lose an in-progress entry. If key fields are filled, add it first.
+function doneModal(){
+  try{
+    var c=CAP[capType];
+    if(c && c.multi){
+      var d=popCollect();
+      // consider it "in progress" if the main weigh/qty/brand field has a value
+      var hasData=false;
+      if(capType==='refill'){hasData=(d.scale!=='' && d.scale!==undefined) || (d.seal!=='' && d.seal!==undefined);}
+      else if(capType==='count'){hasData=(d.qty!=='' && d.qty!==undefined && num(d.qty)!==0);}
+      else if(capType==='received'){hasData=(num(d.fullIn)!==0 || num(d.emptyOut)!==0);}
+      else if(capType==='private'){hasData=(d.pumped!=='' && d.pumped!==undefined);}
+      else if(capType==='manifold'){hasData=(d.scale!=='' && d.scale!==undefined);}
+      if(hasData){
+        // try to add; addLine handles its own validation/toasts. If it adds, great.
+        var before=(dataBucket()[modalItem]||[]).length;
+        addLine();
+        var after=(dataBucket()[modalItem]||[]).length;
+        if(after>before){ closeModal(); return; }
+        // addLine rejected (validation) -> keep modal open so they can fix, don't lose data
+        return;
+      }
+    }
+  }catch(e){}
+  closeModal();
+}
 
 function showOverridePrompt(mm){
   var rows=mm.map(function(m){
