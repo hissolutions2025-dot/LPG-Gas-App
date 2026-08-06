@@ -181,7 +181,7 @@
 <body>
 <header>
   <button id="backBtn" onclick="goHome()">‹ Back</button>
-  <div class="logo" title="v41">GS</div>
+  <div class="logo" title="v45">GS</div>
   <div><h1 id="hTitle">Gas Sales — Operator</h1><div class="sub" id="hSub">Daily capture</div></div>
   <div id="who" style="display:none"></div>
 </header>
@@ -204,7 +204,7 @@
     </div>
     <!-- NORMAL LOGIN -->
     <div class="loginCard" id="loginCard">
-      <span class="demoTag">DEMO LOGIN · v41/span><h2>Sign in</h2>
+      <span class="demoTag">DEMO LOGIN · v45/span><h2>Sign in</h2>
       <label class="mLabel">User</label>
       <select class="mField" id="loginUser" onchange="loginUserChanged()"><option value="">Select your name…</option></select>
       <label class="mLabel">Password</label>
@@ -471,6 +471,7 @@
   <div class="htabs" style="display:flex;gap:8px;margin-bottom:14px">
     <button class="htab on" id="atab-seals" onclick="adminTab('seals')">Seal Register</button>
     <button class="htab" id="atab-suppliers" onclick="adminTab('suppliers')">Suppliers</button>
+    <button class="htab" id="atab-clear" onclick="adminTab('clear')">Clear Stock Take</button>
   </div>
 
   <!-- SEAL REGISTER PANE -->
@@ -525,6 +526,29 @@
     </div>
   </div>
 
+  <!-- CLEAR STOCK TAKE PANE -->
+  <div id="adminClear" style="display:none">
+    <div class="histSection"><h4>Clear a stock take (Owner)</h4>
+      <div style="font-size:12px;color:#9B2C2C;margin-bottom:10px"><b>Destructive.</b> Deletes the ticked data for the chosen date + branch, on this device <b>and</b> in the Google Sheet. Cannot be undone.</div>
+      <div class="adminRow">
+        <div class="grow"><label class="mLabel" style="font-size:11px">Date</label>
+          <input type="date" class="mField" id="clrDate"></div>
+        <div class="grow"><label class="mLabel" style="font-size:11px">Branch</label>
+          <select class="mField" id="clrBranch"><option>Helderberg</option><option>Kleinmond</option><option value="Both">Both branches</option></select></div>
+      </div>
+      <div style="margin:10px 0;font-size:13px;color:var(--navy)">
+        <div style="font-weight:700;margin-bottom:6px">What to clear:</div>
+        <label style="display:block;margin-bottom:4px"><input type="checkbox" class="clrArea" value="Counts" checked> Stock counts (Opening + Closing)</label>
+        <label style="display:block;margin-bottom:4px"><input type="checkbox" class="clrArea" value="Refills"> Refills</label>
+        <label style="display:block;margin-bottom:4px"><input type="checkbox" class="clrArea" value="Private"> Private refills</label>
+        <label style="display:block;margin-bottom:4px"><input type="checkbox" class="clrArea" value="Manifold"> Manifold</label>
+        <label style="display:block;margin-bottom:4px"><input type="checkbox" class="clrArea" value="SealsUsed"> Seals used (returns numbers to roll)</label>
+        <label style="display:block;margin-bottom:4px"><input type="checkbox" class="clrArea" value="DayClose"> Day close record</label>
+      </div>
+      <button class="saveBtn" style="background:#9B2C2C" onclick="doClearStockTake()">Clear ticked data</button>
+    </div>
+  </div>
+
   <button class="exportBtn" style="background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel);margin-top:8px" onclick="goHome()">&larr; Back to menu</button>
 </div></div>
 
@@ -567,6 +591,15 @@
   <div id="mForm"></div>
   <button class="mAddBtn" id="mAddBtn" onclick="addLine()">Add</button>
   <button class="mDone" onclick="doneModal()">Done</button>
+</div></div>
+
+<div id="pwModal" class="modal"><div class="modalCard">
+  <div class="modalHead"><span id="pwTitle">Enter password</span><button onclick="pwCancel()" class="mClose">&#10005;</button></div>
+  <div style="padding:4px 0 10px"><div id="pwMsg" style="font-size:13px;color:var(--navy);white-space:pre-line;margin-bottom:10px"></div>
+    <input type="password" class="mField" id="pwInput" placeholder="Password" autocomplete="off" onkeydown="if(event.key==='Enter')pwOk()">
+  </div>
+  <button class="saveBtn" onclick="pwOk()">Confirm</button>
+  <button class="sigClear" style="width:100%;margin-top:8px" onclick="pwCancel()">Cancel</button>
 </div></div>
 
 <div id="corrModal" class="modal"><div class="modalCard">
@@ -717,8 +750,8 @@ function sealBanner(br){
 }
 // sync a roll event to the sheet (Seal_Range tab)
 function syncPushRoll(r,kind){
-  syncPush('SealRange',[{date:today||'',branch:r.branch,Brand:r.brand||'',Start:r.start,End:r.end,
-    Status:r.status,Kind:kind,By:operator||'',At:nowStamp(),Notes:r.closeReason||r.notes||''}]);
+  syncPush('SealRange',[{ts:new Date().toISOString(),date:today||'',branch:r.branch,Brand:r.brand||'',Start:r.start,End:r.end,
+    Status:r.status,Kind:kind,WarnAt:(r.warnAt!==undefined?r.warnAt:20),By:operator||'',Notes:r.closeReason||r.notes||''}]);
 }
 
 // ===== ADMIN: Seal Register + Suppliers UI =====
@@ -750,8 +783,11 @@ function openAdmin(){
 function adminTab(t){
   document.getElementById('adminSeals').style.display=(t==='seals')?'block':'none';
   document.getElementById('adminSuppliers').style.display=(t==='suppliers')?'block':'none';
+  var _ac=document.getElementById('adminClear');if(_ac)_ac.style.display=(t==='clear')?'block':'none';
   document.getElementById('atab-seals').classList.toggle('on',t==='seals');
   document.getElementById('atab-suppliers').classList.toggle('on',t==='suppliers');
+  var _tc=document.getElementById('atab-clear');if(_tc)_tc.classList.toggle('on',t==='clear');
+  if(t==='clear'){var d=document.getElementById('clrDate');if(d&&!d.value)d.value=today;}
   if(t==='seals'){fillBrandPicker();renderRolls();}
   if(t==='suppliers')renderSuppliers();
 }
@@ -907,6 +943,73 @@ function renderUsedSeals(){
   box.innerHTML=chips.length?('<div style="font-size:11px;color:var(--muted);margin-bottom:4px">Used seals (tap to select):</div>'+chips.join('')):'<div style="font-size:12px;color:var(--muted)">No seals captured yet for '+adminBranch+'.</div>';
 }
 function pickVoidSeal(s){document.getElementById('voidSealNo').value=s;}
+function doClearStockTake(){
+  if(!perm('seal_edit_used') && role!=='Owner'){toast('Owner rights required',true);return;}
+  var date=document.getElementById('clrDate').value;
+  var brSel=document.getElementById('clrBranch').value;
+  if(!date){toast('Pick a date',true);return;}
+  var areas=[].slice.call(document.querySelectorAll('.clrArea:checked')).map(function(c){return c.value;});
+  if(!areas.length){toast('Tick at least one area to clear',true);return;}
+  var branches=(brSel==='Both')?['Helderberg','Kleinmond']:[brSel];
+  // owner password (own password) + explicit confirm
+  var me=findUser(operator);
+  if(!me){toast('No active user',true);return;}
+  if(!confirm('Clear '+areas.join(', ')+'\nfor '+branches.join(' & ')+'\non '+date+'?\n\nThis deletes the data on this device AND in the Google Sheet. Cannot be undone.'))return;
+  askPassword('Owner authorisation','Owner password to authorise this deletion:').then(function(pw){
+   if(pw===null)return;
+   if(pw!==me.pw || !(role==='Owner'||perm('seal_edit_used'))){toast('Not authorised',true);return;}
+   _clearStockTakeDo(date,brSel,areas,branches);
+  });
+}
+function _clearStockTakeDo(date,brSel,areas,branches){
+
+  // map areas -> local store keys + sheet tab names
+  var storeKeyByArea={Counts:'count',Refills:'refill',Private:'private',Manifold:'manifold'};
+  var sheetTabByArea={Counts:'Counts',Refills:'Refills',Private:'Private',Manifold:'Manifold',DayClose:'DayClose'};
+
+  branches.forEach(function(bn){
+    // ---- LOCAL: clear from saved day record (if this date is closed) ----
+    try{
+      var rec=loadSavedDay(date,bn);
+      if(rec&&rec.store){
+        areas.forEach(function(a){
+          if(storeKeyByArea[a]){rec.store[storeKeyByArea[a]]=(rec.store[storeKeyByArea[a]]||[]).filter(function(r){return false;});}
+        });
+        if(areas.indexOf('DayClose')>-1){/* mark reopened */ rec._cleared=true;}
+        localStorage.setItem(histKey(date,bn),JSON.stringify(rec));
+      }
+    }catch(e){}
+    // ---- LOCAL: clear from TODAY's working store if date===today ----
+    if(date===today){
+      areas.forEach(function(a){
+        if(storeKeyByArea[a] && store[storeKeyByArea[a]]){
+          store[storeKeyByArea[a]]=store[storeKeyByArea[a]].filter(function(r){return r.branch!==bn;});
+        }
+      });
+      // seals used: return numbers to roll for this branch
+      if(areas.indexOf('SealsUsed')>-1){
+        var rolls=sealsLoad().filter(function(r){return r.branch===bn;});
+        var uo=sealUsedLoad();
+        rolls.forEach(function(r){if(uo[r.id])delete uo[r.id];});
+        sealUsedSave(uo);
+      }
+      saveWorkingStore();
+    }
+    // ---- SHEET: send a ClearDay delete command per area ----
+    areas.forEach(function(a){
+      if(sheetTabByArea[a]){
+        syncPush('ClearDay',[{date:date,branch:bn,ClearTab:sheetTabByArea[a],By:operator}]);
+      }
+    });
+  });
+
+  auditLog('Stock take cleared',areas.join(',')+' — '+branches.join('&')+' — '+date+' by '+operator);
+  toast('Cleared '+areas.length+' area(s) for '+branches.join(' & ')+' on '+date);
+  updateBadges();
+  // reset the clear form
+  [].slice.call(document.querySelectorAll('.clrArea')).forEach(function(c){c.checked=(c.value==='Counts');});
+  var db=document.getElementById('clrBranch');if(db)db.value='Helderberg';
+}
 function doVoidSeal(){
   var sn=num(document.getElementById('voidSealNo').value);
   if(!(sn>0)){toast('Enter a seal number',true);return;}
@@ -1113,11 +1216,14 @@ function syncFlush(){
   q.forEach(function(p){try{fetch(cfg.url,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(p)}).catch(function(){syncQueue(p);});}catch(e){syncQueue(p);}});
 }
 // build row objects for each type from the committed data
-function syncRowsCount(list,br){return list.map(function(r){return {date:today,branch:br,CountType:r.countType,State:r.state,Size:r.size,Brand:r.brand,Qty:r.qty};});}
-function syncRowsReceived(list,br){return list.map(function(r){return {date:today,branch:br,Size:r.size,Brand:r.brand,FullIn:r.fullIn,EmptyOut:r.emptyOut};});}
-function syncRowsRefill(list,br){return list.map(function(r){return {date:today,branch:br,Size:r.size,Brand:r.brand,Gas:r.gasType,Pumped_kg:r.pumped,Seal:r.seal||'',Notes:r.notes||'',SealFlag:(r._sealOverride||r._sealFlag||'')};});}
-function syncRowsPrivate(list,br){return list.map(function(r){return {date:today,branch:br,CylBrand:r.cylBrand||'',OtherBrand:r.otherBrand||'',Gas:r.gasType||'',Pumped_kg:r.pumped,Customer:r.customer||''};});}
-function syncRowsManifold(list,br){return list.map(function(r){return {date:today,branch:br,Stage:r.stage||'Opening',Cylinder:r.cyl,Gas:r.gasType||'',Scale:r.scale,Tare:r.tare,GasLeft:r.gasLeft};});}
+// Full-schema sync (v3). Every row carries ts + date + branch + Operator + Role + section fields.
+function _nowISO(){return new Date().toISOString();}
+function _who(r){return {Operator:(r._operator||operator||''),Role:(r._role||role||'')};}
+function syncRowsCount(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,CountType:r.countType,State:r.state,Size:r.size,Brand:r.brand,Qty:r.qty,Note:(r.note||''),Adjusted:(r._adjusted?'Y':''),AdjustedBy:(r._adjustedBy||''),OverrideReason:(r.overrideReason||'')};});}
+function syncRowsReceived(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Size:r.size,Brand:r.brand,FullIn:r.fullIn,EmptyOut:r.emptyOut,Note:(r.note||''),OverrideReason:(r.overrideReason||'')};});}
+function syncRowsRefill(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Size:r.size,Brand:r.brand,GasType:(r.gasType||''),Scale:(r.scale!==undefined?r.scale:''),Tare:(r.tare!==undefined?r.tare:''),GasLeft:(r.gasLeft!==undefined?r.gasLeft:''),Pumped:r.pumped,Seal:(r.seal||''),SealFlag:(r._sealOverride||r._sealFlag||''),FlagReason:(r._flagReason||r._sealReason||''),Notes:(r.notes||'')};});}
+function syncRowsPrivate(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,CylBrand:(r.cylBrand||''),OtherBrand:(r.otherBrand||''),GasType:(r.gasType||''),Pumped:r.pumped,Customer:(r.customer||'')};});}
+function syncRowsManifold(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Stage:(r.stage||'Opening'),Cylinder:r.cyl,Brand:(r.brand||''),GasType:(r.gasType||''),Scale:r.scale,Tare:r.tare,GasLeft:r.gasLeft,FillCheck:(r._fillCheck||''),Note:(r.note||''),PhotoLink:(r._photoLink||'')};});}
 // ----- Audit report (Owner only, password-gated) -----
 var auditSelDate=null;
 function openAudit(){
@@ -1486,24 +1592,30 @@ function openCount(){
   if(!requireEdit())return;
   // #2 A day already closed for today+branch requires Owner override to count again
   if(loadSavedDay(today,branch) && !store._extraCountAuth){
-    var pw=prompt('A stock count was already closed for '+branch+' today.\n\nEnter the OWNER password to start an additional count:');
-    if(pw===null)return;
-    var owner=loadUsers().filter(function(u){return u.level==='Owner';})[0];
-    if(!owner || pw!==owner.pw){toast('Owner password required for an additional count',true);return;}
-    store._extraCountAuth=true;
-    auditLog('Additional count authorised','Owner authorised a second same-day count for '+branch);
-    toast('Additional count unlocked ✓');
+    askPassword('Owner authorisation','A stock count was already closed for '+branch+' today.\n\nEnter the OWNER password to start an additional count:').then(function(pw){
+      if(pw===null)return;
+      var owner=loadUsers().filter(function(u){return u.level==='Owner';})[0];
+      if(!owner || pw!==owner.pw){toast('Owner password required for an additional count',true);return;}
+      store._extraCountAuth=true;
+      auditLog('Additional count authorised','Owner authorised a second same-day count for '+branch);
+      toast('Additional count unlocked \u2713');
+      openCount(); // re-enter now that auth flag is set
+    });
+    return;
   }
-  cBranch=branch||'Helderberg'; // operators: their branch; managers: last/selected
+  cBranch=branch||'Helderberg';
   // #1/#3 If no previous close exists to compare an Opening count against, a Manager/Owner must authorise
   if(!cHasPrevClose(cBranch) && !store._noPrevAuth){
-    var pw2=prompt('No previous day close exists for '+cBranch+' to check the opening count against.\n\nA Manager or Owner password is required to proceed with this count:');
-    if(pw2===null)return;
-    var auth=loadUsers().filter(function(u){return (u.level==='Manager'||u.level==='Owner') && u.pw===pw2;})[0];
-    if(!auth){toast('Manager or Owner password required to proceed',true);return;}
-    store._noPrevAuth=true;
-    auditLog('Count authorised (no prev close)',auth.name+' authorised counting with no previous close for '+cBranch);
-    toast('Count authorised ✓');
+    askPassword('Manager/Owner authorisation','No previous day close exists for '+cBranch+' to check the opening count against.\n\nA Manager or Owner password is required to proceed with this count:').then(function(pw2){
+      if(pw2===null)return;
+      var auth=loadUsers().filter(function(u){return (u.level==='Manager'||u.level==='Owner') && u.pw===pw2;})[0];
+      if(!auth){toast('Manager or Owner password required to proceed',true);return;}
+      store._noPrevAuth=true;
+      auditLog('Count authorised (no prev close)',auth.name+' authorised counting with no previous close for '+cBranch);
+      toast('Count authorised \u2713');
+      openCount(); // re-enter now that auth flag is set
+    });
+    return;
   }
   applyBranchLock('cbr-',cBranch);
   document.getElementById('hTitle').textContent='Stock Count';
@@ -2137,6 +2249,20 @@ function addLine(){
 function resetPopupInputs(c){popPhoto={};c.popupFields.forEach(function(f){var el=document.getElementById('pf-'+f.k);if(el&&f.type!=='auto')el.value='';var th=document.getElementById('pf-'+f.k+'-thumb');if(th)th.innerHTML='';});popCalc();}
 function removeLine(i){var b=dataBucket();b[modalItem].splice(i,1);if(b[modalItem].length===0)delete b[modalItem];renderModalLines();renderGrid();}
 function closeModal(){document.getElementById('capModal').classList.remove('show');renderGrid();}
+// ---- Masked password prompt (replaces visible prompt()) ----
+var _pwResolve=null;
+function askPassword(title,msg){
+  return new Promise(function(resolve){
+    _pwResolve=resolve;
+    document.getElementById('pwTitle').textContent=title||'Enter password';
+    document.getElementById('pwMsg').textContent=msg||'';
+    var inp=document.getElementById('pwInput');inp.value='';
+    document.getElementById('pwModal').classList.add('show');
+    setTimeout(function(){inp.focus();},50);
+  });
+}
+function pwOk(){var v=document.getElementById('pwInput').value;document.getElementById('pwModal').classList.remove('show');if(_pwResolve){_pwResolve(v);_pwResolve=null;}}
+function pwCancel(){document.getElementById('pwModal').classList.remove('show');if(_pwResolve){_pwResolve(null);_pwResolve=null;}}
 // #9: pressing Done should not lose an in-progress entry. If key fields are filled, add it first.
 function doneModal(){
   try{
@@ -2450,7 +2576,7 @@ var sigUnlocked={sigOp:false,sigMgr:false};
 var sigSignedBy={sigOp:'',sigMgr:''};
 function unlockSig(id){
   var boxLabel=(id==='sigOp')?'Operator':'Manager';
-  var pw=prompt('Enter the '+boxLabel+' password to sign this box (Owner password also works):');
+  askPassword('Sign '+boxLabel+' box','Enter the '+boxLabel+' password to sign this box (Owner password also works):').then(function(pw){
   if(pw===null)return;
   var users=loadUsers();
   var owner=users.filter(function(u){return u.level==='Owner';})[0];
@@ -2465,6 +2591,10 @@ function unlockSig(id){
   }
   if(!ok){toast('Wrong password for '+boxLabel+' box',true);return;}
   sigUnlocked[id]=true;sigSignedBy[id]=signer;
+  __unlockSigApply(id,signer);
+  });
+}
+function __unlockSigApply(id,signer){
   document.getElementById(id+'-lock').innerHTML='<div style="font-size:11px;color:var(--ok);font-weight:700">✓ Unlocked — '+signer+' — sign above</div>';
   document.getElementById(id+'-clear').style.display='block';
   auditLog('Signature unlocked',boxLabel+' signature box unlocked by '+signer);
