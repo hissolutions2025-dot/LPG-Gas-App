@@ -1298,7 +1298,6 @@ function auditLog(action,detail,before,after){
 function auditSync(entry){ syncPush('Adjustments',[]); }
 // ===== GOOGLE SHEETS SYNC (Apps Script Web App) =====
 // Configure once in Manage Users. URL + token stored locally.
-function syncCfg(){try{return JSON.parse(localStorage.getItem('gs_sync_cfg')||'{}');}catch(e){return {};}}
 function setSyncCfg(url,token){try{localStorage.setItem('gs_sync_cfg',JSON.stringify({url:url||'',token:token||''}));}catch(e){}}
 function syncPush(type,rows){
   var cfg=syncCfg();
