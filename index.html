@@ -1277,13 +1277,21 @@ function faultyResetForm(){
   faultyBrandChanged();faultyReasonChanged();faultySetState('Full');faultyCalcUpdate();
 }
 // ---- Open register ----
+// The register always shows exactly ONE branch at a time — see _faultyVisibleRows().
+function faultyRegisterBranches(){
+  return (role==='Owner') ? ['Helderberg','Kleinmond'] : (findUser(operator).branches||[]);
+}
 function faultyRegisterInit(){
-  var isOwner=(role==='Owner');
-  var row=document.getElementById('frBranchRow');if(row)row.style.display=isOwner?'flex':'none';
-  if(isOwner){faultyRegisterBranch=faultyRegisterBranch||branch||'Helderberg';applyBranchLock('frbr-',faultyRegisterBranch);}
+  var mine=faultyRegisterBranches();
+  var row=document.getElementById('frBranchRow');if(row)row.style.display=(mine.length>1)?'flex':'none';
+  if(!faultyRegisterBranch || mine.indexOf(faultyRegisterBranch)===-1){
+    faultyRegisterBranch=(mine.indexOf(branch)>-1)?branch:(mine[0]||'Helderberg');
+  }
+  applyBranchLock('frbr-',faultyRegisterBranch);
   faultyLoadRegister();
 }
 function faultyRegisterSetBranch(b){
+  if(faultyRegisterBranches().indexOf(b)===-1){toast('Not your branch',true);return;}
   faultyRegisterBranch=b;applyBranchLock('frbr-',b);renderFaultyRegister();
 }
 function faultyLoadRegister(){
@@ -1294,11 +1302,12 @@ function faultyLoadRegister(){
     renderFaultyRegister();
   }).catch(function(){if(box)box.innerHTML='<div class="histEmpty" style="text-align:center;padding:20px">Network error.</div>';});
 }
+// One rule, no role branching: a row is visible only if its own Branch matches the
+// single branch currently selected. This is what was missing before — Manager had an
+// inclusive multi-branch filter with no way to narrow to one, and any other role
+// (e.g. an Operator granted faultyRegister as a per-user override) had no filter at all.
 function _faultyVisibleRows(){
-  var rows=faultyRegisterRows;
-  if(role==='Manager'){var mine=(findUser(operator).branches||[]);rows=rows.filter(function(r){return mine.indexOf(r.Branch)>-1;});}
-  else if(role==='Owner'){rows=rows.filter(function(r){return r.Branch===faultyRegisterBranch;});}
-  return rows;
+  return faultyRegisterRows.filter(function(r){return r.Branch===faultyRegisterBranch;});
 }
 function renderFaultyRegister(){
   var box=document.getElementById('faultyRegisterList');if(!box)return;
