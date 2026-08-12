@@ -1223,7 +1223,9 @@ function faultyCaptureInit(){
 }
 function faultySetBranch(b){
   if(role==='Manager' && (findUser(operator).branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
+  if(b===faultyBranch)return; // already on this branch - don't wipe an in-progress entry for nothing
   faultyBranch=b;applyBranchLock('fcbr-',b);
+  faultyResetForm(); // switching branches starts a fresh entry - never carry another branch's draft across
 }
 function faultyBrandChanged(){
   var v=document.getElementById('fcBrand').value;
