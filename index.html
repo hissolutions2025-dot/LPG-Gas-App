@@ -477,6 +477,7 @@
     <button class="htab" id="atab-suppliers" onclick="adminTab('suppliers')">Suppliers</button>
     <button class="htab" id="atab-clear" onclick="adminTab('clear')">Clear Stock Take</button>
     <button class="htab" id="atab-bsetup" onclick="adminTab('bsetup')">Branch Setup</button>
+    <button class="htab" id="atab-faulty" onclick="adminTab('faulty')">Faulty Cylinders</button>
   </div>
 
   <!-- SEAL REGISTER PANE -->
@@ -563,6 +564,72 @@
         <label style="display:block;margin-bottom:4px"><input type="checkbox" class="clrArea" value="DayClose"> Day close record</label>
       </div>
       <button class="saveBtn" style="background:#9B2C2C" onclick="doClearStockTake()">Clear ticked data</button>
+    </div>
+  </div>
+
+  <!-- FAULTY CYLINDERS PANE -->
+  <div id="adminFaulty" style="display:none">
+    <div class="htabs" id="faultySubTabs" style="display:flex;gap:8px;margin-bottom:14px">
+      <button class="htab on" id="fsub-capture" onclick="faultyShowSub('capture')">Log faulty</button>
+      <button class="htab" id="fsub-register" onclick="faultyShowSub('register')">Open register</button>
+    </div>
+
+    <!-- LOG FAULTY -->
+    <div id="faultyCapturePane">
+      <div class="cgRow" style="margin-bottom:10px"><label>Branch</label><div class="cgToggle">
+        <button class="cgTg on" id="fcbr-Helderberg" onclick="faultySetBranch('Helderberg')">Helderberg</button>
+        <button class="cgTg" id="fcbr-Kleinmond" onclick="faultySetBranch('Kleinmond')">Kleinmond</button></div></div>
+
+      <div class="histSection"><h4>Log a faulty cylinder</h4>
+        <div class="adminRow">
+          <div class="grow"><label class="mLabel" style="font-size:11px">Brand</label>
+            <select class="mField" id="fcBrand" onchange="faultyBrandChanged()"><option>Afrox</option><option>Oryx</option><option value="Other">Other</option></select></div>
+          <div class="grow" id="fcBrandOtherWrap" style="display:none"><label class="mLabel" style="font-size:11px">Other brand name</label>
+            <input type="text" class="mField" id="fcBrandOther" placeholder="Brand name"></div>
+        </div>
+        <div class="adminRow">
+          <div class="grow"><label class="mLabel" style="font-size:11px">Size</label>
+            <select class="mField" id="fcSize" onchange="faultyCalcUpdate()"></select></div>
+          <div class="grow"><label class="mLabel" style="font-size:11px">Qty</label>
+            <input type="number" class="mField" id="fcQty" value="1" min="1"></div>
+        </div>
+        <div class="cgRow" style="margin:6px 0"><label>State</label><div class="cgToggle">
+          <button class="cgTg on" id="fcst-Full" onclick="faultySetState('Full')">Full</button>
+          <button class="cgTg" id="fcst-Empty" onclick="faultySetState('Empty')">Empty</button></div></div>
+        <div class="adminRow">
+          <div class="grow"><label class="mLabel" style="font-size:11px">Seal number</label>
+            <input type="text" class="mField" id="fcSeal" placeholder="Seal # (if any)"></div>
+        </div>
+        <div class="adminRow">
+          <div class="grow"><label class="mLabel" style="font-size:11px">Fault reason</label>
+            <select class="mField" id="fcReason" onchange="faultyReasonChanged()"><option>Leaking valve</option><option>Damaged</option><option>Rusted</option><option value="Other">Other</option></select></div>
+          <div class="grow" id="fcReasonOtherWrap" style="display:none"><label class="mLabel" style="font-size:11px">Other reason</label>
+            <input type="text" class="mField" id="fcReasonOther" placeholder="Describe the fault"></div>
+        </div>
+        <div class="adminRow">
+          <div class="grow"><label class="mLabel" style="font-size:11px">Cyl scale (kg)</label>
+            <input type="number" class="mField" id="fcScale" step="0.1" oninput="faultyCalcUpdate()"></div>
+          <div class="grow"><label class="mLabel" style="font-size:11px">Cyl tare (kg)</label>
+            <input type="number" class="mField" id="fcTare" step="0.1" oninput="faultyCalcUpdate()"></div>
+        </div>
+        <div style="font-size:12px;color:var(--navy);margin:6px 0;padding:8px;border:1px dashed var(--steel);border-radius:8px" id="fcCalc">Gas remaining: — · Nominal: — · Gas at risk: —</div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Only an actual loss if this cylinder is later marked <b>Not Replaced</b> in the register.</div>
+        <label class="mLabel">Operator note</label>
+        <textarea class="mField" id="fcNote" rows="2" placeholder="Optional note"></textarea>
+        <div style="font-size:11px;color:var(--muted);margin:8px 0"><input type="checkbox" disabled style="vertical-align:middle"> Photo evidence — coming soon</div>
+        <button class="saveBtn" onclick="faultySubmit()">Log faulty cylinder</button>
+      </div>
+    </div>
+
+    <!-- OPEN REGISTER -->
+    <div id="faultyRegisterPane" style="display:none">
+      <div class="cgRow" style="margin-bottom:10px" id="frBranchRow"><label>Branch</label><div class="cgToggle">
+        <button class="cgTg on" id="frbr-Helderberg" onclick="faultyRegisterSetBranch('Helderberg')">Helderberg</button>
+        <button class="cgTg" id="frbr-Kleinmond" onclick="faultyRegisterSetBranch('Kleinmond')">Kleinmond</button></div></div>
+      <div class="histSection"><h4>Open faulty cylinders</h4>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Set <b>Not Replaced</b> to book the gas as an actual loss. Replaced/Not Replaced closes the row.</div>
+        <div id="faultyRegisterList"><div class="histEmpty" style="text-align:center;padding:20px">Loading…</div></div>
+      </div>
     </div>
   </div>
 
@@ -789,7 +856,7 @@ function suppliersAddPersist(name){
   return true;
 }
 function openAdmin(){
-  if(!perm('seal_admin')){toast('You do not have Seal Admin rights',true);return;}
+  if(!(perm('seal_admin')||perm('faultyCapture')||perm('faultyRegister'))){toast('You do not have rights to open Admin',true);return;}
   document.getElementById('hTitle').textContent='Admin';document.getElementById('hSub').textContent='';
   document.getElementById('backBtn').style.display='block';
   adminBranch=branch||'Helderberg';
@@ -799,13 +866,20 @@ function openAdmin(){
 }
 var _adminUnlocked={}; // per Admin session: which tabs unlocked
 var ADMIN_TAB_PERM={seals:'seal_admin',suppliers:'seal_admin',clear:'seal_edit_used',bsetup:'branch_setup'};
-var ADMIN_TAB_NAME={seals:'Seal Register',suppliers:'Suppliers',clear:'Clear Stock Take',bsetup:'Branch Setup'};
+var ADMIN_TAB_NAME={seals:'Seal Register',suppliers:'Suppliers',clear:'Clear Stock Take',bsetup:'Branch Setup',faulty:'Faulty Cylinders'};
 function adminShowTabsOnly(){
-  ['adminSeals','adminSuppliers','adminClear','adminBsetup'].forEach(function(id){var e=document.getElementById(id);if(e)e.style.display='none';});
-  ['atab-seals','atab-suppliers','atab-clear','atab-bsetup'].forEach(function(id){var e=document.getElementById(id);if(e)e.classList.remove('on');});
+  ['adminSeals','adminSuppliers','adminClear','adminBsetup','adminFaulty'].forEach(function(id){var e=document.getElementById(id);if(e)e.style.display='none';});
+  ['atab-seals','atab-suppliers','atab-clear','atab-bsetup','atab-faulty'].forEach(function(id){var e=document.getElementById(id);if(e)e.classList.remove('on');});
   _adminUnlocked={}; // reset on each Admin entry
 }
 function adminTab(t){
+  // Faulty Cylinders: not password-gated on open (Log faulty is a routine daily task,
+  // same as Stock Count). faultyShowSub('register') below gates the register sub-view itself.
+  if(t==='faulty'){
+    if(!(perm('faultyCapture')||perm('faultyRegister'))){toast('You do not have rights for Faulty Cylinders',true);return;}
+    _adminTabShow(t);
+    return;
+  }
   // password gate per tab — ALWAYS ask, every tap (sensitive area)
   var permKey=ADMIN_TAB_PERM[t];
   if(permKey && !(role==='Owner'||perm(permKey))){toast('You do not have rights for '+ADMIN_TAB_NAME[t],true);return;}
@@ -821,14 +895,17 @@ function _adminTabShow(t){
   document.getElementById('adminSuppliers').style.display=(t==='suppliers')?'block':'none';
   var _ac=document.getElementById('adminClear');if(_ac)_ac.style.display=(t==='clear')?'block':'none';
   var _abs=document.getElementById('adminBsetup');if(_abs)_abs.style.display=(t==='bsetup')?'block':'none';
+  var _af=document.getElementById('adminFaulty');if(_af)_af.style.display=(t==='faulty')?'block':'none';
   document.getElementById('atab-seals').classList.toggle('on',t==='seals');
   document.getElementById('atab-suppliers').classList.toggle('on',t==='suppliers');
   var _tc=document.getElementById('atab-clear');if(_tc)_tc.classList.toggle('on',t==='clear');
   var _tbs=document.getElementById('atab-bsetup');if(_tbs)_tbs.classList.toggle('on',t==='bsetup');
+  var _tf=document.getElementById('atab-faulty');if(_tf)_tf.classList.toggle('on',t==='faulty');
   if(t==='bsetup')renderBsetup();
   if(t==='clear'){var d=document.getElementById('clrDate');if(d&&!d.value)d.value=today;}
   if(t==='seals'){fillBrandPicker();renderRolls();}
   if(t==='suppliers')renderSuppliers();
+  if(t==='faulty')faultyTabInit();
 }
 function adminSetBranch(b){
   if(role==='Manager' && (findUser(operator).branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
@@ -1089,21 +1166,185 @@ function doVoidSeal(){
   if(voidSeal(adminBranch, sn, closed)){document.getElementById('voidSealNo').value='';document.getElementById('voidClosedDay').checked=false;renderRolls();renderUsedSeals();}
 }
 
+// ===== FAULTY CYLINDERS (Admin tab) =====
+// Talks to Faulty_Code.gs via apiPost. Does not touch store.*, syncPush, or stock deduction —
+// a faulty cylinder still counts as full stock until its register row is closed.
+var FAULTY_NOMINAL={'5kg':5,'9kg':9,'12kg':12,'14kg':14,'19kg':19,'48kg-SV':48,'48kg-DV':48,'14kg-FLT':14,'19kg-FLT':19,'8kg-Prop':8,'18kg-Prop':18,'45kg-Prop-SV':45,'45kg-Prop-DV':45};
+var faultyBranch='', faultyState='Full', faultySub='capture';
+var faultyRegisterBranch='', faultyRegisterRows=[];
+
+function faultyTabInit(){
+  var canCap=perm('faultyCapture'), canReg=perm('faultyRegister');
+  var tCap=document.getElementById('fsub-capture'), tReg=document.getElementById('fsub-register');
+  if(tCap)tCap.style.display=canCap?'inline-block':'none';
+  if(tReg)tReg.style.display=canReg?'inline-block':'none';
+  var subTabs=document.getElementById('faultySubTabs');
+  if(subTabs)subTabs.style.display=(canCap&&canReg)?'flex':'none'; // only show the switcher if user has both
+  if(canCap)faultyShowSub('capture');
+  else if(canReg)faultyShowSub('register');
+  else toast('You do not have rights for Faulty Cylinders',true);
+}
+function faultyShowSub(sub){
+  if(sub==='register'){
+    if(!perm('faultyRegister')){toast('You do not have Faulty Register rights',true);return;}
+    // Open register books actual gas losses — re-prompt for password like the other Admin tabs,
+    // even though Log faulty (routine daily capture) does not.
+    var me=findUser(operator);
+    askPassword('Open Faulty Register','Enter your password to open the Open Register:').then(function(pw){
+      if(pw===null)return;
+      if(!me||pw!==me.pw){toast('Wrong password',true);return;}
+      _faultyShowSub('register');
+    });
+    return;
+  }
+  if(!perm('faultyCapture')){toast('You do not have Faulty Capture rights',true);return;}
+  _faultyShowSub('capture');
+}
+function _faultyShowSub(sub){
+  faultySub=sub;
+  var cp=document.getElementById('faultyCapturePane'),rp=document.getElementById('faultyRegisterPane');
+  if(cp)cp.style.display=(sub==='capture')?'block':'none';
+  if(rp)rp.style.display=(sub==='register')?'block':'none';
+  var tCap=document.getElementById('fsub-capture'),tReg=document.getElementById('fsub-register');
+  if(tCap)tCap.classList.toggle('on',sub==='capture');
+  if(tReg)tReg.classList.toggle('on',sub==='register');
+  if(sub==='capture')faultyCaptureInit();
+  if(sub==='register')faultyRegisterInit();
+}
+// ---- Log faulty ----
+function faultyCaptureInit(){
+  faultyBranch=(role==='Operator')?branch:(faultyBranch||branch||'Helderberg');
+  applyBranchLock('fcbr-',faultyBranch);
+  var sel=document.getElementById('fcSize');
+  if(sel && !sel.options.length){
+    sel.innerHTML=COUNT_ITEMS.map(function(s){return '<option value="'+s+'">'+s+'</option>';}).join('');
+  }
+  faultyBrandChanged();faultyReasonChanged();faultySetState(faultyState);faultyCalcUpdate();
+}
+function faultySetBranch(b){
+  if(role==='Manager' && (findUser(operator).branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
+  faultyBranch=b;applyBranchLock('fcbr-',b);
+}
+function faultyBrandChanged(){
+  var v=document.getElementById('fcBrand').value;
+  var w=document.getElementById('fcBrandOtherWrap');if(w)w.style.display=(v==='Other')?'block':'none';
+}
+function faultyReasonChanged(){
+  var v=document.getElementById('fcReason').value;
+  var w=document.getElementById('fcReasonOtherWrap');if(w)w.style.display=(v==='Other')?'block':'none';
+}
+function faultySetState(s){
+  faultyState=s;
+  var f=document.getElementById('fcst-Full'),e=document.getElementById('fcst-Empty');
+  if(f)f.classList.toggle('on',s==='Full');
+  if(e)e.classList.toggle('on',s==='Empty');
+}
+function faultyCalcUpdate(){
+  var sel=document.getElementById('fcSize');var size=sel?sel.value:'';
+  var scale=num(document.getElementById('fcScale').value),tare=num(document.getElementById('fcTare').value);
+  var nominal=FAULTY_NOMINAL[size]||0;
+  var gasRemaining=Math.max(0,scale-tare);
+  var gasAtRisk=Math.max(0,nominal-gasRemaining);
+  var el=document.getElementById('fcCalc');if(!el)return;
+  el.innerHTML='Gas remaining: <b>'+gasRemaining.toFixed(1)+'kg</b> · Nominal: <b>'+nominal+'kg</b> · Gas at risk: <b>'+gasAtRisk.toFixed(1)+'kg</b> (server recalculates on save)';
+}
+function faultySubmit(){
+  if(!perm('faultyCapture')){toast('You do not have Faulty Capture rights',true);return;}
+  var qty=num(document.getElementById('fcQty').value);
+  if(!(qty>0)){toast('Enter a quantity',true);return;}
+  var brand=document.getElementById('fcBrand').value;
+  if(brand==='Other'){brand=(document.getElementById('fcBrandOther').value||'').trim();if(!brand){toast('Enter the other brand name',true);return;}}
+  var reason=document.getElementById('fcReason').value;
+  var reasonOther='';
+  if(reason==='Other'){reasonOther=(document.getElementById('fcReasonOther').value||'').trim();if(!reasonOther){toast('Describe the fault',true);return;}}
+  var row={
+    Branch:faultyBranch||branch, Operator:operator, Brand:brand, Size:document.getElementById('fcSize').value, Qty:qty,
+    State:faultyState, SealNumber:(document.getElementById('fcSeal').value||'').trim(), FaultReason:reason, FaultDetail:reasonOther,
+    CylScale:num(document.getElementById('fcScale').value), CylTare:num(document.getElementById('fcTare').value),
+    OperatorNote:(document.getElementById('fcNote').value||'').trim()
+  };
+  apiPost('faultyLog',{row:row}).then(function(res){
+    if(!res||!res.ok){toast((res&&res.msg)||'Could not log faulty cylinder',true);return;}
+    toast('Faulty cylinder logged'+(res.id?(' — '+res.id):''));
+    faultyResetForm();
+  }).catch(function(){toast('Network error — check your connection',true);});
+}
+function faultyResetForm(){
+  document.getElementById('fcQty').value=1;
+  document.getElementById('fcSeal').value='';document.getElementById('fcScale').value='';document.getElementById('fcTare').value='';document.getElementById('fcNote').value='';
+  document.getElementById('fcBrand').value='Afrox';document.getElementById('fcBrandOther').value='';
+  document.getElementById('fcReason').value='Leaking valve';document.getElementById('fcReasonOther').value='';
+  faultyBrandChanged();faultyReasonChanged();faultySetState('Full');faultyCalcUpdate();
+}
+// ---- Open register ----
+function faultyRegisterInit(){
+  var isOwner=(role==='Owner');
+  var row=document.getElementById('frBranchRow');if(row)row.style.display=isOwner?'flex':'none';
+  if(isOwner){faultyRegisterBranch=faultyRegisterBranch||branch||'Helderberg';applyBranchLock('frbr-',faultyRegisterBranch);}
+  faultyLoadRegister();
+}
+function faultyRegisterSetBranch(b){
+  faultyRegisterBranch=b;applyBranchLock('frbr-',b);renderFaultyRegister();
+}
+function faultyLoadRegister(){
+  var box=document.getElementById('faultyRegisterList');if(box)box.innerHTML='<div class="histEmpty" style="text-align:center;padding:20px">Loading…</div>';
+  apiPost('faultyListOpen',{}).then(function(res){
+    if(!res||!res.ok){if(box)box.innerHTML='<div class="histEmpty" style="text-align:center;padding:20px">Could not load the register.</div>';return;}
+    faultyRegisterRows=res.rows||[];
+    renderFaultyRegister();
+  }).catch(function(){if(box)box.innerHTML='<div class="histEmpty" style="text-align:center;padding:20px">Network error.</div>';});
+}
+function _faultyVisibleRows(){
+  var rows=faultyRegisterRows;
+  if(role==='Manager'){var mine=(findUser(operator).branches||[]);rows=rows.filter(function(r){return mine.indexOf(r.Branch)>-1;});}
+  else if(role==='Owner'){rows=rows.filter(function(r){return r.Branch===faultyRegisterBranch;});}
+  return rows;
+}
+function renderFaultyRegister(){
+  var box=document.getElementById('faultyRegisterList');if(!box)return;
+  var rows=_faultyVisibleRows();
+  if(!rows.length){box.innerHTML='<div class="histEmpty" style="text-align:center;padding:20px">No open faulty cylinders.</div>';return;}
+  box.innerHTML=rows.map(function(r){
+    var id=r.id||r.ID||'';
+    return '<div class="brandCard" style="margin-bottom:8px">'+
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'+
+        '<b style="color:var(--navy)">'+(r.Brand||'')+' '+(r.Size||'')+' ×'+(r.Qty||1)+'</b>'+
+        '<span style="font-size:11px;color:var(--muted)">'+(r.Branch||'')+' · '+id+'</span></div>'+
+      '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">'+(r.FaultReason||'')+(r.FaultDetail?(' — '+r.FaultDetail):'')+' · Gas loss risk: '+(r.GasLoss!==undefined&&r.GasLoss!==''?r.GasLoss:'—')+'kg</div>'+
+      '<div class="adminRow"><div class="grow"><label class="mLabel" style="font-size:11px">Status</label>'+
+        '<select class="mField frStatus" data-id="'+id+'">'+['Faulty-Held','Uplifted','Replaced','Not Replaced'].map(function(s){return '<option'+(r.Status===s?' selected':'')+'>'+s+'</option>';}).join('')+'</select></div></div>'+
+      '<div class="adminRow">'+
+        '<div class="grow"><label class="mLabel" style="font-size:11px">Uplift DN#</label><input type="text" class="mField frUplift" data-id="'+id+'" value="'+(r.UpliftDN||'')+'"></div>'+
+        '<div class="grow"><label class="mLabel" style="font-size:11px">Return DN#</label><input type="text" class="mField frReturn" data-id="'+id+'" value="'+(r.ReturnDN||'')+'"></div></div>'+
+      '<button class="saveBtn" style="margin-top:6px" onclick="faultySaveRow(\''+id+'\')">Save</button></div>';
+  }).join('');
+}
+function faultySaveRow(id){
+  var statusEl=[].slice.call(document.querySelectorAll('.frStatus')).filter(function(el){return el.getAttribute('data-id')===id;})[0];
+  var upliftEl=[].slice.call(document.querySelectorAll('.frUplift')).filter(function(el){return el.getAttribute('data-id')===id;})[0];
+  var returnEl=[].slice.call(document.querySelectorAll('.frReturn')).filter(function(el){return el.getAttribute('data-id')===id;})[0];
+  apiPost('faultyUpdate',{id:id,status:statusEl?statusEl.value:'',upliftDN:upliftEl?upliftEl.value.trim():'',returnDN:returnEl?returnEl.value.trim():''}).then(function(res){
+    if(!res||!res.ok){toast((res&&res.msg)||'Could not update',true);return;}
+    toast('Saved');
+    faultyLoadRegister();
+  }).catch(function(){toast('Network error — check your connection',true);});
+}
+
 // ===== USER STORE (demo, localStorage) =====
 // user = {name, level:'Owner|Manager|Operator', branches:[...], pw, perms:{...}}
 // Granular permissions. Levels are PRESETS that pre-tick these; Owner can override per user.
-var PERM_KEYS=['view','capture','edit','closeday','history','users','audit','adjust','seal_admin','seal_create','seal_void_open','seal_edit_used','seal_boundary','branch_setup'];
-var PERM_LABELS={view:'View counts',capture:'Capture counts',edit:'Edit / correct',closeday:'Close day',history:'Open history',users:'Manage users',audit:'View audit log',adjust:'Adjust mismatches',seal_admin:'Seal: open Admin area',seal_create:'Seal: create/edit roll (unused)',seal_void_open:'Seal: void seal (open day)',seal_edit_used:'Seal: edit used roll / void closed day',seal_boundary:'Seal: pump boundary override',branch_setup:'Branch Setup: activate/deactivate sections & items'};
+var PERM_KEYS=['view','capture','edit','closeday','history','users','audit','adjust','seal_admin','seal_create','seal_void_open','seal_edit_used','seal_boundary','branch_setup','faultyCapture','faultyRegister'];
+var PERM_LABELS={view:'View counts',capture:'Capture counts',edit:'Edit / correct',closeday:'Close day',history:'Open history',users:'Manage users',audit:'View audit log',adjust:'Adjust mismatches',seal_admin:'Seal: open Admin area',seal_create:'Seal: create/edit roll (unused)',seal_void_open:'Seal: void seal (open day)',seal_edit_used:'Seal: edit used roll / void closed day',seal_boundary:'Seal: pump boundary override',branch_setup:'Branch Setup: activate/deactivate sections & items',faultyCapture:'Faulty — capture',faultyRegister:'Faulty — manage register'};
 function permPreset(level){
-  if(level==='Owner')   return {view:1,capture:1,edit:1,closeday:1,history:1,users:1,audit:1,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:1,seal_boundary:1,branch_setup:1};
-  if(level==='Manager') return {view:1,capture:1,edit:1,closeday:1,history:1,users:0,audit:0,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:0,seal_boundary:0,branch_setup:1};
-  return                       {view:1,capture:1,edit:1,closeday:0,history:0,users:0,audit:0,adjust:0,seal_admin:0,seal_create:0,seal_void_open:0,seal_edit_used:0,seal_boundary:0}; // Operator
+  if(level==='Owner')   return {view:1,capture:1,edit:1,closeday:1,history:1,users:1,audit:1,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:1,seal_boundary:1,branch_setup:1,faultyCapture:1,faultyRegister:1};
+  if(level==='Manager') return {view:1,capture:1,edit:1,closeday:1,history:1,users:0,audit:0,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:0,seal_boundary:0,branch_setup:1,faultyCapture:1,faultyRegister:1};
+  return                       {view:1,capture:1,edit:1,closeday:0,history:0,users:0,audit:0,adjust:0,seal_admin:0,seal_create:0,seal_void_open:0,seal_edit_used:0,seal_boundary:0,faultyCapture:1,faultyRegister:0}; // Operator
 }
 function userPerms(u){
   if(!u)return {};
   var base=permPreset(u.level);
   if(u.perms){PERM_KEYS.forEach(function(k){if(u.perms[k]!==undefined)base[k]=u.perms[k]?1:0;});}
-  if(u.level==='Owner'){base.users=1;base.audit=1;} // Owner can never lock self out of these
+  if(u.level==='Owner'){base.users=1;base.audit=1;base.faultyCapture=1;base.faultyRegister=1;} // Owner can never lock self out of these
   return base;
 }
 var currentPerms={};
@@ -1319,6 +1560,15 @@ function syncFlush(){
   localStorage.setItem('gs_sync_queue','[]');
   q.forEach(function(p){try{fetch(cfg.url,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(p)}).catch(function(){syncQueue(p);});}catch(e){syncQueue(p);}});
 }
+// Real request/response POST (separate from syncPush's fire-and-forget 'no-cors' pushes above).
+// Used by the Faulty Cylinders feature, which needs actual {ok,...} replies from the backend.
+function apiPost(action,extra){
+  var cfg=syncCfg();
+  var payload={action:action,token:cfg.token,caller:operator};
+  if(extra){for(var k in extra){if(extra.hasOwnProperty(k))payload[k]=extra[k];}}
+  return fetch(cfg.url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)})
+    .then(function(r){return r.json();});
+}
 // build row objects for each type from the committed data
 // Full-schema sync (v3). Every row carries ts + date + branch + Operator + Role + section fields.
 function _nowISO(){return new Date().toISOString();}
@@ -1491,7 +1741,7 @@ function doLogin(){
   // owner sees Manage Users tile
   document.getElementById('tileUsers').style.display=perm('users')?'flex':'none';
   document.getElementById('tileAudit').style.display=perm('audit')?'flex':'none';
-  var _ta=document.getElementById('tileAdmin');if(_ta)_ta.style.display=perm('seal_admin')?'flex':'none';
+  var _ta=document.getElementById('tileAdmin');if(_ta)_ta.style.display=(perm('seal_admin')||perm('faultyCapture')||perm('faultyRegister'))?'flex':'none';
   auditLog('Login','Signed in to '+b);
   editUnlocked=false;
   loadWorkingStore();
