@@ -1439,7 +1439,10 @@ function residualAdd(){
   if(!(scale>0)){toast('Enter the cylinder scale weight',true);return;}
   var gasType=RESIDUAL_GASTYPE[size]||'';
   var residual=Math.max(0,scale-tare);
-  residualList.push({Brand:brand,Size:size,GasType:gasType,CylScale:scale,CylTare:tare,Residual:residual,Note:(document.getElementById('rgNote').value||'').trim()});
+  // Branch is captured HERE, per row, from whatever's selected right now - never re-derived
+  // later from the (possibly since-changed) branch toggle. This is what stops a cylinder
+  // added under one branch from being submitted under whichever branch is selected later.
+  residualList.push({Branch:residualBranch||branch,Brand:brand,Size:size,GasType:gasType,CylScale:scale,CylTare:tare,Residual:residual,Note:(document.getElementById('rgNote').value||'').trim()});
   renderResidualList();
   document.getElementById('rgScale').value='';document.getElementById('rgTare').value='';document.getElementById('rgNote').value='';
   residualCalcUpdate();
@@ -1455,7 +1458,7 @@ function renderResidualList(){
   } else {
     box.innerHTML=residualList.map(function(r,i){
       return '<div class="brandCard" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">'+
-        '<div><b style="color:var(--navy)">'+r.Brand+' '+r.Size+'</b><div style="font-size:11px;color:var(--muted)">'+r.GasType+' · Residual '+r.Residual.toFixed(1)+'kg</div></div>'+
+        '<div><b style="color:var(--navy)">'+r.Brand+' '+r.Size+'</b><div style="font-size:11px;color:var(--muted)">'+r.Branch+' · '+r.GasType+' · Residual '+r.Residual.toFixed(1)+'kg</div></div>'+
         '<button class="sigClear" style="width:auto;padding:6px 10px;margin:0" onclick="residualRemove('+i+')">✕</button></div>';
     }).join('');
   }
@@ -1469,7 +1472,7 @@ function residualSubmit(){
   if(!perm('residualGas')){toast('You do not have Residual Gas rights',true);return;}
   if(!residualList.length){toast('Add at least one cylinder first',true);return;}
   var rows=residualList.map(function(r){
-    return {Branch:residualBranch||branch,Operator:operator,Role:role,Brand:r.Brand,Size:r.Size,GasType:r.GasType,CylScale:r.CylScale,CylTare:r.CylTare,Note:r.Note};
+    return {Branch:r.Branch,Operator:operator,Role:role,Brand:r.Brand,Size:r.Size,GasType:r.GasType,CylScale:r.CylScale,CylTare:r.CylTare,Note:r.Note};
   });
   apiPost('residualLog',{rows:rows}).then(function(res){
     if(!res||!res.ok){toast((res&&res.msg)||'Could not submit residual gas',true);return;}
