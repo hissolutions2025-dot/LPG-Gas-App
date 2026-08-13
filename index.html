@@ -61,7 +61,8 @@
   body[data-view="userEditView"] #userEditView,
   body[data-view="auditView"] #auditView,
   body[data-view="auditDetailView"] #auditDetailView,
-  body[data-view="adminView"] #adminView{display:block !important;}
+  body[data-view="adminView"] #adminView,
+  body[data-view="residualView"] #residualView{display:block !important;}
   #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(80px);background:var(--ok);color:#fff;padding:14px 22px;border-radius:12px;font-weight:700;font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.25);transition:transform .3s;z-index:70;max-width:90%;text-align:center;}
   #toast.show{transform:translateX(-50%) translateY(0);} #toast.err{background:var(--bad);}
   /* generic capture (grid+popup) */
@@ -233,6 +234,7 @@
       <button class="tile t4" onclick="openCap('private')"><div class="ic">&#9684;</div><h3>Private Refill</h3><p>Customer's own cylinder</p><span class="badge" id="b-private" style="display:none">0</span></button>
       <button class="tile t5" onclick="openReceived()"><div class="ic">&#8681;</div><h3>Stock Received</h3><p>Deliveries &amp; returns</p><span class="badge" id="b-received" style="display:none">0</span></button>
       <button class="tile t6" onclick="openHistory()"><div class="ic">&#9776;</div><h3>Count History</h3><p>Review today's captures</p></button>
+      <button class="tile t4" id="tileResidual" onclick="openResidual()" style="display:none"><div class="ic">&#127766;</div><h3>Residual Gas</h3><p>Gas left in received cylinders</p></button>
       <button class="tile t1" id="tileUsers" onclick="openUsers()" style="display:none"><div class="ic">&#128100;</div><h3>Manage Users</h3><p>Owner: users, levels &amp; branches</p></button>
       <button class="tile t5" id="tileAudit" onclick="openAudit()" style="display:none"><div class="ic">&#128220;</div><h3>Audit Log</h3><p>Owner only — who did what, when</p></button>
       <button class="tile t2" id="tileAdmin" onclick="openAdmin()" style="display:none"><div class="ic">&#9881;</div><h3>Admin</h3><p>Seal register &amp; suppliers</p></button>
@@ -254,6 +256,45 @@
     </div>
   </div>
 </div>
+
+<!-- RESIDUAL GAS (main section) -->
+<div id="residualView" class="view"><div class="wrap">
+  <div class="cgRow" style="margin-bottom:10px"><label>Branch</label><div class="cgToggle">
+    <button class="cgTg on" id="rgbr-Helderberg" onclick="residualSetBranch('Helderberg')">Helderberg</button>
+    <button class="cgTg" id="rgbr-Kleinmond" onclick="residualSetBranch('Kleinmond')">Kleinmond</button></div></div>
+
+  <div class="histSection"><h4>Add a cylinder</h4>
+    <div class="adminRow">
+      <div class="grow"><label class="mLabel" style="font-size:11px">Brand</label>
+        <select class="mField" id="rgBrand" onchange="residualBrandChanged()"><option>Afrox</option><option>Oryx</option><option value="Other">Other</option></select></div>
+      <div class="grow" id="rgBrandOtherWrap" style="display:none"><label class="mLabel" style="font-size:11px">Other brand name</label>
+        <input type="text" class="mField" id="rgBrandOther" placeholder="Brand name"></div>
+    </div>
+    <div class="adminRow">
+      <div class="grow"><label class="mLabel" style="font-size:11px">Size</label>
+        <select class="mField" id="rgSize" onchange="residualCalcUpdate()"></select></div>
+    </div>
+    <div class="adminRow">
+      <div class="grow"><label class="mLabel" style="font-size:11px">Cyl scale (kg)</label>
+        <input type="number" class="mField" id="rgScale" step="0.1" oninput="residualCalcUpdate()"></div>
+      <div class="grow"><label class="mLabel" style="font-size:11px">Cyl tare (kg)</label>
+        <input type="number" class="mField" id="rgTare" step="0.1" oninput="residualCalcUpdate()"></div>
+    </div>
+    <div style="font-size:12px;color:var(--navy);margin:6px 0;padding:8px;border:1px dashed var(--steel);border-radius:8px" id="rgCalc">Gas type: — · Residual: —</div>
+    <label class="mLabel">Note (optional)</label>
+    <input type="text" class="mField" id="rgNote" placeholder="Optional note">
+    <button class="saveBtn" style="margin-top:10px" onclick="residualAdd()">+ Add cylinder to list</button>
+  </div>
+
+  <div class="histSection">
+    <h4>Cylinders to submit</h4>
+    <div id="residualListBox"><div class="histEmpty" style="text-align:center;padding:16px">No cylinders added yet.</div></div>
+    <div id="residualTotal" style="font-size:12px;color:var(--navy);font-weight:700;margin:8px 0">Total residual: 0.0kg (0 cylinders)</div>
+    <button class="saveBtn" id="residualSubmitBtn" onclick="residualSubmit()">Submit residual gas (0)</button>
+  </div>
+
+  <button class="exportBtn" style="background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel);margin-top:8px" onclick="goHome()">&larr; Back to menu</button>
+</div></div>
 
 
 <!-- ===== COUNT MODULE VIEWS ===== -->
@@ -1342,15 +1383,111 @@ function faultySaveRow(id){
   }).catch(function(){toast('Network error — check your connection',true);});
 }
 
+// ===== RESIDUAL GAS (main section) =====
+// Model A: daily input only, no lifecycle/persistence. Session list is submitted as one
+// batch via apiPost('residualLog', {rows}) and cleared on success. Does not touch
+// store.count or any stock-count/recon code - cylinders stay counted as empties elsewhere.
+var RESIDUAL_SIZES=[
+  {group:'LPG', items:['5kg','9kg','12kg','14kg','19kg','14kg-FLT','19kg-FLT','48kg-SV','48kg-DV']},
+  {group:'Propane', items:['8kg-Prop','18kg-Prop','45kg-Prop-SV','45kg-Prop-DV']}
+];
+var RESIDUAL_GASTYPE={};
+RESIDUAL_SIZES.forEach(function(g){g.items.forEach(function(s){RESIDUAL_GASTYPE[s]=g.group;});});
+var residualBranch='', residualList=[];
+
+function openResidual(){
+  if(!perm('residualGas')){toast('You do not have Residual Gas rights',true);return;}
+  residualBranch=(role==='Operator')?branch:(residualBranch||branch||'Helderberg');
+  applyBranchLock('rgbr-',residualBranch);
+  document.getElementById('hTitle').textContent='Residual Gas';
+  document.getElementById('hSub').textContent='Gas left in received cylinders';
+  document.getElementById('backBtn').style.display='block';
+  residualPopulateSize();
+  residualBrandChanged();
+  residualCalcUpdate();
+  renderResidualList();
+  show('residualView');window.scrollTo(0,0);
+}
+function residualSetBranch(b){
+  if(role==='Manager' && (findUser(operator).branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
+  residualBranch=b;applyBranchLock('rgbr-',b);
+}
+function residualPopulateSize(){
+  var sel=document.getElementById('rgSize');if(!sel||sel.options.length)return;
+  sel.innerHTML=RESIDUAL_SIZES.map(function(g){
+    return '<optgroup label="'+g.group+'">'+g.items.map(function(s){return '<option value="'+s+'">'+s+'</option>';}).join('')+'</optgroup>';
+  }).join('');
+}
+function residualBrandChanged(){
+  var v=document.getElementById('rgBrand').value;
+  var w=document.getElementById('rgBrandOtherWrap');if(w)w.style.display=(v==='Other')?'block':'none';
+}
+function residualCalcUpdate(){
+  var sel=document.getElementById('rgSize');var size=sel?sel.value:'';
+  var gasType=RESIDUAL_GASTYPE[size]||'—';
+  var scale=num(document.getElementById('rgScale').value),tare=num(document.getElementById('rgTare').value);
+  var residual=Math.max(0,scale-tare);
+  var el=document.getElementById('rgCalc');if(!el)return;
+  el.innerHTML='Gas type: <b>'+gasType+'</b> · Residual: <b>'+residual.toFixed(1)+'kg</b>';
+}
+function residualAdd(){
+  if(!perm('residualGas')){toast('You do not have Residual Gas rights',true);return;}
+  var size=document.getElementById('rgSize').value;
+  var brand=document.getElementById('rgBrand').value;
+  if(brand==='Other'){brand=(document.getElementById('rgBrandOther').value||'').trim();if(!brand){toast('Enter the other brand name',true);return;}}
+  var scale=num(document.getElementById('rgScale').value),tare=num(document.getElementById('rgTare').value);
+  if(!(scale>0)){toast('Enter the cylinder scale weight',true);return;}
+  var gasType=RESIDUAL_GASTYPE[size]||'';
+  var residual=Math.max(0,scale-tare);
+  residualList.push({Brand:brand,Size:size,GasType:gasType,CylScale:scale,CylTare:tare,Residual:residual,Note:(document.getElementById('rgNote').value||'').trim()});
+  renderResidualList();
+  document.getElementById('rgScale').value='';document.getElementById('rgTare').value='';document.getElementById('rgNote').value='';
+  residualCalcUpdate();
+}
+function residualRemove(i){
+  residualList.splice(i,1);
+  renderResidualList();
+}
+function renderResidualList(){
+  var box=document.getElementById('residualListBox');if(!box)return;
+  if(!residualList.length){
+    box.innerHTML='<div class="histEmpty" style="text-align:center;padding:16px">No cylinders added yet.</div>';
+  } else {
+    box.innerHTML=residualList.map(function(r,i){
+      return '<div class="brandCard" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">'+
+        '<div><b style="color:var(--navy)">'+r.Brand+' '+r.Size+'</b><div style="font-size:11px;color:var(--muted)">'+r.GasType+' · Residual '+r.Residual.toFixed(1)+'kg</div></div>'+
+        '<button class="sigClear" style="width:auto;padding:6px 10px;margin:0" onclick="residualRemove('+i+')">✕</button></div>';
+    }).join('');
+  }
+  var total=residualList.reduce(function(s,r){return s+r.Residual;},0);
+  var totalEl=document.getElementById('residualTotal');
+  if(totalEl)totalEl.textContent='Total residual: '+total.toFixed(1)+'kg ('+residualList.length+' cylinder'+(residualList.length===1?'':'s')+')';
+  var subBtn=document.getElementById('residualSubmitBtn');
+  if(subBtn)subBtn.textContent='Submit residual gas ('+residualList.length+')';
+}
+function residualSubmit(){
+  if(!perm('residualGas')){toast('You do not have Residual Gas rights',true);return;}
+  if(!residualList.length){toast('Add at least one cylinder first',true);return;}
+  var rows=residualList.map(function(r){
+    return {Branch:residualBranch||branch,Operator:operator,Role:role,Brand:r.Brand,Size:r.Size,GasType:r.GasType,CylScale:r.CylScale,CylTare:r.CylTare,Note:r.Note};
+  });
+  apiPost('residualLog',{rows:rows}).then(function(res){
+    if(!res||!res.ok){toast((res&&res.msg)||'Could not submit residual gas',true);return;}
+    toast('Residual gas submitted ('+(res.wrote!==undefined?res.wrote:rows.length)+')');
+    residualList=[];
+    renderResidualList();
+  }).catch(function(){toast('Network error — check your connection',true);});
+}
+
 // ===== USER STORE (demo, localStorage) =====
 // user = {name, level:'Owner|Manager|Operator', branches:[...], pw, perms:{...}}
 // Granular permissions. Levels are PRESETS that pre-tick these; Owner can override per user.
-var PERM_KEYS=['view','capture','edit','closeday','history','users','audit','adjust','seal_admin','seal_create','seal_void_open','seal_edit_used','seal_boundary','branch_setup','faultyCapture','faultyRegister'];
-var PERM_LABELS={view:'View counts',capture:'Capture counts',edit:'Edit / correct',closeday:'Close day',history:'Open history',users:'Manage users',audit:'View audit log',adjust:'Adjust mismatches',seal_admin:'Seal: open Admin area',seal_create:'Seal: create/edit roll (unused)',seal_void_open:'Seal: void seal (open day)',seal_edit_used:'Seal: edit used roll / void closed day',seal_boundary:'Seal: pump boundary override',branch_setup:'Branch Setup: activate/deactivate sections & items',faultyCapture:'Faulty — capture',faultyRegister:'Faulty — manage register'};
+var PERM_KEYS=['view','capture','edit','closeday','history','users','audit','adjust','seal_admin','seal_create','seal_void_open','seal_edit_used','seal_boundary','branch_setup','faultyCapture','faultyRegister','residualGas'];
+var PERM_LABELS={view:'View counts',capture:'Capture counts',edit:'Edit / correct',closeday:'Close day',history:'Open history',users:'Manage users',audit:'View audit log',adjust:'Adjust mismatches',seal_admin:'Seal: open Admin area',seal_create:'Seal: create/edit roll (unused)',seal_void_open:'Seal: void seal (open day)',seal_edit_used:'Seal: edit used roll / void closed day',seal_boundary:'Seal: pump boundary override',branch_setup:'Branch Setup: activate/deactivate sections & items',faultyCapture:'Faulty — capture',faultyRegister:'Faulty — manage register',residualGas:'Residual Gas — capture'};
 function permPreset(level){
-  if(level==='Owner')   return {view:1,capture:1,edit:1,closeday:1,history:1,users:1,audit:1,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:1,seal_boundary:1,branch_setup:1,faultyCapture:1,faultyRegister:1};
-  if(level==='Manager') return {view:1,capture:1,edit:1,closeday:1,history:1,users:0,audit:0,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:0,seal_boundary:0,branch_setup:1,faultyCapture:1,faultyRegister:1};
-  return                       {view:1,capture:1,edit:1,closeday:0,history:0,users:0,audit:0,adjust:0,seal_admin:0,seal_create:0,seal_void_open:0,seal_edit_used:0,seal_boundary:0,faultyCapture:1,faultyRegister:0}; // Operator
+  if(level==='Owner')   return {view:1,capture:1,edit:1,closeday:1,history:1,users:1,audit:1,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:1,seal_boundary:1,branch_setup:1,faultyCapture:1,faultyRegister:1,residualGas:1};
+  if(level==='Manager') return {view:1,capture:1,edit:1,closeday:1,history:1,users:0,audit:0,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:0,seal_boundary:0,branch_setup:1,faultyCapture:1,faultyRegister:1,residualGas:1};
+  return                       {view:1,capture:1,edit:1,closeday:0,history:0,users:0,audit:0,adjust:0,seal_admin:0,seal_create:0,seal_void_open:0,seal_edit_used:0,seal_boundary:0,faultyCapture:1,faultyRegister:0,residualGas:1}; // Operator
 }
 function userPerms(u){
   if(!u)return {};
@@ -1754,6 +1891,7 @@ function doLogin(){
   document.getElementById('tileUsers').style.display=perm('users')?'flex':'none';
   document.getElementById('tileAudit').style.display=perm('audit')?'flex':'none';
   var _ta=document.getElementById('tileAdmin');if(_ta)_ta.style.display=(perm('seal_admin')||perm('faultyCapture')||perm('faultyRegister'))?'flex':'none';
+  var _trg=document.getElementById('tileResidual');if(_trg)_trg.style.display=perm('residualGas')?'flex':'none';
   auditLog('Login','Signed in to '+b);
   editUnlocked=false;
   loadWorkingStore();
