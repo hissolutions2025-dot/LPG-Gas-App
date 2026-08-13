@@ -1410,7 +1410,9 @@ function openResidual(){
 }
 function residualSetBranch(b){
   if(role==='Manager' && (findUser(operator).branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
+  if(b===residualBranch)return; // already on this branch - don't wipe an in-progress entry for nothing
   residualBranch=b;applyBranchLock('rgbr-',b);
+  residualResetForm(); // switching branches starts a fresh cylinder entry - same as Faulty capture
 }
 function residualPopulateSize(){
   var sel=document.getElementById('rgSize');if(!sel||sel.options.length)return;
@@ -1421,6 +1423,15 @@ function residualPopulateSize(){
 function residualBrandChanged(){
   var v=document.getElementById('rgBrand').value;
   var w=document.getElementById('rgBrandOtherWrap');if(w)w.style.display=(v==='Other')?'block':'none';
+}
+// Full reset of the "Add a cylinder" form - Brand/Size included, not just Scale/Tare/Note.
+// Called after every successful Add (start the next cylinder from a clean slate) and on
+// every branch switch.
+function residualResetForm(){
+  document.getElementById('rgBrand').value='Afrox';document.getElementById('rgBrandOther').value='';
+  var sizeEl=document.getElementById('rgSize');if(sizeEl&&sizeEl.options.length)sizeEl.selectedIndex=0;
+  document.getElementById('rgScale').value='';document.getElementById('rgTare').value='';document.getElementById('rgNote').value='';
+  residualBrandChanged();residualCalcUpdate();
 }
 function residualCalcUpdate(){
   var sel=document.getElementById('rgSize');var size=sel?sel.value:'';
@@ -1444,8 +1455,7 @@ function residualAdd(){
   // added under one branch from being submitted under whichever branch is selected later.
   residualList.push({Branch:residualBranch||branch,Brand:brand,Size:size,GasType:gasType,CylScale:scale,CylTare:tare,Residual:residual,Note:(document.getElementById('rgNote').value||'').trim()});
   renderResidualList();
-  document.getElementById('rgScale').value='';document.getElementById('rgTare').value='';document.getElementById('rgNote').value='';
-  residualCalcUpdate();
+  residualResetForm();
 }
 function residualRemove(i){
   residualList.splice(i,1);
