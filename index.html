@@ -1276,6 +1276,7 @@ function faultyResetForm(){
   document.getElementById('fcSeal').value='';document.getElementById('fcScale').value='';document.getElementById('fcTare').value='';document.getElementById('fcNote').value='';
   document.getElementById('fcBrand').value='Afrox';document.getElementById('fcBrandOther').value='';
   document.getElementById('fcReason').value='Leaking valve';document.getElementById('fcReasonOther').value='';
+  var sizeEl=document.getElementById('fcSize');if(sizeEl&&sizeEl.options.length)sizeEl.selectedIndex=0;
   faultyBrandChanged();faultyReasonChanged();faultySetState('Full');faultyCalcUpdate();
 }
 // ---- Open register ----
