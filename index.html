@@ -62,7 +62,8 @@
   body[data-view="auditView"] #auditView,
   body[data-view="auditDetailView"] #auditDetailView,
   body[data-view="adminView"] #adminView,
-  body[data-view="residualView"] #residualView{display:block !important;}
+  body[data-view="residualView"] #residualView,
+  body[data-view="suppliersMgmtView"] #suppliersMgmtView{display:block !important;}
   #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(80px);background:var(--ok);color:#fff;padding:14px 22px;border-radius:12px;font-weight:700;font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.25);transition:transform .3s;z-index:70;max-width:90%;text-align:center;}
   #toast.show{transform:translateX(-50%) translateY(0);} #toast.err{background:var(--bad);}
   /* generic capture (grid+popup) */
@@ -236,6 +237,7 @@
       <button class="tile t6" onclick="openHistory()"><div class="ic">&#9776;</div><h3>Count History</h3><p>Review today's captures</p></button>
       <button class="tile t4" id="tileResidual" onclick="openResidual()" style="display:none"><div class="ic">&#127766;</div><h3>Residual Gas</h3><p>Gas left in received cylinders</p></button>
       <button class="tile t1" id="tileUsers" onclick="openUsers()" style="display:none"><div class="ic">&#128100;</div><h3>Manage Users</h3><p>Owner: users, levels &amp; branches</p></button>
+      <button class="tile t3" id="tileSuppliers" onclick="openSuppliersMgmt()" style="display:none"><div class="ic">&#128666;</div><h3>Manage Suppliers</h3><p>Manager/Owner: add, edit, remove</p></button>
       <button class="tile t5" id="tileAudit" onclick="openAudit()" style="display:none"><div class="ic">&#128220;</div><h3>Audit Log</h3><p>Owner only — who did what, when</p></button>
       <button class="tile t2" id="tileAdmin" onclick="openAdmin()" style="display:none"><div class="ic">&#9881;</div><h3>Admin</h3><p>Seal register &amp; suppliers</p></button>
     </div>
@@ -296,6 +298,29 @@
   <button class="exportBtn" style="background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel);margin-top:8px" onclick="goHome()">&larr; Back to menu</button>
 </div></div>
 
+<!-- MANAGE SUPPLIERS (Manager/Owner) -->
+<div id="suppliersMgmtView" class="view"><div class="wrap">
+  <div class="detBanner full" style="margin-bottom:14px"><div class="big">Manage Suppliers</div><div class="small">Add, edit, remove — used by Stock Received</div></div>
+
+  <div class="histSection">
+    <h4>Suppliers</h4>
+    <div id="suppliersMgmtList"><div class="histEmpty" style="text-align:center;padding:16px">Loading…</div></div>
+    <button class="saveBtn" style="background:var(--steel);margin-top:10px" onclick="suppliersMgmtNew()">+ Add supplier</button>
+  </div>
+
+  <div class="histSection" id="suppliersMgmtForm" style="display:none">
+    <h4 id="suppliersMgmtFormTitle">Add supplier</h4>
+    <label class="mLabel">Name</label>
+    <input type="text" class="mField" id="smName" placeholder="Supplier name">
+    <label class="mLabel">Type</label>
+    <select class="mField" id="smType"><option>Main brand</option><option>Redistributor</option><option>Other</option></select>
+    <button class="saveBtn" onclick="suppliersMgmtSave()">Save</button>
+    <button class="sigClear" style="width:100%;margin-top:8px" onclick="suppliersMgmtCancel()">Cancel</button>
+  </div>
+
+  <button class="exportBtn" style="background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel);margin-top:8px" onclick="goHome()">&larr; Back to menu</button>
+</div></div>
+
 
 <!-- ===== COUNT MODULE VIEWS ===== -->
 <div id="countGridView" class="view">
@@ -340,6 +365,10 @@
     <div class="cgRow"><label>Branch</label><div class="cgToggle">
       <button class="cgTg" id="rbr-Helderberg" onclick="rSetBranch('Helderberg')">Helderberg</button>
       <button class="cgTg" id="rbr-Kleinmond" onclick="rSetBranch('Kleinmond')">Kleinmond</button></div></div>
+    <div class="cgRow"><label>Supplier</label><select class="mField" id="rSupplierSelect" style="flex:1;margin:0" onchange="rSupplierChanged()"><option value="">Select…</option></select></div>
+    <div class="cgRow" id="rSupplierOtherRow" style="display:none"><label style="width:auto;flex:none">Other</label><input type="text" class="mField" id="rSupplierOther" style="flex:1;margin:0" placeholder="Supplier name" oninput="rSupplierFieldChanged('other')"></div>
+    <div class="cgRow"><label style="width:auto;flex:none">Delivery note #</label><input type="text" class="mField" id="rDeliveryNote" style="flex:1;margin:0" placeholder="Optional" oninput="rSupplierFieldChanged('deliveryNote')"></div>
+    <div class="cgRow"><label style="width:auto;flex:none">Invoice #</label><input type="text" class="mField" id="rInvoiceNo" style="flex:1;margin:0" placeholder="Optional" oninput="rSupplierFieldChanged('invoiceNo')"></div>
   </div>
   <div class="wrap">
     <div class="ctxbar" id="rCtx" style="margin-bottom:10px;"></div>
@@ -1492,21 +1521,99 @@ function residualSubmit(){
   }).catch(function(){toast('Network error — check your connection',true);});
 }
 
+// ===== MANAGE SUPPLIERS (Manager/Owner) =====
+// Backend-synced supplier list (add/edit/remove) used by Stock Received's "Received from"
+// dropdown. Deliberately separate from the existing local suppliersLoad()/BRANDS list used
+// elsewhere (seal rolls, refill/manifold brand pickers) - that list feeds brand capture,
+// which this feature must not touch.
+var suppliersMgmtList=[], suppliersMgmtEditingOldName=null;
+function openSuppliersMgmt(){
+  if(!perm('manageSuppliers')){toast('You do not have rights for Manage Suppliers',true);return;}
+  document.getElementById('hTitle').textContent='Manage Suppliers';document.getElementById('hSub').textContent='';
+  document.getElementById('backBtn').style.display='block';
+  suppliersMgmtCancel();
+  suppliersMgmtLoad();
+  show('suppliersMgmtView');window.scrollTo(0,0);
+}
+function suppliersMgmtLoad(){
+  var box=document.getElementById('suppliersMgmtList');
+  if(box)box.innerHTML='<div class="histEmpty" style="text-align:center;padding:16px">Loading…</div>';
+  apiPost('suppliersList',{}).then(function(res){
+    if(!res||!res.ok){if(box)box.innerHTML='<div class="histEmpty" style="text-align:center;padding:16px">Could not load suppliers.</div>';return;}
+    suppliersMgmtList=res.suppliers||[];
+    renderSuppliersMgmtList();
+  }).catch(function(){if(box)box.innerHTML='<div class="histEmpty" style="text-align:center;padding:16px">Network error.</div>';});
+}
+function renderSuppliersMgmtList(){
+  var box=document.getElementById('suppliersMgmtList');if(!box)return;
+  if(!suppliersMgmtList.length){box.innerHTML='<div class="histEmpty" style="text-align:center;padding:16px">No suppliers yet.</div>';return;}
+  box.innerHTML=suppliersMgmtList.map(function(s){
+    var safe=s.name.replace(/'/g,"\\'");
+    return '<div class="brandCard"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'+
+      '<div><b style="color:var(--navy);font-size:15px">'+s.name+'</b><div style="font-size:12px;color:var(--muted)">'+(s.type||'')+'</div></div>'+
+      '<div style="display:flex;gap:8px;flex:none">'+
+      '<button class="sigClear" onclick="suppliersMgmtEdit(\''+safe+'\')">Edit</button>'+
+      '<button class="sigClear" style="color:#C0392B;border-color:#C0392B!important" onclick="suppliersMgmtRemove(\''+safe+'\')">Remove</button>'+
+      '</div></div></div>';
+  }).join('');
+}
+function suppliersMgmtNew(){
+  suppliersMgmtEditingOldName=null;
+  document.getElementById('suppliersMgmtFormTitle').textContent='Add supplier';
+  document.getElementById('smName').value='';
+  document.getElementById('smType').value='Main brand';
+  document.getElementById('suppliersMgmtForm').style.display='block';
+}
+function suppliersMgmtEdit(name){
+  var s=suppliersMgmtList.filter(function(x){return x.name===name;})[0];if(!s)return;
+  suppliersMgmtEditingOldName=name;
+  document.getElementById('suppliersMgmtFormTitle').textContent='Edit supplier';
+  document.getElementById('smName').value=s.name;
+  document.getElementById('smType').value=s.type||'Main brand';
+  document.getElementById('suppliersMgmtForm').style.display='block';
+}
+function suppliersMgmtCancel(){
+  var f=document.getElementById('suppliersMgmtForm');if(f)f.style.display='none';
+  suppliersMgmtEditingOldName=null;
+}
+function suppliersMgmtSave(){
+  if(!perm('manageSuppliers')){toast('You do not have rights for Manage Suppliers',true);return;}
+  var name=(document.getElementById('smName').value||'').trim();
+  if(!name){toast('Enter a supplier name',true);return;}
+  var extra={name:name,type:document.getElementById('smType').value};
+  if(suppliersMgmtEditingOldName)extra.oldName=suppliersMgmtEditingOldName;
+  apiPost('suppliersSave',extra).then(function(res){
+    if(!res||!res.ok){toast((res&&res.msg)||'Could not save supplier',true);return;}
+    toast('Supplier saved');
+    suppliersMgmtCancel();
+    suppliersMgmtLoad();
+  }).catch(function(){toast('Network error — check your connection',true);});
+}
+function suppliersMgmtRemove(name){
+  if(!perm('manageSuppliers')){toast('You do not have rights for Manage Suppliers',true);return;}
+  if(!confirm('Remove supplier "'+name+'"? It disappears from the dropdown; existing records keep their value.'))return;
+  apiPost('suppliersRemove',{name:name}).then(function(res){
+    if(!res||!res.ok){toast((res&&res.msg)||'Could not remove supplier',true);return;}
+    toast('Supplier removed');
+    suppliersMgmtLoad();
+  }).catch(function(){toast('Network error — check your connection',true);});
+}
+
 // ===== USER STORE (demo, localStorage) =====
 // user = {name, level:'Owner|Manager|Operator', branches:[...], pw, perms:{...}}
 // Granular permissions. Levels are PRESETS that pre-tick these; Owner can override per user.
-var PERM_KEYS=['view','capture','edit','closeday','history','users','audit','adjust','seal_admin','seal_create','seal_void_open','seal_edit_used','seal_boundary','branch_setup','faultyCapture','faultyRegister','residualGas'];
-var PERM_LABELS={view:'View counts',capture:'Capture counts',edit:'Edit / correct',closeday:'Close day',history:'Open history',users:'Manage users',audit:'View audit log',adjust:'Adjust mismatches',seal_admin:'Seal: open Admin area',seal_create:'Seal: create/edit roll (unused)',seal_void_open:'Seal: void seal (open day)',seal_edit_used:'Seal: edit used roll / void closed day',seal_boundary:'Seal: pump boundary override',branch_setup:'Branch Setup: activate/deactivate sections & items',faultyCapture:'Faulty — capture',faultyRegister:'Faulty — manage register',residualGas:'Residual Gas — capture'};
+var PERM_KEYS=['view','capture','edit','closeday','history','users','audit','adjust','seal_admin','seal_create','seal_void_open','seal_edit_used','seal_boundary','branch_setup','faultyCapture','faultyRegister','residualGas','manageSuppliers'];
+var PERM_LABELS={view:'View counts',capture:'Capture counts',edit:'Edit / correct',closeday:'Close day',history:'Open history',users:'Manage users',audit:'View audit log',adjust:'Adjust mismatches',seal_admin:'Seal: open Admin area',seal_create:'Seal: create/edit roll (unused)',seal_void_open:'Seal: void seal (open day)',seal_edit_used:'Seal: edit used roll / void closed day',seal_boundary:'Seal: pump boundary override',branch_setup:'Branch Setup: activate/deactivate sections & items',faultyCapture:'Faulty — capture',faultyRegister:'Faulty — manage register',residualGas:'Residual Gas — capture',manageSuppliers:'Manage Suppliers (Received)'};
 function permPreset(level){
-  if(level==='Owner')   return {view:1,capture:1,edit:1,closeday:1,history:1,users:1,audit:1,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:1,seal_boundary:1,branch_setup:1,faultyCapture:1,faultyRegister:1,residualGas:1};
-  if(level==='Manager') return {view:1,capture:1,edit:1,closeday:1,history:1,users:0,audit:0,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:0,seal_boundary:0,branch_setup:1,faultyCapture:1,faultyRegister:1,residualGas:1};
-  return                       {view:1,capture:1,edit:1,closeday:0,history:0,users:0,audit:0,adjust:0,seal_admin:0,seal_create:0,seal_void_open:0,seal_edit_used:0,seal_boundary:0,faultyCapture:1,faultyRegister:0,residualGas:1}; // Operator
+  if(level==='Owner')   return {view:1,capture:1,edit:1,closeday:1,history:1,users:1,audit:1,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:1,seal_boundary:1,branch_setup:1,faultyCapture:1,faultyRegister:1,residualGas:1,manageSuppliers:1};
+  if(level==='Manager') return {view:1,capture:1,edit:1,closeday:1,history:1,users:0,audit:0,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:0,seal_boundary:0,branch_setup:1,faultyCapture:1,faultyRegister:1,residualGas:1,manageSuppliers:1};
+  return                       {view:1,capture:1,edit:1,closeday:0,history:0,users:0,audit:0,adjust:0,seal_admin:0,seal_create:0,seal_void_open:0,seal_edit_used:0,seal_boundary:0,faultyCapture:1,faultyRegister:0,residualGas:1,manageSuppliers:0}; // Operator
 }
 function userPerms(u){
   if(!u)return {};
   var base=permPreset(u.level);
   if(u.perms){PERM_KEYS.forEach(function(k){if(u.perms[k]!==undefined)base[k]=u.perms[k]?1:0;});}
-  if(u.level==='Owner'){base.users=1;base.audit=1;base.faultyCapture=1;base.faultyRegister=1;} // Owner can never lock self out of these
+  if(u.level==='Owner'){base.users=1;base.audit=1;base.faultyCapture=1;base.faultyRegister=1;base.manageSuppliers=1;} // Owner can never lock self out of these
   return base;
 }
 var currentPerms={};
@@ -1736,7 +1843,7 @@ function apiPost(action,extra){
 function _nowISO(){return new Date().toISOString();}
 function _who(r){return {Operator:(r._operator||operator||''),Role:(r._role||role||'')};}
 function syncRowsCount(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,CountType:r.countType,State:r.state,Size:r.size,Brand:r.brand,Qty:r.qty,Note:(r.note||''),Adjusted:(r._adjusted?'Y':''),AdjustedBy:(r._adjustedBy||''),OverrideReason:(r.overrideReason||'')};});}
-function syncRowsReceived(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Size:r.size,Brand:r.brand,FullIn:r.fullIn,EmptyOut:r.emptyOut,Note:(r.note||''),OverrideReason:(r.overrideReason||'')};});}
+function syncRowsReceived(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Size:r.size,Brand:r.brand,FullIn:r.fullIn,EmptyOut:r.emptyOut,Note:(r.note||''),OverrideReason:(r.overrideReason||''),Supplier:(r.supplier||''),DeliveryNote:(r.deliveryNote||''),InvoiceNo:(r.invoiceNo||'')};});}
 function syncRowsRefill(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Size:r.size,Brand:r.brand,GasType:(r.gasType||''),Scale:(r.scale!==undefined?r.scale:''),Tare:(r.tare!==undefined?r.tare:''),GasLeft:(r.gasLeft!==undefined?r.gasLeft:''),Pumped:r.pumped,Seal:(r.seal||''),SealFlag:(r._sealOverride||r._sealFlag||''),FlagReason:(r._flagReason||r._sealReason||''),Notes:(r.notes||'')};});}
 function syncRowsPrivate(list,br){return list.map(function(r){var w=_who(r);var viaSupplier=(r.filledBy==='Supplier');return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,CylBrand:(r.cylBrand||''),OtherBrand:(r.otherBrand||''),GasType:(r.gasType||''),Pumped:r.pumped,Customer:(r.customer||''),FilledBy:(r.filledBy||'Us'),FillSupplier:(viaSupplier?(r.fillSupplier||''):''),InvoiceNo:(viaSupplier?(r.invoiceNo||''):''),TotalKgGas:(viaSupplier?(r.totalKgGas||''):'')};});}
 function syncRowsManifold(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Stage:(r.stage||'Opening'),Cylinder:r.cyl,Brand:(r.brand||''),GasType:(r.gasType||''),Scale:r.scale,Tare:r.tare,GasLeft:r.gasLeft,FillCheck:(r._fillCheck||''),Note:(r.note||''),PhotoLink:(r._photoLink||'')};});}
@@ -1905,6 +2012,7 @@ function doLogin(){
   document.getElementById('tileAudit').style.display=perm('audit')?'flex':'none';
   var _ta=document.getElementById('tileAdmin');if(_ta)_ta.style.display=(perm('seal_admin')||perm('faultyCapture')||perm('faultyRegister'))?'flex':'none';
   var _trg=document.getElementById('tileResidual');if(_trg)_trg.style.display=perm('residualGas')?'flex':'none';
+  var _tsp=document.getElementById('tileSuppliers');if(_tsp)_tsp.style.display=perm('manageSuppliers')?'flex':'none';
   auditLog('Login','Signed in to '+b);
   editUnlocked=false;
   loadWorkingStore();
@@ -2404,6 +2512,44 @@ function rBrands(side){return side==='recv'?R_RECVBRANDS[rBranch]:R_ALLBRANDS;}
 function rSideTotal(a){return a.reduce(function(x,l){return x+num(l.qty);},0);}
 function rShow(id){var vs=document.querySelectorAll('.view');for(var i=0;i<vs.length;i++)vs[i].classList.remove('active');document.getElementById(id).classList.add('active');syncHeader(id);}
 
+// ---- Received-from supplier / delivery note / invoice # (one per branch's session,
+// same reasoning as rData - keyed by branch so switching branch never mixes up which
+// delivery's supplier info belongs to which branch's Full In/Empty Out lines) ----
+var rSuppliersList=[], rSupplierState={};
+function rSupplierFor(br){return rSupplierState[br]||(rSupplierState[br]={supplier:'',isOther:false,deliveryNote:'',invoiceNo:''});}
+function rLoadSuppliers(){
+  apiPost('suppliersList',{}).then(function(res){
+    if(res&&res.ok)rSuppliersList=res.suppliers||[];
+    rRenderSupplierSelect();rRestoreSupplierFields();
+  }).catch(function(){});
+}
+function rRenderSupplierSelect(){
+  var sel=document.getElementById('rSupplierSelect');if(!sel)return;
+  sel.innerHTML='<option value="">Select…</option>'+rSuppliersList.map(function(s){return '<option value="'+s.name+'">'+s.name+'</option>';}).join('')+'<option value="__other__">Other…</option>';
+}
+function rSupplierChanged(){
+  var sel=document.getElementById('rSupplierSelect');var isOther=(sel.value==='__other__');
+  document.getElementById('rSupplierOtherRow').style.display=isOther?'flex':'none';
+  var st=rSupplierFor(rBranch);
+  st.isOther=isOther;
+  st.supplier=isOther?(document.getElementById('rSupplierOther').value||''):sel.value;
+}
+function rSupplierFieldChanged(key){
+  var st=rSupplierFor(rBranch);
+  if(key==='other')st.supplier=document.getElementById('rSupplierOther').value;
+  else if(key==='deliveryNote')st.deliveryNote=document.getElementById('rDeliveryNote').value;
+  else if(key==='invoiceNo')st.invoiceNo=document.getElementById('rInvoiceNo').value;
+}
+function rRestoreSupplierFields(){
+  var s=rSupplierFor(rBranch);
+  var sel=document.getElementById('rSupplierSelect');if(!sel)return;
+  sel.value=s.isOther?'__other__':(s.supplier||'');
+  document.getElementById('rSupplierOtherRow').style.display=s.isOther?'flex':'none';
+  document.getElementById('rSupplierOther').value=s.isOther?(s.supplier||''):'';
+  document.getElementById('rDeliveryNote').value=s.deliveryNote||'';
+  document.getElementById('rInvoiceNo').value=s.invoiceNo||'';
+}
+
 function openReceived(){
   if(!canUseSection(branch||'Helderberg','received')){toast(sectionActive(branch||'Helderberg','received')?'Stock Received is not enabled for your user':'Stock Received is deactivated for '+(branch||'this branch'),true);return;}
   if(!requireEdit())return;
@@ -2412,11 +2558,11 @@ function openReceived(){
   document.getElementById('hTitle').textContent='Stock Received';
   document.getElementById('hSub').textContent='Full received vs empty returned';
   document.getElementById('backBtn').style.display='block';
-  rShow('recvGridView');rRenderGrid();window.scrollTo(0,0);
+  rShow('recvGridView');rRenderGrid();rLoadSuppliers();window.scrollTo(0,0);
 }
 function rSetBranch(x){
   if(role==='Operator' && x!==branch){toast('Locked to '+branch,true);return;}
-  rBranch=x;applyBranchLock('rbr-',x);rRenderGrid();
+  rBranch=x;applyBranchLock('rbr-',x);rRenderGrid();rRestoreSupplierFields();
 }
 
 function rCellHtml(sz,side){
@@ -2516,14 +2662,19 @@ function rCommit(){
     if(!r){toast('Enter a reason for '+m.size,true);return;}
     rOverrides[m.size]=r;
   }
+  var sup=rSupplierFor(rBranch);
+  // Supplier is only meaningful when something was actually received (full in) this session -
+  // an empty-out-only return isn't "received from" anyone.
+  var hasFullIn=R_SIZES.some(function(sz){var c=rData[rBranch]&&rData[rBranch][sz];return c&&rSideTotal(c.recv)>0;});
+  if(hasFullIn && !sup.supplier){toast('Select (or enter) the supplier this delivery is from',true);return;}
   // flush into store.received: one row per brand per side, each carries its size's reason
   store.received=[];
   var b=rBkt();
   R_SIZES.forEach(function(sz){
     if(!b[sz])return;
     var reason=rOverrides[sz]||'';
-    b[sz].recv.forEach(function(l){if(num(l.qty)>0)store.received.push({size:sz,brand:l.brand,fullIn:num(l.qty),emptyOut:0,note:l.note||'',overrideReason:reason,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
-    b[sz].ret.forEach(function(l){if(num(l.qty)>0)store.received.push({size:sz,brand:l.brand,fullIn:0,emptyOut:num(l.qty),note:l.note||'',overrideReason:reason,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
+    b[sz].recv.forEach(function(l){if(num(l.qty)>0)store.received.push({size:sz,brand:l.brand,fullIn:num(l.qty),emptyOut:0,note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
+    b[sz].ret.forEach(function(l){if(num(l.qty)>0)store.received.push({size:sz,brand:l.brand,fullIn:0,emptyOut:num(l.qty),note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
   });
   if(store.received.length===0){toast('Nothing to commit',true);return;}
   syncPush('Received',syncRowsReceived(store.received.filter(function(r){return r.branch===rBranch;}),rBranch));
