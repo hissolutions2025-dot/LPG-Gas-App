@@ -62,8 +62,7 @@
   body[data-view="auditView"] #auditView,
   body[data-view="auditDetailView"] #auditDetailView,
   body[data-view="adminView"] #adminView,
-  body[data-view="residualView"] #residualView,
-  body[data-view="suppliersMgmtView"] #suppliersMgmtView{display:block !important;}
+  body[data-view="residualView"] #residualView{display:block !important;}
   #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(80px);background:var(--ok);color:#fff;padding:14px 22px;border-radius:12px;font-weight:700;font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.25);transition:transform .3s;z-index:70;max-width:90%;text-align:center;}
   #toast.show{transform:translateX(-50%) translateY(0);} #toast.err{background:var(--bad);}
   /* generic capture (grid+popup) */
@@ -237,7 +236,6 @@
       <button class="tile t6" onclick="openHistory()"><div class="ic">&#9776;</div><h3>Count History</h3><p>Review today's captures</p></button>
       <button class="tile t4" id="tileResidual" onclick="openResidual()" style="display:none"><div class="ic">&#127766;</div><h3>Residual Gas</h3><p>Gas left in received cylinders</p></button>
       <button class="tile t1" id="tileUsers" onclick="openUsers()" style="display:none"><div class="ic">&#128100;</div><h3>Manage Users</h3><p>Owner: users, levels &amp; branches</p></button>
-      <button class="tile t3" id="tileSuppliers" onclick="openSuppliersMgmt()" style="display:none"><div class="ic">&#128666;</div><h3>Manage Suppliers</h3><p>Manager/Owner: add, edit, remove</p></button>
       <button class="tile t5" id="tileAudit" onclick="openAudit()" style="display:none"><div class="ic">&#128220;</div><h3>Audit Log</h3><p>Owner only — who did what, when</p></button>
       <button class="tile t2" id="tileAdmin" onclick="openAdmin()" style="display:none"><div class="ic">&#9881;</div><h3>Admin</h3><p>Seal register &amp; suppliers</p></button>
     </div>
@@ -293,29 +291,6 @@
     <div id="residualListBox"><div class="histEmpty" style="text-align:center;padding:16px">No cylinders added yet.</div></div>
     <div id="residualTotal" style="font-size:12px;color:var(--navy);font-weight:700;margin:8px 0">Total residual: 0.0kg (0 cylinders)</div>
     <button class="saveBtn" id="residualSubmitBtn" onclick="residualSubmit()">Submit residual gas (0)</button>
-  </div>
-
-  <button class="exportBtn" style="background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel);margin-top:8px" onclick="goHome()">&larr; Back to menu</button>
-</div></div>
-
-<!-- MANAGE SUPPLIERS (Manager/Owner) -->
-<div id="suppliersMgmtView" class="view"><div class="wrap">
-  <div class="detBanner full" style="margin-bottom:14px"><div class="big">Manage Suppliers</div><div class="small">Add, edit, remove — used by Stock Received</div></div>
-
-  <div class="histSection">
-    <h4>Suppliers</h4>
-    <div id="suppliersMgmtList"><div class="histEmpty" style="text-align:center;padding:16px">Loading…</div></div>
-    <button class="saveBtn" style="background:var(--steel);margin-top:10px" onclick="suppliersMgmtNew()">+ Add supplier</button>
-  </div>
-
-  <div class="histSection" id="suppliersMgmtForm" style="display:none">
-    <h4 id="suppliersMgmtFormTitle">Add supplier</h4>
-    <label class="mLabel">Name</label>
-    <input type="text" class="mField" id="smName" placeholder="Supplier name">
-    <label class="mLabel">Type</label>
-    <select class="mField" id="smType"><option>Main brand</option><option>Redistributor</option><option>Other</option></select>
-    <button class="saveBtn" onclick="suppliersMgmtSave()">Save</button>
-    <button class="sigClear" style="width:100%;margin-top:8px" onclick="suppliersMgmtCancel()">Cancel</button>
   </div>
 
   <button class="exportBtn" style="background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel);margin-top:8px" onclick="goHome()">&larr; Back to menu</button>
@@ -544,10 +519,11 @@
   <div class="detBanner full" style="margin-bottom:14px"><div class="big">Admin</div><div class="small">Seal register &amp; suppliers</div></div>
   <div class="htabs" style="display:flex;gap:8px;margin-bottom:14px">
     <button class="htab on" id="atab-seals" onclick="adminTab('seals')">Seal Register</button>
-    <button class="htab" id="atab-suppliers" onclick="adminTab('suppliers')">Suppliers</button>
+    <button class="htab" id="atab-suppliers" onclick="adminTab('suppliers')">Brands</button>
     <button class="htab" id="atab-clear" onclick="adminTab('clear')">Clear Stock Take</button>
     <button class="htab" id="atab-bsetup" onclick="adminTab('bsetup')">Branch Setup</button>
     <button class="htab" id="atab-faulty" onclick="adminTab('faulty')">Faulty Cylinders</button>
+    <button class="htab" id="atab-suppliersmgmt" onclick="adminTab('suppliersmgmt')">Manage Suppliers</button>
   </div>
 
   <!-- SEAL REGISTER PANE -->
@@ -592,10 +568,10 @@
 
   <!-- SUPPLIERS PANE -->
   <div id="adminSuppliers" style="display:none">
-    <div class="histSection"><h4>Suppliers / brands</h4>
+    <div class="histSection"><h4>Brands</h4>
       <div style="font-size:12px;color:var(--muted);margin-bottom:10px">These feed the brand pickers across the app. "Other" is always available.</div>
       <div class="adminRow">
-        <input type="text" class="mField grow" id="newSupplier" placeholder="New supplier / brand name">
+        <input type="text" class="mField grow" id="newSupplier" placeholder="New brand name">
         <button class="saveBtn" style="width:auto;padding:10px 16px;margin:0" onclick="addSupplier()">Add</button>
       </div>
       <div id="supplierList" style="margin-top:10px"></div>
@@ -700,6 +676,24 @@
         <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Set <b>Not Replaced</b> to book the gas as an actual loss. Replaced/Not Replaced closes the row.</div>
         <div id="faultyRegisterList"><div class="histEmpty" style="text-align:center;padding:20px">Loading…</div></div>
       </div>
+    </div>
+  </div>
+
+  <!-- MANAGE SUPPLIERS (Manager/Owner) -->
+  <div id="adminSuppliersMgmt" style="display:none">
+    <div class="histSection">
+      <h4>Suppliers</h4>
+      <div id="suppliersMgmtList"><div class="histEmpty" style="text-align:center;padding:16px">Loading…</div></div>
+      <button class="saveBtn" style="background:var(--steel);margin-top:10px" onclick="suppliersMgmtNew()">+ Add supplier</button>
+    </div>
+    <div class="histSection" id="suppliersMgmtForm" style="display:none">
+      <h4 id="suppliersMgmtFormTitle">Add supplier</h4>
+      <label class="mLabel">Name</label>
+      <input type="text" class="mField" id="smName" placeholder="Supplier name">
+      <label class="mLabel">Type</label>
+      <select class="mField" id="smType"><option>Main brand</option><option>Redistributor</option><option>Other</option></select>
+      <button class="saveBtn" onclick="suppliersMgmtSave()">Save</button>
+      <button class="sigClear" style="width:100%;margin-top:8px" onclick="suppliersMgmtCancel()">Cancel</button>
     </div>
   </div>
 
@@ -926,7 +920,7 @@ function suppliersAddPersist(name){
   return true;
 }
 function openAdmin(){
-  if(!(perm('seal_admin')||perm('faultyCapture')||perm('faultyRegister'))){toast('You do not have rights to open Admin',true);return;}
+  if(!(perm('seal_admin')||perm('faultyCapture')||perm('faultyRegister')||perm('manageSuppliers'))){toast('You do not have rights to open Admin',true);return;}
   document.getElementById('hTitle').textContent='Admin';document.getElementById('hSub').textContent='';
   document.getElementById('backBtn').style.display='block';
   adminBranch=branch||'Helderberg';
@@ -935,11 +929,11 @@ function openAdmin(){
   show('adminView');window.scrollTo(0,0);
 }
 var _adminUnlocked={}; // per Admin session: which tabs unlocked
-var ADMIN_TAB_PERM={seals:'seal_admin',suppliers:'seal_admin',clear:'seal_edit_used',bsetup:'branch_setup'};
-var ADMIN_TAB_NAME={seals:'Seal Register',suppliers:'Suppliers',clear:'Clear Stock Take',bsetup:'Branch Setup',faulty:'Faulty Cylinders'};
+var ADMIN_TAB_PERM={seals:'seal_admin',suppliers:'seal_admin',clear:'seal_edit_used',bsetup:'branch_setup',suppliersmgmt:'manageSuppliers'};
+var ADMIN_TAB_NAME={seals:'Seal Register',suppliers:'Brands',clear:'Clear Stock Take',bsetup:'Branch Setup',faulty:'Faulty Cylinders',suppliersmgmt:'Manage Suppliers'};
 function adminShowTabsOnly(){
-  ['adminSeals','adminSuppliers','adminClear','adminBsetup','adminFaulty'].forEach(function(id){var e=document.getElementById(id);if(e)e.style.display='none';});
-  ['atab-seals','atab-suppliers','atab-clear','atab-bsetup','atab-faulty'].forEach(function(id){var e=document.getElementById(id);if(e)e.classList.remove('on');});
+  ['adminSeals','adminSuppliers','adminClear','adminBsetup','adminFaulty','adminSuppliersMgmt'].forEach(function(id){var e=document.getElementById(id);if(e)e.style.display='none';});
+  ['atab-seals','atab-suppliers','atab-clear','atab-bsetup','atab-faulty','atab-suppliersmgmt'].forEach(function(id){var e=document.getElementById(id);if(e)e.classList.remove('on');});
   _adminUnlocked={}; // reset on each Admin entry
 }
 function adminTab(t){
@@ -966,16 +960,19 @@ function _adminTabShow(t){
   var _ac=document.getElementById('adminClear');if(_ac)_ac.style.display=(t==='clear')?'block':'none';
   var _abs=document.getElementById('adminBsetup');if(_abs)_abs.style.display=(t==='bsetup')?'block':'none';
   var _af=document.getElementById('adminFaulty');if(_af)_af.style.display=(t==='faulty')?'block':'none';
+  var _asm=document.getElementById('adminSuppliersMgmt');if(_asm)_asm.style.display=(t==='suppliersmgmt')?'block':'none';
   document.getElementById('atab-seals').classList.toggle('on',t==='seals');
   document.getElementById('atab-suppliers').classList.toggle('on',t==='suppliers');
   var _tc=document.getElementById('atab-clear');if(_tc)_tc.classList.toggle('on',t==='clear');
   var _tbs=document.getElementById('atab-bsetup');if(_tbs)_tbs.classList.toggle('on',t==='bsetup');
   var _tf=document.getElementById('atab-faulty');if(_tf)_tf.classList.toggle('on',t==='faulty');
+  var _tsm=document.getElementById('atab-suppliersmgmt');if(_tsm)_tsm.classList.toggle('on',t==='suppliersmgmt');
   if(t==='bsetup')renderBsetup();
   if(t==='clear'){var d=document.getElementById('clrDate');if(d&&!d.value)d.value=today;}
   if(t==='seals'){fillBrandPicker();renderRolls();}
   if(t==='suppliers')renderSuppliers();
   if(t==='faulty')faultyTabInit();
+  if(t==='suppliersmgmt'){suppliersMgmtCancel();suppliersMgmtLoad();}
 }
 function adminSetBranch(b){
   if(role==='Manager' && (findUser(operator).branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
@@ -1432,7 +1429,7 @@ function openResidual(){
   document.getElementById('hSub').textContent='Gas left in received cylinders';
   document.getElementById('backBtn').style.display='block';
   residualPopulateSize();
-  residualBrandChanged();
+  residualPopulateBrand();
   residualCalcUpdate();
   renderResidualList();
   show('residualView');window.scrollTo(0,0);
@@ -1453,11 +1450,21 @@ function residualBrandChanged(){
   var v=document.getElementById('rgBrand').value;
   var w=document.getElementById('rgBrandOtherWrap');if(w)w.style.display=(v==='Other')?'block':'none';
 }
+// Brand options are branch-dependent (Helderberg doesn't deal with Oryx).
+var RESIDUAL_BRANDS_BY_BRANCH={Helderberg:['Afrox','Other'],Kleinmond:['Afrox','Oryx','Other']};
+function residualPopulateBrand(){
+  var sel=document.getElementById('rgBrand');if(!sel)return;
+  var opts=RESIDUAL_BRANDS_BY_BRANCH[residualBranch]||['Afrox','Oryx','Other'];
+  sel.innerHTML=opts.map(function(o){return '<option value="'+o+'">'+o+'</option>';}).join('');
+  sel.value=opts[0]; // reset-to-default, same as Size's selectedIndex=0
+  residualBrandChanged();
+}
 // Full reset of the "Add a cylinder" form - Brand/Size included, not just Scale/Tare/Note.
 // Called after every successful Add (start the next cylinder from a clean slate) and on
 // every branch switch.
 function residualResetForm(){
-  document.getElementById('rgBrand').value='Afrox';document.getElementById('rgBrandOther').value='';
+  residualPopulateBrand(); // also rebuilds Brand's options for the (possibly new) branch
+  document.getElementById('rgBrandOther').value='';
   var sizeEl=document.getElementById('rgSize');if(sizeEl&&sizeEl.options.length)sizeEl.selectedIndex=0;
   document.getElementById('rgScale').value='';document.getElementById('rgTare').value='';document.getElementById('rgNote').value='';
   residualBrandChanged();residualCalcUpdate();
@@ -1527,14 +1534,6 @@ function residualSubmit(){
 // elsewhere (seal rolls, refill/manifold brand pickers) - that list feeds brand capture,
 // which this feature must not touch.
 var suppliersMgmtList=[], suppliersMgmtEditingOldName=null;
-function openSuppliersMgmt(){
-  if(!perm('manageSuppliers')){toast('You do not have rights for Manage Suppliers',true);return;}
-  document.getElementById('hTitle').textContent='Manage Suppliers';document.getElementById('hSub').textContent='';
-  document.getElementById('backBtn').style.display='block';
-  suppliersMgmtCancel();
-  suppliersMgmtLoad();
-  show('suppliersMgmtView');window.scrollTo(0,0);
-}
 function suppliersMgmtLoad(){
   var box=document.getElementById('suppliersMgmtList');
   if(box)box.innerHTML='<div class="histEmpty" style="text-align:center;padding:16px">Loading…</div>';
@@ -1845,7 +1844,7 @@ function _who(r){return {Operator:(r._operator||operator||''),Role:(r._role||rol
 function syncRowsCount(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,CountType:r.countType,State:r.state,Size:r.size,Brand:r.brand,Qty:r.qty,Note:(r.note||''),Adjusted:(r._adjusted?'Y':''),AdjustedBy:(r._adjustedBy||''),OverrideReason:(r.overrideReason||'')};});}
 function syncRowsReceived(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Size:r.size,Brand:r.brand,FullIn:r.fullIn,EmptyOut:r.emptyOut,Note:(r.note||''),OverrideReason:(r.overrideReason||''),Supplier:(r.supplier||''),DeliveryNote:(r.deliveryNote||''),InvoiceNo:(r.invoiceNo||'')};});}
 function syncRowsRefill(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Size:r.size,Brand:r.brand,GasType:(r.gasType||''),Scale:(r.scale!==undefined?r.scale:''),Tare:(r.tare!==undefined?r.tare:''),GasLeft:(r.gasLeft!==undefined?r.gasLeft:''),Pumped:r.pumped,Seal:(r.seal||''),SealFlag:(r._sealOverride||r._sealFlag||''),FlagReason:(r._flagReason||r._sealReason||''),Notes:(r.notes||'')};});}
-function syncRowsPrivate(list,br){return list.map(function(r){var w=_who(r);var viaSupplier=(r.filledBy==='Supplier');return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,CylBrand:(r.cylBrand||''),OtherBrand:(r.otherBrand||''),GasType:(r.gasType||''),Pumped:r.pumped,Customer:(r.customer||''),FilledBy:(r.filledBy||'Us'),FillSupplier:(viaSupplier?(r.fillSupplier||''):''),InvoiceNo:(viaSupplier?(r.invoiceNo||''):''),TotalKgGas:(viaSupplier?(r.totalKgGas||''):'')};});}
+function syncRowsPrivate(list,br){return list.map(function(r){var w=_who(r);var viaSupplier=(r.filledBy==='Supplier');return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,CylBrand:(r.cylBrand||''),OtherBrand:(r.otherBrand||''),GasType:(r.gasType||''),Pumped:r.pumped,Customer:(r.customer||''),FilledBy:(r.filledBy||'Us'),FillSupplier:(viaSupplier?privateSupplierName(r):''),InvoiceNo:(viaSupplier?(r.invoiceNo||''):''),TotalKgGas:(viaSupplier?(r.totalKgGas||''):'')};});}
 function syncRowsManifold(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Stage:(r.stage||'Opening'),Cylinder:r.cyl,Brand:(r.brand||''),GasType:(r.gasType||''),Scale:r.scale,Tare:r.tare,GasLeft:r.gasLeft,FillCheck:(r._fillCheck||''),Note:(r.note||''),PhotoLink:(r._photoLink||'')};});}
 // ----- Audit report (Owner only, password-gated) -----
 var auditSelDate=null;
@@ -2010,9 +2009,8 @@ function doLogin(){
   // owner sees Manage Users tile
   document.getElementById('tileUsers').style.display=perm('users')?'flex':'none';
   document.getElementById('tileAudit').style.display=perm('audit')?'flex':'none';
-  var _ta=document.getElementById('tileAdmin');if(_ta)_ta.style.display=(perm('seal_admin')||perm('faultyCapture')||perm('faultyRegister'))?'flex':'none';
+  var _ta=document.getElementById('tileAdmin');if(_ta)_ta.style.display=(perm('seal_admin')||perm('faultyCapture')||perm('faultyRegister')||perm('manageSuppliers'))?'flex':'none';
   var _trg=document.getElementById('tileResidual');if(_trg)_trg.style.display=perm('residualGas')?'flex':'none';
-  var _tsp=document.getElementById('tileSuppliers');if(_tsp)_tsp.style.display=perm('manageSuppliers')?'flex':'none';
   auditLog('Login','Signed in to '+b);
   editUnlocked=false;
   loadWorkingStore();
@@ -2517,6 +2515,10 @@ function rShow(id){var vs=document.querySelectorAll('.view');for(var i=0;i<vs.le
 // delivery's supplier info belongs to which branch's Full In/Empty Out lines) ----
 var rSuppliersList=[], rSupplierState={};
 function rSupplierFor(br){return rSupplierState[br]||(rSupplierState[br]={supplier:'',isOther:false,deliveryNote:'',invoiceNo:''});}
+// Supplier + delivery note # + invoice # are all compulsory before any capturing can happen
+// for this branch's session (per explicit requirement - previously only supplier was required,
+// and only when a Full In line already existed; now all three gate entry itself).
+function rSupplierComplete(br){var s=rSupplierFor(br);return !!(s.supplier && s.deliveryNote && s.invoiceNo);}
 function rLoadSuppliers(){
   apiPost('suppliersList',{}).then(function(res){
     if(res&&res.ok)rSuppliersList=res.suppliers||[];
@@ -2590,6 +2592,7 @@ function rRenderGrid(){
 }
 function rOpenDetail(sz,side){
   if(!canUseItem(rBranch,'received',sz)){toast(sz+' is deactivated for this branch/user',true);return;}
+  if(!rSupplierComplete(rBranch)){toast('Select the supplier, delivery note # and invoice # first',true);return;}
   rDet={size:sz,side:side};var c=rCell(sz);if(c[side].length===0)c[side].push({brand:rBrands(side)[0],qty:''});
   document.getElementById('hTitle').textContent=sz+' — '+(side==='recv'?'Full received':'Empty returned');
   document.getElementById('hSub').textContent=rBranch;
@@ -2663,10 +2666,9 @@ function rCommit(){
     rOverrides[m.size]=r;
   }
   var sup=rSupplierFor(rBranch);
-  // Supplier is only meaningful when something was actually received (full in) this session -
-  // an empty-out-only return isn't "received from" anyone.
-  var hasFullIn=R_SIZES.some(function(sz){var c=rData[rBranch]&&rData[rBranch][sz];return c&&rSideTotal(c.recv)>0;});
-  if(hasFullIn && !sup.supplier){toast('Select (or enter) the supplier this delivery is from',true);return;}
+  // Compulsory: supplier + delivery note # + invoice # (rOpenDetail already blocks reaching
+  // this point without them, but re-check here too in case of a resumed/older draft).
+  if(!rSupplierComplete(rBranch)){toast('Select the supplier, delivery note # and invoice # first',true);return;}
   // flush into store.received: one row per brand per side, each carries its size's reason
   store.received=[];
   var b=rBkt();
@@ -2698,15 +2700,16 @@ function rCommit(){
 const CAP={
   private:{title:'Private Refill',hint:"Customer's own cylinder, sold by weight. Enter each refill.",grid:['Private Refill'],
     header:[], gate:[], multi:true,
-    popupFields:[{k:'cylBrand',label:'Cylinder brand',type:'select',opts:['Cadac','Safegas','Alva','Other']},
+    popupFields:[{k:'filledBy',label:'Filled by',type:'tabs',opts:['Us','Supplier'],default:'Us'},
+      {k:'fillSupplier',label:'Supplier / redistributor',type:'select',opts:function(){return privateSuppliersList.map(function(s){return s.name;}).concat(['Other']);},showIf:{k:'filledBy',eq:'Supplier'}},
+      {k:'fillSupplierOther',label:'Other supplier name',type:'text',showIf:[{k:'filledBy',eq:'Supplier'},{k:'fillSupplier',eq:'Other'}]},
+      {k:'invoiceNo',label:'Invoice #',type:'text',showIf:{k:'filledBy',eq:'Supplier'}},
+      {k:'totalKgGas',label:'Total kg gas',type:'number',showIf:{k:'filledBy',eq:'Supplier'}},
+      {k:'cylBrand',label:'Cylinder brand',type:'select',opts:['Cadac','Safegas','Alva','Other']},
       {k:'otherBrand',label:'Other brand name',type:'text',showIf:{k:'cylBrand',eq:'Other'}},
       {k:'gasType',label:'Gas type',type:'select',opts:['LPG','Propane']},
       {k:'pumped',label:'Gas pumped (kg)',type:'number'},
-      {k:'customer',label:'Customer name / notes',type:'text'},
-      {k:'filledBy',label:'Filled by',type:'select',opts:['Us','Supplier'],default:'Us'},
-      {k:'fillSupplier',label:'Supplier / redistributor',type:'text',showIf:{k:'filledBy',eq:'Supplier'}},
-      {k:'invoiceNo',label:'Invoice #',type:'text',showIf:{k:'filledBy',eq:'Supplier'}},
-      {k:'totalKgGas',label:'Total kg gas',type:'number',showIf:{k:'filledBy',eq:'Supplier'}}] },
+      {k:'customer',label:'Customer name / notes',type:'text'}] },
   refill:{title:'Refill',hint:'Tap a size, weigh the cylinder — gas pumped is calculated.',grid:FILLSIZES,
     header:[], gate:[], multi:true,
     popupFields:[{k:'brand',label:'Brand',type:'select',opts:BRANDS},{k:'gasType',label:'Gas type',type:'gasType'},
@@ -2763,12 +2766,30 @@ function openCap(type){
   document.getElementById('capHint').textContent=c.hint;
   buildHeader(c);
   renderGrid();
+  if(type==='private')loadPrivateSuppliers(); // populate the Supplier/redistributor dropdown
   show('capView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);
 }
+// Same backend-synced list Manage Suppliers/Stock Received use - kept as its own module var
+// (not shared state with rSuppliersList) so this feature stays self-contained.
+var privateSuppliersList=[];
+function loadPrivateSuppliers(){
+  apiPost('suppliersList',{}).then(function(res){
+    if(res&&res.ok)privateSuppliersList=res.suppliers||[];
+    // The Supplier/redistributor dropdown may have already been built (from the empty list)
+    // if a popup opened before this fetch finished - refresh it in place if so, preserving
+    // whatever's currently selected. No-op if no popup is open right now.
+    var sel=document.getElementById('pf-fillSupplier');if(!sel)return;
+    var cur=sel.value;
+    var opts=privateSuppliersList.map(function(s){return s.name;}).concat(['Other']);
+    sel.innerHTML='<option value="">Select…</option>'+opts.map(function(o){return '<option'+(o===cur?' selected':'')+'>'+o+'</option>';}).join('');
+  }).catch(function(){});
+}
+function privateSupplierName(r){return (r.fillSupplier==='Other')?(r.fillSupplierOther||''):(r.fillSupplier||'');}
 function capSetBranch(x){
   if(role==='Operator' && x!==branch){toast('You are locked to '+branch,true);return;}
   capBranch=x;applyBranchLock('capbr-',x);
   document.getElementById('hSub').textContent=capBranch;
+  renderGrid(); // grid must re-render on the new branch, not keep showing the old branch's stale state
 }
 function buildHeader(c){
   var box=document.getElementById('capHeadControls');var html='';
@@ -2822,7 +2843,11 @@ function renderGrid(){
   var bh=document.getElementById('sealBannerSlot'); if(bh)bh.innerHTML=sealBannerHTML();
   var _secKey=capType; // refill/private/manifold map directly
   document.getElementById('capGrid').innerHTML=c.grid.map(function(item){
-    var lines=bucket[item]||[];var done=lines.length>0;
+    // Show only THIS branch's lines - the bucket itself can hold lines from more than one
+    // branch (switched mid-capture without reviewing/committing), so an unfiltered read here
+    // would show another branch's already-added item as "done" for the current branch.
+    var lines=(bucket[item]||[]).filter(function(l){return (l._addedBranch||capBranch)===capBranch;});
+    var done=lines.length>0;
     var act=canUseItem(branch||'Helderberg',_secKey,item);
     if(!act){
       return '<button class="csize" style="background:#EDEDED;color:#B0B0B0;opacity:.7;cursor:not-allowed" onclick="toast(\''+item+' is deactivated for this branch/user\',true)"><span class="sz" style="color:#B0B0B0">'+item+'</span><span class="det" style="font-size:10px">—</span></button>';
@@ -2843,7 +2868,7 @@ function capSummary(c,lines){
     }
     return lines.map(function(l){return '<span class="bl">✓</span>';}).join('');
   }
-  if(capType==='private')return lines.map(function(l){return '<span class="bl">'+(l.cylBrand||'')+' '+l.gasType+' · '+(+l.pumped).toFixed(2)+'kg'+(l.customer?' · '+l.customer:'')+(l.filledBy==='Supplier'?' · via supplier':'')+'</span>';}).join('');
+  if(capType==='private')return lines.map(function(l){return '<span class="bl">'+(l.cylBrand||'')+' '+l.gasType+' · '+(+l.pumped).toFixed(2)+'kg'+(l.customer?' · '+l.customer:'')+(l.filledBy==='Supplier'?' · via supplier':'')+'</span>';}).join(''); // grid tile stays compact - full name shown in the popup line list below
   if(capType==='received')return lines.map(function(l){
     var mm=(num(l.fullIn)!==num(l.emptyOut));
     return '<span class="bl" style="'+(mm?'color:#C0392B':'')+'">'+l.brand+': '+num(l.fullIn)+'F / '+num(l.emptyOut)+'E'+(mm?' !':'')+'</span>';
@@ -2865,11 +2890,20 @@ function openModal(item){
 function buildPopupForm(c){
   var box=document.getElementById('mForm');var html='';
   c.popupFields.forEach(function(f){
-    var hideAttr=f.showIf?' data-showif="'+f.showIf.k+'" data-eq="'+f.showIf.eq+'" style="display:none"':'';
+    var hideAttr=f.showIf?' style="display:none"':'';
     html+='<div id="pfwrap-'+f.k+'"'+hideAttr+'>';
+    if(f.type==='tabs'){
+      // Full-width segmented control (same look as branch/count toggles elsewhere) instead of
+      // a label+field pair - the field's own label doubles as the section heading.
+      html+='<label class="mLabel">'+f.label+'</label>';
+      html+='<input type="hidden" id="pf-'+f.k+'" value="'+(f.default!==undefined?f.default:f.opts[0])+'">';
+      html+='<div class="cgToggle" style="margin-bottom:10px">'+f.opts.map(function(o){return '<button type="button" class="cgTg'+(o===(f.default!==undefined?f.default:f.opts[0])?' on':'')+'" onclick="popSetTabField(\''+f.k+'\',\''+o+'\')">'+o+'</button>';}).join('')+'</div>';
+      html+='</div>';
+      return;
+    }
     html+='<label class="mLabel">'+f.label+(f.opt?'':(f.type==='auto'?'':' <span style="color:#C0392B">*</span>'))+'</label>';
     if(f.type==='auto')html+='<input class="mField auto" id="pf-'+f.k+'" readonly value="—">';
-    else if(f.type==='select')html+='<select class="mField" id="pf-'+f.k+'" onchange="popCalc()"><option value="">Select…</option>'+f.opts.map(function(o){return '<option'+(f.default!==undefined&&o===f.default?' selected':'')+'>'+o+'</option>';}).join('')+'</select>';
+    else if(f.type==='select'){var _opts=(typeof f.opts==='function')?f.opts():f.opts; html+='<select class="mField" id="pf-'+f.k+'" onchange="popCalc()"><option value="">Select…</option>'+_opts.map(function(o){return '<option'+(f.default!==undefined&&o===f.default?' selected':'')+'>'+o+'</option>';}).join('')+'</select>';}
     else if(f.type==='gasType')html+='<select class="mField" id="pf-'+f.k+'" onchange="popCalc()"><option value="">Select…</option></select><div class="mNote" id="pf-gasNote"></div>';
     else if(f.type==='number')html+='<input class="mField" type="number" inputmode="decimal" step="any" id="pf-'+f.k+'" oninput="popCalc()" onwheel="this.blur()">';
     else if(f.type==='text')html+='<input class="mField" type="text" id="pf-'+f.k+'">';
@@ -2880,6 +2914,13 @@ function buildPopupForm(c){
   popCalc();
 }
 function popCollect(){var c=CAP[capType];var d={};c.popupFields.forEach(function(f){if(f.type==='photo'){d[f.k]=(popPhoto[f.k]||[]).slice();return;}var el=document.getElementById('pf-'+f.k);if(el)d[f.k]=el.value;});return d;}
+function popSetTabField(key,val){
+  var el=document.getElementById('pf-'+key);if(!el)return;
+  el.value=val;
+  var wrap=document.getElementById('pfwrap-'+key);
+  if(wrap)[].slice.call(wrap.querySelectorAll('.cgTg')).forEach(function(b){b.classList.toggle('on',b.textContent===val);});
+  popCalc();
+}
 var popPhoto={};
 function onPhotoPick(input,key){
   var f=input.files&&input.files[0];if(!f){return;}
@@ -2909,7 +2950,10 @@ function popCalc(){
   c.popupFields.forEach(function(f){
     if(!f.showIf)return;
     var wrap=document.getElementById('pfwrap-'+f.k);if(!wrap)return;
-    wrap.style.display=(d[f.showIf.k]===f.showIf.eq)?'block':'none';
+    // showIf can be a single {k,eq} or an array of them (ALL must match) - e.g. Private's
+    // "other supplier name" box needs both filledBy==='Supplier' AND fillSupplier==='Other'.
+    var conds=Array.isArray(f.showIf)?f.showIf:[f.showIf];
+    wrap.style.display=conds.every(function(cond){return d[cond.k]===cond.eq;})?'block':'none';
   });
   var gt=document.getElementById('pf-gasType');var gnote=document.getElementById('pf-gasNote');
   if(gt && gnote){var isProp=(modalItem||'').indexOf('Prop')>=0;var cur=gt.value;var opts=isProp?['Propane']:['LPG','Propane'];
@@ -2922,13 +2966,19 @@ function popCalc(){
   });
 }
 function renderModalLines(){
-  var box=document.getElementById('mLines');var lines=dataBucket()[modalItem]||[];
+  var box=document.getElementById('mLines');
+  // Keep each line's REAL index into the raw bucket (removeLine(i) splices the raw bucket by
+  // that index) while only ever displaying/counting the current branch's own lines - same
+  // reasoning as renderGrid() above.
+  var raw=dataBucket()[modalItem]||[];
+  var lines=raw.map(function(l,i){return {l:l,i:i};}).filter(function(p){return (p.l._addedBranch||capBranch)===capBranch;});
   if(lines.length===0){box.innerHTML='<div style="font-size:12px;color:var(--muted);padding:6px 0">Nothing added yet.</div>';return;}
-  box.innerHTML=lines.map(function(l,i){
+  box.innerHTML=lines.map(function(p){
+    var l=p.l, i=p.i;
     var desc='';
     if(capType==='count')desc='<b>'+l.brand+'</b> × '+l.qty;
     else if(capType==='received'){var mm=(num(l.fullIn)!==num(l.emptyOut));desc='<b>'+l.brand+'</b> — '+num(l.fullIn)+' full in / '+num(l.emptyOut)+' empty out'+(mm?' <span style=\'color:#C0392B;font-weight:700\'>⚠ mismatch</span>':'');}
-    else if(capType==='private')desc='<b>'+(l.cylBrand||'')+'</b> '+l.gasType+' · '+(+l.pumped).toFixed(2)+'kg'+(l.customer?' · '+l.customer:'')+(l.filledBy==='Supplier'?(' · <span style="color:#B5533B;font-weight:700">via '+(l.fillSupplier||'supplier')+'</span>'):'');
+    else if(capType==='private')desc='<b>'+(l.cylBrand||'')+'</b> '+l.gasType+' · '+(+l.pumped).toFixed(2)+'kg'+(l.customer?' · '+l.customer:'')+(l.filledBy==='Supplier'?(' · <span style="color:#B5533B;font-weight:700">via '+(privateSupplierName(l)||'supplier')+'</span>'):'');
     else if(capType==='refill')desc='<b>'+l.brand+'</b> '+l.gasType+' · seal '+l.seal+' · '+(+l.pumped).toFixed(2)+'kg';
     else if(capType==='manifold')desc='<b>'+l.brand+'</b> · left '+(+l.gasLeft).toFixed(2)+'kg';
     return '<div class="lineRow"><span>'+desc+'</span><button onclick="removeLine('+i+')">✕</button></div>';
@@ -2961,9 +3011,9 @@ function addLine(){
     d.fullIn=num(d.fullIn);d.emptyOut=num(d.emptyOut);
     if(d.fullIn===0&&d.emptyOut===0){toast('Enter fulls received or empties returned',true);return;}
   } else {
-    for(var i=0;i<c.popupFields.length;i++){var f=c.popupFields[i];if(f.type==='auto'||f.opt)continue;
-      // conditional field only required when its showIf condition is met
-      if(f.showIf && d[f.showIf.k]!==f.showIf.eq)continue;
+    for(var i=0;i<c.popupFields.length;i++){var f=c.popupFields[i];if(f.type==='auto'||f.opt||f.type==='tabs')continue;
+      // conditional field only required when its showIf condition(s) are met
+      if(f.showIf){var _conds=Array.isArray(f.showIf)?f.showIf:[f.showIf];if(!_conds.every(function(cond){return d[cond.k]===cond.eq;}))continue;}
       if(!d[f.k]||d[f.k]===''){toast('Fill in: '+f.label,true);return;}}
   }
   if('scale'in d&&'tare'in d&&num(d.scale)<num(d.tare)){toast('Scale cannot be less than tare',true);return;}
@@ -2994,7 +3044,7 @@ function addLine(){
     showSaveNudge();
   }
 }
-function resetPopupInputs(c){popPhoto={};c.popupFields.forEach(function(f){var el=document.getElementById('pf-'+f.k);if(el&&f.type!=='auto')el.value=(f.default!==undefined?f.default:'');var th=document.getElementById('pf-'+f.k+'-thumb');if(th)th.innerHTML='';});popCalc();}
+function resetPopupInputs(c){popPhoto={};c.popupFields.forEach(function(f){var el=document.getElementById('pf-'+f.k);if(el&&f.type!=='auto')el.value=(f.default!==undefined?f.default:'');if(f.type==='tabs')popSetTabField(f.k,el?el.value:f.opts[0]);var th=document.getElementById('pf-'+f.k+'-thumb');if(th)th.innerHTML='';});popCalc();}
 function removeLine(i){var b=dataBucket();b[modalItem].splice(i,1);if(b[modalItem].length===0)delete b[modalItem];renderModalLines();renderGrid();}
 function closeModal(){document.getElementById('capModal').classList.remove('show');renderGrid();}
 // ---- Masked password prompt (replaces visible prompt()) ----
@@ -3149,7 +3199,7 @@ function capReviewHTML(type){
 function capReviewCols(type){
   if(type==='manifold')return [{k:'cyl',label:'Cylinder'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'gasLeft',label:'Gas left kg'},{k:'notes',label:'Note'},{k:'photo',label:'Photo'}];
   if(type==='refill')return [{k:'size',label:'Size'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'pumped',label:'Pumped kg'},{k:'seal',label:'Seal #'},{k:'notes',label:'Notes'}];
-  if(type==='private')return [{k:'cylBrand',label:'Cyl brand'},{k:'otherBrand',label:'Other name'},{k:'gasType',label:'Gas'},{k:'pumped',label:'kg'},{k:'customer',label:'Customer / notes'},{k:'filledBy',label:'Filled by'},{k:'fillSupplier',label:'Supplier'},{k:'invoiceNo',label:'Invoice #'},{k:'totalKgGas',label:'Total kg'}];
+  if(type==='private')return [{k:'cylBrand',label:'Cyl brand'},{k:'otherBrand',label:'Other name'},{k:'gasType',label:'Gas'},{k:'pumped',label:'kg'},{k:'customer',label:'Customer / notes'},{k:'filledBy',label:'Filled by'},{k:'fillSupplier',label:'Supplier'},{k:'fillSupplierOther',label:'Other supplier'},{k:'invoiceNo',label:'Invoice #'},{k:'totalKgGas',label:'Total kg'}];
   return [{k:'item',label:'Item'},{k:'brand',label:'Brand'}];
 }
 function capBackFromReview(){show('capView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);}
