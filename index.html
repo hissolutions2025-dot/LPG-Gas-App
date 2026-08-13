@@ -2785,6 +2785,11 @@ function renderModalLines(){
 }
 function addLine(){
   var c=CAP[capType];var d=popCollect();
+  // Record which branch was actually active when this line was added - flush() below must
+  // not silently re-tag it to whatever branch happens to be selected later (that was the
+  // "data spillover between branches" bug: switching branch mid-capture, without reviewing/
+  // committing first, retagged every not-yet-committed line to the newly-selected branch).
+  d._addedBranch=capBranch;
   // ---- SEAL ENFORCEMENT (refill only) ----
   if(capType==='refill'){
     var sres=sealValidate(capBranch, d.seal, d.brand);
@@ -2943,13 +2948,27 @@ function capReview(){
   }
   for(var i=0;i<c.gate.length;i++){if(document.getElementById('hdr-'+c.gate[i]).value===''){toast('Complete the header first',true);return;}}
   var header={};c.header.forEach(function(h){header[h.k]=document.getElementById('hdr-'+h.k).value;});
-  // build records: keep OTHER branches' records, replace only this branch's
-  store[capType]=(store[capType]||[]).filter(function(r){return r.branch&&r.branch!==capBranch;});
+  // Each line carries its own _addedBranch (set in addLine, at the moment it was captured) -
+  // never re-derived from whatever capBranch is selected now. capData itself isn't branch-
+  // scoped (it can hold lines from more than one branch if the user switched branch mid-
+  // capture without reviewing/committing first), so replace records for every branch actually
+  // present in the draft, not just the currently-selected one - otherwise a branch committed
+  // earlier in this same capture session could be left with stale duplicate records.
+  var branchesInDraft={};
+  function collectBranches(bucket){
+    Object.keys(bucket).forEach(function(item){
+      if(item==='_type')return;
+      (bucket[item]||[]).forEach(function(l){branchesInDraft[l._addedBranch||capBranch]=1;});
+    });
+  }
+  if(c.toggles){Object.keys(capData).forEach(function(k){if(k!=='_type')collectBranches(capData[k]);});}
+  else collectBranches(capData['_flat']||{});
+  store[capType]=(store[capType]||[]).filter(function(r){return !(r.branch&&branchesInDraft[r.branch]);});
   function flush(bucket,extra){
     Object.keys(bucket).forEach(function(item){
       if(item==='_type')return;
       (bucket[item]||[]).forEach(function(l){
-        var rec=Object.assign({},header,extra,l,{item:item,branch:capBranch,_date:today,_operator:operator,_role:role,_time:l._ts||nowStamp()});
+        var rec=Object.assign({},header,extra,l,{item:item,branch:(l._addedBranch||capBranch),_date:today,_operator:operator,_role:role,_time:l._ts||nowStamp()});
         if(capType==='received'&&store._recvOverride)rec.overrideReason=store._recvOverride;
         if(capType==='manifold')rec.cyl=item; else rec.size=item;
         store[capType].push(rec);
