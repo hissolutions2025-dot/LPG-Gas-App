@@ -276,9 +276,9 @@
     </div>
     <div class="adminRow">
       <div class="grow"><label class="mLabel" style="font-size:11px">Cyl scale (kg)</label>
-        <input type="number" class="mField" id="rgScale" step="0.1" oninput="residualCalcUpdate()"></div>
+        <input type="number" inputmode="decimal" class="mField" id="rgScale" step="0.1" oninput="residualCalcUpdate()"></div>
       <div class="grow"><label class="mLabel" style="font-size:11px">Cyl tare (kg)</label>
-        <input type="number" class="mField" id="rgTare" step="0.1" oninput="residualCalcUpdate()"></div>
+        <input type="number" inputmode="decimal" class="mField" id="rgTare" step="0.1" oninput="residualCalcUpdate()"></div>
     </div>
     <div style="font-size:12px;color:var(--navy);margin:6px 0;padding:8px;border:1px dashed var(--steel);border-radius:8px" id="rgCalc">Gas type: — · Residual: —</div>
     <label class="mLabel">Note (optional)</label>
@@ -320,9 +320,9 @@
     <div class="detBanner" id="cDetBanner"><div class="big" id="cDetTitle">&mdash;</div><div class="small" id="cDetSub">&mdash;</div></div>
     <div id="cBrandList"></div>
     <button class="bAdd" onclick="cAddLine()">+ add another brand</button>
+    <div class="cFooter" style="position:static;box-shadow:none;border:none;padding:16px 0 0;margin-top:10px"><button class="cbGhost" onclick="cBackToGrid()">Back to grid</button><button class="cbPrimary" onclick="cSaveDetail()">Save &amp; back</button></div>
     <div class="bTot"><span>Total for this cell</span><span class="n" id="cDetTot">0</span></div>
   </div>
-  <div class="cFooter"><button class="cbGhost" onclick="cBackToGrid()">Back to grid</button><button class="cbPrimary" onclick="cSaveDetail()">Save &amp; back</button></div>
 </div>
 
 <div id="countReviewView" class="view">
@@ -354,9 +354,9 @@
     <div class="detBanner" id="rDetBanner"><div class="big" id="rDetTitle">&mdash;</div><div class="small" id="rDetSub">&mdash;</div></div>
     <div id="rBrandList"></div>
     <button class="bAdd" onclick="rAddLine()">+ add another brand</button>
+    <div class="cFooter" style="position:static;box-shadow:none;border:none;padding:16px 0 0;margin-top:10px"><button class="cbGhost" onclick="rBackToGrid()">Back to grid</button><button class="cbPrimary" onclick="rSaveDetail()">Save &amp; back</button></div>
     <div class="bTot"><span>Total for this cell</span><span class="n" id="rDetTot">0</span></div>
   </div>
-  <div class="cFooter"><button class="cbGhost" onclick="rBackToGrid()">Back to grid</button><button class="cbPrimary" onclick="rSaveDetail()">Save &amp; back</button></div>
 </div>
 
 <div id="recvReviewView" class="view">
@@ -534,11 +534,11 @@
       </div>
       <div class="adminRow">
         <div class="grow"><label class="mLabel" style="font-size:11px">Start</label>
-          <input type="number" class="mField" id="nrStart" placeholder="1200" oninput="nrPreviewUpdate()"></div>
+          <input type="number" inputmode="numeric" class="mField" id="nrStart" placeholder="1200" oninput="nrPreviewUpdate()"></div>
         <div class="grow"><label class="mLabel" style="font-size:11px">End</label>
-          <input type="number" class="mField" id="nrEnd" placeholder="1299" oninput="nrPreviewUpdate()"></div>
+          <input type="number" inputmode="numeric" class="mField" id="nrEnd" placeholder="1299" oninput="nrPreviewUpdate()"></div>
         <div class="grow"><label class="mLabel" style="font-size:11px">Warn at (left)</label>
-          <input type="number" class="mField" id="nrWarn" placeholder="20"></div>
+          <input type="number" inputmode="numeric" class="mField" id="nrWarn" placeholder="20"></div>
       </div>
       <div style="font-size:11px;color:var(--muted);margin:2px 0 8px" id="nrPreview">Enter a range.</div>
       <button class="saveBtn" onclick="createRoll()">Create &amp; activate roll</button>
@@ -553,7 +553,7 @@
       <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Correct a wrongly-captured seal number. Tap a used seal below to select it, then choose reusable (mis-entry) or destroyed (retired).</div>
       <div id="usedSealList" style="margin-bottom:10px"></div>
       <div class="adminRow">
-        <input type="number" class="mField grow" id="voidSealNo" placeholder="Seal number to void">
+        <input type="number" inputmode="numeric" class="mField grow" id="voidSealNo" placeholder="Seal number to void">
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--navy);font-weight:700"><input type="checkbox" id="voidClosedDay"> Closed/prior day</label>
       </div>
       <button class="saveBtn" style="background:#9B2C2C" onclick="doVoidSeal()">Void seal</button>
@@ -632,7 +632,7 @@
           <div class="grow"><label class="mLabel" style="font-size:11px">Size</label>
             <select class="mField" id="fcSize" onchange="faultyCalcUpdate()"></select></div>
           <div class="grow"><label class="mLabel" style="font-size:11px">Qty</label>
-            <input type="number" class="mField" id="fcQty" value="1" min="1"></div>
+            <input type="number" inputmode="numeric" class="mField" id="fcQty" value="1" min="1"></div>
         </div>
         <div class="cgRow" style="margin:6px 0"><label>State</label><div class="cgToggle">
           <button class="cgTg on" id="fcst-Full" onclick="faultySetState('Full')">Full</button>
@@ -649,9 +649,9 @@
         </div>
         <div class="adminRow">
           <div class="grow"><label class="mLabel" style="font-size:11px">Cyl scale (kg)</label>
-            <input type="number" class="mField" id="fcScale" step="0.1" oninput="faultyCalcUpdate()"></div>
+            <input type="number" inputmode="decimal" class="mField" id="fcScale" step="0.1" oninput="faultyCalcUpdate()"></div>
           <div class="grow"><label class="mLabel" style="font-size:11px">Cyl tare (kg)</label>
-            <input type="number" class="mField" id="fcTare" step="0.1" oninput="faultyCalcUpdate()"></div>
+            <input type="number" inputmode="decimal" class="mField" id="fcTare" step="0.1" oninput="faultyCalcUpdate()"></div>
         </div>
         <div style="font-size:12px;color:var(--navy);margin:6px 0;padding:8px;border:1px dashed var(--steel);border-radius:8px" id="fcCalc">Gas remaining: — · Nominal: — · Gas at risk: —</div>
         <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Only an actual loss if this cylinder is later marked <b>Not Replaced</b> in the register.</div>
@@ -1738,7 +1738,7 @@ function _who(r){return {Operator:(r._operator||operator||''),Role:(r._role||rol
 function syncRowsCount(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,CountType:r.countType,State:r.state,Size:r.size,Brand:r.brand,Qty:r.qty,Note:(r.note||''),Adjusted:(r._adjusted?'Y':''),AdjustedBy:(r._adjustedBy||''),OverrideReason:(r.overrideReason||'')};});}
 function syncRowsReceived(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Size:r.size,Brand:r.brand,FullIn:r.fullIn,EmptyOut:r.emptyOut,Note:(r.note||''),OverrideReason:(r.overrideReason||'')};});}
 function syncRowsRefill(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Size:r.size,Brand:r.brand,GasType:(r.gasType||''),Scale:(r.scale!==undefined?r.scale:''),Tare:(r.tare!==undefined?r.tare:''),GasLeft:(r.gasLeft!==undefined?r.gasLeft:''),Pumped:r.pumped,Seal:(r.seal||''),SealFlag:(r._sealOverride||r._sealFlag||''),FlagReason:(r._flagReason||r._sealReason||''),Notes:(r.notes||'')};});}
-function syncRowsPrivate(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,CylBrand:(r.cylBrand||''),OtherBrand:(r.otherBrand||''),GasType:(r.gasType||''),Pumped:r.pumped,Customer:(r.customer||'')};});}
+function syncRowsPrivate(list,br){return list.map(function(r){var w=_who(r);var viaSupplier=(r.filledBy==='Supplier');return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,CylBrand:(r.cylBrand||''),OtherBrand:(r.otherBrand||''),GasType:(r.gasType||''),Pumped:r.pumped,Customer:(r.customer||''),FilledBy:(r.filledBy||'Us'),FillSupplier:(viaSupplier?(r.fillSupplier||''):''),InvoiceNo:(viaSupplier?(r.invoiceNo||''):''),TotalKgGas:(viaSupplier?(r.totalKgGas||''):'')};});}
 function syncRowsManifold(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Stage:(r.stage||'Opening'),Cylinder:r.cyl,Brand:(r.brand||''),GasType:(r.gasType||''),Scale:r.scale,Tare:r.tare,GasLeft:r.gasLeft,FillCheck:(r._fillCheck||''),Note:(r.note||''),PhotoLink:(r._photoLink||'')};});}
 // ----- Audit report (Owner only, password-gated) -----
 var auditSelDate=null;
@@ -2551,7 +2551,11 @@ const CAP={
       {k:'otherBrand',label:'Other brand name',type:'text',showIf:{k:'cylBrand',eq:'Other'}},
       {k:'gasType',label:'Gas type',type:'select',opts:['LPG','Propane']},
       {k:'pumped',label:'Gas pumped (kg)',type:'number'},
-      {k:'customer',label:'Customer name / notes',type:'text'}] },
+      {k:'customer',label:'Customer name / notes',type:'text'},
+      {k:'filledBy',label:'Filled by',type:'select',opts:['Us','Supplier'],default:'Us'},
+      {k:'fillSupplier',label:'Supplier / redistributor',type:'text',showIf:{k:'filledBy',eq:'Supplier'}},
+      {k:'invoiceNo',label:'Invoice #',type:'text',showIf:{k:'filledBy',eq:'Supplier'}},
+      {k:'totalKgGas',label:'Total kg gas',type:'number',showIf:{k:'filledBy',eq:'Supplier'}}] },
   refill:{title:'Refill',hint:'Tap a size, weigh the cylinder — gas pumped is calculated.',grid:FILLSIZES,
     header:[], gate:[], multi:true,
     popupFields:[{k:'brand',label:'Brand',type:'select',opts:BRANDS},{k:'gasType',label:'Gas type',type:'gasType'},
@@ -2688,7 +2692,7 @@ function capSummary(c,lines){
     }
     return lines.map(function(l){return '<span class="bl">✓</span>';}).join('');
   }
-  if(capType==='private')return lines.map(function(l){return '<span class="bl">'+(l.cylBrand||'')+' '+l.gasType+' · '+(+l.pumped).toFixed(2)+'kg'+(l.customer?' · '+l.customer:'')+'</span>';}).join('');
+  if(capType==='private')return lines.map(function(l){return '<span class="bl">'+(l.cylBrand||'')+' '+l.gasType+' · '+(+l.pumped).toFixed(2)+'kg'+(l.customer?' · '+l.customer:'')+(l.filledBy==='Supplier'?' · via supplier':'')+'</span>';}).join('');
   if(capType==='received')return lines.map(function(l){
     var mm=(num(l.fullIn)!==num(l.emptyOut));
     return '<span class="bl" style="'+(mm?'color:#C0392B':'')+'">'+l.brand+': '+num(l.fullIn)+'F / '+num(l.emptyOut)+'E'+(mm?' !':'')+'</span>';
@@ -2714,7 +2718,7 @@ function buildPopupForm(c){
     html+='<div id="pfwrap-'+f.k+'"'+hideAttr+'>';
     html+='<label class="mLabel">'+f.label+(f.opt?'':(f.type==='auto'?'':' <span style="color:#C0392B">*</span>'))+'</label>';
     if(f.type==='auto')html+='<input class="mField auto" id="pf-'+f.k+'" readonly value="—">';
-    else if(f.type==='select')html+='<select class="mField" id="pf-'+f.k+'" onchange="popCalc()"><option value="">Select…</option>'+f.opts.map(function(o){return '<option>'+o+'</option>';}).join('')+'</select>';
+    else if(f.type==='select')html+='<select class="mField" id="pf-'+f.k+'" onchange="popCalc()"><option value="">Select…</option>'+f.opts.map(function(o){return '<option'+(f.default!==undefined&&o===f.default?' selected':'')+'>'+o+'</option>';}).join('')+'</select>';
     else if(f.type==='gasType')html+='<select class="mField" id="pf-'+f.k+'" onchange="popCalc()"><option value="">Select…</option></select><div class="mNote" id="pf-gasNote"></div>';
     else if(f.type==='number')html+='<input class="mField" type="number" inputmode="decimal" step="any" id="pf-'+f.k+'" oninput="popCalc()" onwheel="this.blur()">';
     else if(f.type==='text')html+='<input class="mField" type="text" id="pf-'+f.k+'">';
@@ -2773,7 +2777,7 @@ function renderModalLines(){
     var desc='';
     if(capType==='count')desc='<b>'+l.brand+'</b> × '+l.qty;
     else if(capType==='received'){var mm=(num(l.fullIn)!==num(l.emptyOut));desc='<b>'+l.brand+'</b> — '+num(l.fullIn)+' full in / '+num(l.emptyOut)+' empty out'+(mm?' <span style=\'color:#C0392B;font-weight:700\'>⚠ mismatch</span>':'');}
-    else if(capType==='private')desc='<b>'+(l.cylBrand||'')+'</b> '+l.gasType+' · '+(+l.pumped).toFixed(2)+'kg'+(l.customer?' · '+l.customer:'');
+    else if(capType==='private')desc='<b>'+(l.cylBrand||'')+'</b> '+l.gasType+' · '+(+l.pumped).toFixed(2)+'kg'+(l.customer?' · '+l.customer:'')+(l.filledBy==='Supplier'?(' · <span style="color:#B5533B;font-weight:700">via '+(l.fillSupplier||'supplier')+'</span>'):'');
     else if(capType==='refill')desc='<b>'+l.brand+'</b> '+l.gasType+' · seal '+l.seal+' · '+(+l.pumped).toFixed(2)+'kg';
     else if(capType==='manifold')desc='<b>'+l.brand+'</b> · left '+(+l.gasLeft).toFixed(2)+'kg';
     return '<div class="lineRow"><span>'+desc+'</span><button onclick="removeLine('+i+')">✕</button></div>';
@@ -2834,7 +2838,7 @@ function addLine(){
     showSaveNudge();
   }
 }
-function resetPopupInputs(c){popPhoto={};c.popupFields.forEach(function(f){var el=document.getElementById('pf-'+f.k);if(el&&f.type!=='auto')el.value='';var th=document.getElementById('pf-'+f.k+'-thumb');if(th)th.innerHTML='';});popCalc();}
+function resetPopupInputs(c){popPhoto={};c.popupFields.forEach(function(f){var el=document.getElementById('pf-'+f.k);if(el&&f.type!=='auto')el.value=(f.default!==undefined?f.default:'');var th=document.getElementById('pf-'+f.k+'-thumb');if(th)th.innerHTML='';});popCalc();}
 function removeLine(i){var b=dataBucket();b[modalItem].splice(i,1);if(b[modalItem].length===0)delete b[modalItem];renderModalLines();renderGrid();}
 function closeModal(){document.getElementById('capModal').classList.remove('show');renderGrid();}
 // ---- Masked password prompt (replaces visible prompt()) ----
@@ -2975,7 +2979,7 @@ function capReviewHTML(type){
 function capReviewCols(type){
   if(type==='manifold')return [{k:'cyl',label:'Cylinder'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'gasLeft',label:'Gas left kg'},{k:'notes',label:'Note'},{k:'photo',label:'Photo'}];
   if(type==='refill')return [{k:'size',label:'Size'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'pumped',label:'Pumped kg'},{k:'seal',label:'Seal #'},{k:'notes',label:'Notes'}];
-  if(type==='private')return [{k:'cylBrand',label:'Cyl brand'},{k:'otherBrand',label:'Other name'},{k:'gasType',label:'Gas'},{k:'pumped',label:'kg'},{k:'customer',label:'Customer / notes'}];
+  if(type==='private')return [{k:'cylBrand',label:'Cyl brand'},{k:'otherBrand',label:'Other name'},{k:'gasType',label:'Gas'},{k:'pumped',label:'kg'},{k:'customer',label:'Customer / notes'},{k:'filledBy',label:'Filled by'},{k:'fillSupplier',label:'Supplier'},{k:'invoiceNo',label:'Invoice #'},{k:'totalKgGas',label:'Total kg'}];
   return [{k:'item',label:'Item'},{k:'brand',label:'Brand'}];
 }
 function capBackFromReview(){show('capView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);}
