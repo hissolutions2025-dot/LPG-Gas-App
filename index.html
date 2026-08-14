@@ -169,7 +169,7 @@
   .sigClear{margin-top:6px;background:#EEF3F8;color:var(--navy);border:1px solid var(--line);border-radius:8px;padding:6px 14px;font-size:12px;font-weight:700;cursor:pointer;}
 
   .histTabs{display:flex;gap:8px;margin-bottom:14px;}
-  .htab{flex:1;padding:11px;border:1.5px solid var(--navy);border-radius:10px;background:#fff;color:var(--navy);font-size:14px;font-weight:800;cursor:pointer;}
+  .htab{flex:1 1 110px;padding:10px 6px;border:1.5px solid var(--navy);border-radius:10px;background:#fff;color:var(--navy);font-size:12.5px;font-weight:800;cursor:pointer;}
   .htab.on{background:var(--navy);color:#fff;}
   .calCard{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:14px;}
   .calNav{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}
@@ -353,6 +353,11 @@
     <div class="cgRow" id="rSupplierOtherRow" style="display:none"><label style="width:auto;flex:none">Other</label><input type="text" class="mField" id="rSupplierOther" style="flex:1;margin:0" placeholder="Supplier name" oninput="rSupplierFieldChanged('other')"></div>
     <div class="cgRow"><label style="width:auto;flex:none">Delivery note #</label><input type="text" class="mField" id="rDeliveryNote" style="flex:1;margin:0" placeholder="Optional" oninput="rSupplierFieldChanged('deliveryNote')"></div>
     <div class="cgRow"><label style="width:auto;flex:none">Invoice #</label><input type="text" class="mField" id="rInvoiceNo" style="flex:1;margin:0" placeholder="Optional" oninput="rSupplierFieldChanged('invoiceNo')"></div>
+    <div class="cgRow"><label style="width:auto;flex:none">Photos</label><div style="flex:1">
+      <input type="file" accept="image/*" capture="environment" id="rSupplierPhotoInput" style="display:none" onchange="rPhotoPick(this)">
+      <button type="button" class="sigClear" id="rSupplierPhotoBtn" onclick="document.getElementById('rSupplierPhotoInput').click()">📷 Add photo (0/2)</button>
+      <div id="rSupplierPhotoThumb" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap"></div>
+    </div></div>
   </div>
   <div class="wrap">
     <div class="ctxbar" id="rCtx" style="margin-bottom:10px;"></div>
@@ -526,7 +531,7 @@
 <!-- ADMIN (Seal Register + Suppliers) -->
 <div id="adminView" class="view"><div class="wrap">
   <div class="detBanner full" style="margin-bottom:14px"><div class="big">Admin</div><div class="small">Seal register &amp; suppliers</div></div>
-  <div class="htabs" style="display:flex;gap:8px;margin-bottom:14px">
+  <div class="htabs" style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">
     <button class="htab on" id="atab-seals" onclick="adminTab('seals')">Seal Register</button>
     <button class="htab" id="atab-suppliers" onclick="adminTab('suppliers')">Brands</button>
     <button class="htab" id="atab-clear" onclick="adminTab('clear')">Clear Stock Take</button>
@@ -1864,18 +1869,39 @@ function apiPost(action,extra){
   return fetch(cfg.url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)})
     .then(function(r){return r.json();});
 }
+// Uploads each captured photo (data URI) to Drive via the shared 'photoUpload' backend
+// action, returns a comma-joined string of the links that succeeded. Never throws - a
+// failed upload (e.g. no signal at commit time) is just skipped so the row still commits;
+// it ends up with fewer (or zero) links than photos actually taken, not blocked entirely.
+async function uploadPhotoSet(category, br, photos){
+  if(!photos || !photos.length) return '';
+  var links=[];
+  for(var i=0;i<photos.length;i++){
+    var m=/^data:([^;]+);base64,(.*)$/.exec(photos[i]||'');
+    if(!m) continue;
+    try{
+      var res=await apiPost('photoUpload',{branch:br,date:today,category:category,mimeType:m[1],dataBase64:m[2]});
+      if(res && res.ok && res.url) links.push(res.url);
+    }catch(e){ /* offline / backend error - skip this one, keep the commit going */ }
+  }
+  return links.join(', ');
+}
 // build row objects for each type from the committed data
 // Full-schema sync (v3). Every row carries ts + date + branch + Operator + Role + section fields.
 function _nowISO(){return new Date().toISOString();}
 function _who(r){return {Operator:(r._operator||operator||''),Role:(r._role||role||'')};}
 function syncRowsCount(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,CountType:r.countType,State:r.state,Size:r.size,Brand:r.brand,Qty:r.qty,Note:(r.note||''),Adjusted:(r._adjusted?'Y':''),AdjustedBy:(r._adjustedBy||''),OverrideReason:(r.overrideReason||'')};});}
-function syncRowsReceived(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Size:r.size,Brand:r.brand,FullIn:r.fullIn,EmptyOut:r.emptyOut,Note:(r.note||''),OverrideReason:(r.overrideReason||''),Supplier:(r.supplier||''),DeliveryNote:(r.deliveryNote||''),InvoiceNo:(r.invoiceNo||'')};});}
+function syncRowsReceived(list,br){return list.map(function(r){var w=_who(r);
+  // Field name here MUST match the backend's TABS.Received key ('Invoice', not 'InvoiceNo') -
+  // confirmed against the deployed v6/v7 Apps Script. Same class of bug as the earlier
+  // Private SupplierName/Invoice mismatch: was silently dropping every Invoice # on commit.
+  return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Size:r.size,Brand:r.brand,FullIn:r.fullIn,EmptyOut:r.emptyOut,Note:(r.note||''),OverrideReason:(r.overrideReason||''),Supplier:(r.supplier||''),DeliveryNote:(r.deliveryNote||''),Invoice:(r.invoiceNo||''),PhotoLinks:(r.photoLinks||'')};});}
 function syncRowsRefill(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Size:r.size,Brand:r.brand,GasType:(r.gasType||''),Scale:(r.scale!==undefined?r.scale:''),Tare:(r.tare!==undefined?r.tare:''),GasLeft:(r.gasLeft!==undefined?r.gasLeft:''),Pumped:r.pumped,Seal:(r.seal||''),SealFlag:(r._sealOverride||r._sealFlag||''),FlagReason:(r._flagReason||r._sealReason||''),Notes:(r.notes||'')};});}
 function syncRowsPrivate(list,br){return list.map(function(r){var w=_who(r);var viaSupplier=(r.filledBy==='Supplier');
   // Field names here MUST match the backend's TABS.Private key names exactly
   // (SupplierName / Invoice, not FillSupplier / InvoiceNo) - confirmed against the
   // actual deployed Apps Script, which is why these two silently landed blank before.
-  return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,CylBrand:(r.cylBrand||''),OtherBrand:(r.otherBrand||''),GasType:(r.gasType||''),Pumped:r.pumped,Customer:(r.customer||''),FilledBy:(r.filledBy||'Us'),SupplierName:(viaSupplier?privateSupplierName(r):''),Invoice:(viaSupplier?(r.invoiceNo||''):'')};});}
+  return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,CylBrand:(r.cylBrand||''),OtherBrand:(r.otherBrand||''),GasType:(r.gasType||''),Pumped:r.pumped,Customer:(r.customer||''),FilledBy:(r.filledBy||'Us'),SupplierName:(viaSupplier?privateSupplierName(r):''),Invoice:(viaSupplier?(r.invoiceNo||''):''),PhotoLinks:(r.photoLinks||'')};});}
 function syncRowsManifold(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Stage:(r.stage||'Opening'),Cylinder:r.cyl,Brand:(r.brand||''),GasType:(r.gasType||''),Scale:r.scale,Tare:r.tare,GasLeft:r.gasLeft,FillCheck:(r._fillCheck||''),Note:(r.note||''),PhotoLink:(r._photoLink||'')};});}
 // ----- Audit report (Owner only, password-gated) -----
 var auditSelDate=null;
@@ -2565,7 +2591,7 @@ function rShow(id){var vs=document.querySelectorAll('.view');for(var i=0;i<vs.le
 // same reasoning as rData - keyed by branch so switching branch never mixes up which
 // delivery's supplier info belongs to which branch's Full In/Empty Out lines) ----
 var rSuppliersList=[], rSupplierState={};
-function rSupplierFor(br){return rSupplierState[br]||(rSupplierState[br]={supplier:'',isOther:false,deliveryNote:'',invoiceNo:''});}
+function rSupplierFor(br){return rSupplierState[br]||(rSupplierState[br]={supplier:'',isOther:false,deliveryNote:'',invoiceNo:'',photos:[]});}
 // Supplier + delivery note # + invoice # are all compulsory before any capturing can happen
 // for this branch's session (per explicit requirement - previously only supplier was required,
 // and only when a Full In line already existed; now all three gate entry itself).
@@ -2601,7 +2627,28 @@ function rRestoreSupplierFields(){
   document.getElementById('rSupplierOther').value=s.isOther?(s.supplier||''):'';
   document.getElementById('rDeliveryNote').value=s.deliveryNote||'';
   document.getElementById('rInvoiceNo').value=s.invoiceNo||'';
+  rRenderPhotoThumbs(); // this branch's own photos, not whichever branch was last active
 }
+// Up to 2 photos per branch's delivery session (same reasoning as supplier/deliveryNote/
+// invoiceNo above - keyed per branch so switching branch never mixes up whose photos they are).
+function rPhotoPick(input){
+  var f=input.files&&input.files[0];if(!f){return;}
+  var st=rSupplierFor(rBranch);if(!st.photos)st.photos=[];
+  if(st.photos.length>=2){toast('Max 2 photos per delivery',true);input.value='';return;}
+  if(f.size>1200000){toast('Photo too large — take a smaller/closer shot',true);input.value='';return;}
+  var reader=new FileReader();
+  reader.onload=function(e){st.photos.push(e.target.result);rRenderPhotoThumbs();};
+  reader.readAsDataURL(f);
+  input.value='';
+}
+function rRenderPhotoThumbs(){
+  var st=rSupplierFor(rBranch);var arr=st.photos||[];
+  var t=document.getElementById('rSupplierPhotoThumb');
+  if(t)t.innerHTML=arr.map(function(src,i){return '<span style="position:relative;display:inline-block"><img src="'+src+'" style="max-height:60px;border-radius:8px;border:1px solid var(--line)"><button type="button" class="sigClear" style="padding:2px 6px;position:absolute;top:-6px;right:-6px;border-radius:50%" onclick="rRemovePhoto('+i+')">×</button></span>';}).join('');
+  var btn=document.getElementById('rSupplierPhotoBtn');
+  if(btn){btn.textContent='📷 Add photo ('+arr.length+'/2)';btn.disabled=(arr.length>=2);btn.style.opacity=(arr.length>=2)?'.5':'1';}
+}
+function rRemovePhoto(i){var st=rSupplierFor(rBranch);if(st.photos){st.photos.splice(i,1);rRenderPhotoThumbs();}}
 
 function openReceived(){
   if(!canUseSection(branch||'Helderberg','received')){toast(sectionActive(branch||'Helderberg','received')?'Stock Received is not enabled for your user':'Stock Received is deactivated for '+(branch||'this branch'),true);return;}
@@ -2706,7 +2753,7 @@ function rReview(){
   rShow('recvReviewView');window.scrollTo(0,0);
 }
 function rBackFromReview(){document.getElementById('hTitle').textContent='Stock Received';document.getElementById('hSub').textContent='Full received vs empty returned';rShow('recvGridView');rRenderGrid();window.scrollTo(0,0);}
-function rCommit(){
+async function rCommit(){
   var mm=rMismatches();
   // require a reason per mismatched size; collect into rOverrides
   rOverrides={};
@@ -2720,14 +2767,21 @@ function rCommit(){
   // Compulsory: supplier + delivery note # + invoice # (rOpenDetail already blocks reaching
   // this point without them, but re-check here too in case of a resumed/older draft).
   if(!rSupplierComplete(rBranch)){toast('Select the supplier, delivery note # and invoice # first',true);return;}
+  // Photos are session-level (one set per supplier delivery, not per size/line) - upload
+  // once here, then stamp the same joined link string onto every row pushed below.
+  var photoLinks='';
+  if((sup.photos||[]).length){
+    toast('Uploading photo(s)…');
+    photoLinks=await uploadPhotoSet('Received',rBranch,sup.photos);
+  }
   // flush into store.received: one row per brand per side, each carries its size's reason
   store.received=[];
   var b=rBkt();
   R_SIZES.forEach(function(sz){
     if(!b[sz])return;
     var reason=rOverrides[sz]||'';
-    b[sz].recv.forEach(function(l){if(num(l.qty)>0)store.received.push({size:sz,brand:l.brand,fullIn:num(l.qty),emptyOut:0,note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
-    b[sz].ret.forEach(function(l){if(num(l.qty)>0)store.received.push({size:sz,brand:l.brand,fullIn:0,emptyOut:num(l.qty),note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
+    b[sz].recv.forEach(function(l){if(num(l.qty)>0)store.received.push({size:sz,brand:l.brand,fullIn:num(l.qty),emptyOut:0,note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
+    b[sz].ret.forEach(function(l){if(num(l.qty)>0)store.received.push({size:sz,brand:l.brand,fullIn:0,emptyOut:num(l.qty),note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
   });
   if(store.received.length===0){toast('Nothing to commit',true);return;}
   syncPush('Received',syncRowsReceived(store.received.filter(function(r){return r.branch===rBranch;}),rBranch));
@@ -2759,7 +2813,8 @@ const CAP={
       {k:'otherBrand',label:'Other brand name',type:'text',showIf:{k:'cylBrand',eq:'Other'}},
       {k:'gasType',label:'Gas type',type:'select',opts:['LPG','Propane']},
       {k:'pumped',label:'Gas pumped (kg)',type:'number'},
-      {k:'customer',label:'Customer name / notes',type:'text'}] },
+      {k:'customer',label:'Customer name / notes',type:'text'},
+      {k:'supplierPhoto',label:'Invoice / delivery note photo',type:'photo',max:2,opt:true,showIf:{k:'filledBy',eq:'Supplier'}}] },
   refill:{title:'Refill',hint:'Tap a size, weigh the cylinder — gas pumped is calculated.',grid:FILLSIZES,
     header:[], gate:[], multi:true,
     popupFields:[{k:'brand',label:'Brand',type:'select',opts:BRANDS},{k:'gasType',label:'Gas type',type:'gasType'},
@@ -2972,10 +3027,18 @@ function popSetTabField(key,val){
   popCalc();
 }
 var popPhoto={};
+// Max photos per field defaults to 3 (Manifold's original limit, unchanged for any field
+// that doesn't specify otherwise) - a field can override via {max:N} in its popupFields spec.
+function _photoMaxFor(key){
+  var c=CAP[capType];if(!c)return 3;
+  var f=c.popupFields.filter(function(x){return x.k===key && x.type==='photo';})[0];
+  return (f&&f.max)?f.max:3;
+}
 function onPhotoPick(input,key){
   var f=input.files&&input.files[0];if(!f){return;}
+  var max=_photoMaxFor(key);
   if(!popPhoto[key])popPhoto[key]=[];
-  if(popPhoto[key].length>=3){toast('Max 3 photos per cylinder',true);input.value='';return;}
+  if(popPhoto[key].length>=max){toast('Max '+max+' photos',true);input.value='';return;}
   if(f.size>1200000){toast('Photo too large — take a smaller/closer shot',true);input.value='';return;}
   var reader=new FileReader();
   reader.onload=function(e){
@@ -2986,11 +3049,11 @@ function onPhotoPick(input,key){
   input.value=''; // reset so the same file/camera can be used again
 }
 function renderPhotoThumbs(key){
-  var arr=popPhoto[key]||[];
+  var arr=popPhoto[key]||[];var max=_photoMaxFor(key);
   var t=document.getElementById('pf-'+key+'-thumb');
   if(t)t.innerHTML=arr.map(function(src,i){return '<span style="position:relative;display:inline-block"><img src="'+src+'" style="max-height:60px;border-radius:8px;border:1px solid var(--line)"><button type="button" class="sigClear" style="padding:2px 6px;position:absolute;top:-6px;right:-6px;border-radius:50%" onclick="removePhoto(\''+key+'\','+i+')">×</button></span>';}).join('');
   var btn=document.getElementById('pf-'+key+'-btn');
-  if(btn){btn.textContent='📷 Add photo ('+arr.length+'/3)';btn.disabled=(arr.length>=3);btn.style.opacity=(arr.length>=3)?'.5':'1';}
+  if(btn){btn.textContent='📷 Add photo ('+arr.length+'/'+max+')';btn.disabled=(arr.length>=max);btn.style.opacity=(arr.length>=max)?'.5':'1';}
 }
 function removePhoto(key,i){if(popPhoto[key]){popPhoto[key].splice(i,1);renderPhotoThumbs(key);}}
 function clearPhoto(k){delete popPhoto[k];renderPhotoThumbs(k);}
@@ -3014,6 +3077,35 @@ function popCalc(){
     el.value=(val===''||isNaN(val))?'—':(Math.round(val*100)/100).toFixed(2);
     el.style.color=(typeof val==='number'&&val<0)?'#C0392B':'';
   });
+  if(capType==='refill')_refillSealHint(d);
+}
+// Show the roll's next-in-sequence seal number as a reference, but only once per day per
+// branch (the first time a Refill popup is opened that day) - after that it's just a
+// starting point, not shown again. Persisted to localStorage so a page reload doesn't
+// re-trigger it. Recomputed per-brand as the Brand field changes, since different brands
+// can have different active rolls with different sequences.
+function _refillSealHint(d){
+  var wrap=document.getElementById('pfwrap-seal');if(!wrap)return;
+  var existing=document.getElementById('sealNextHint');
+  // Wait until a brand is actually chosen - the hint is brand-specific (different brands can
+  // have different active rolls), so showing/consuming it before that would either be
+  // misleading or waste the one-time-per-day allowance on a meaningless guess.
+  if(!d.brand){if(existing)existing.remove();return;}
+  var key=today+'|'+capBranch;
+  var alreadyShownToday=false;
+  try{alreadyShownToday=(localStorage.getItem('gs_seal_hint_shown')===key);}catch(e){}
+  if(alreadyShownToday){if(existing)existing.remove();return;}
+  var r=activeRollForBrand(capBranch,d.brand);
+  var expected=r?(r.start+rollUsedList(r.id).length):null;
+  if(!r || expected>r.end){if(existing)existing.remove();return;}
+  // Showing it now consumes today's one-time hint, even if the user doesn't end up adding.
+  try{localStorage.setItem('gs_seal_hint_shown',key);}catch(e){}
+  if(!existing){
+    existing=document.createElement('div');existing.id='sealNextHint';
+    existing.style.cssText='font-size:11px;color:var(--steel);font-weight:700;margin-top:4px;';
+    wrap.appendChild(existing);
+  }
+  existing.textContent='💡 Next seal in sequence: '+expected+' (reference only, not required)';
 }
 function renderModalLines(){
   var box=document.getElementById('mLines');
@@ -3262,16 +3354,31 @@ function capReviewHTML(type){
 function capReviewCols(type){
   if(type==='manifold')return [{k:'cyl',label:'Cylinder'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'gasLeft',label:'Gas left kg'},{k:'notes',label:'Note'},{k:'photo',label:'Photo'}];
   if(type==='refill')return [{k:'size',label:'Size'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'pumped',label:'Pumped kg'},{k:'seal',label:'Seal #'},{k:'notes',label:'Notes'}];
-  if(type==='private')return [{k:'cylBrand',label:'Cyl brand'},{k:'otherBrand',label:'Other name'},{k:'gasType',label:'Gas'},{k:'pumped',label:'kg'},{k:'customer',label:'Customer / notes'},{k:'filledBy',label:'Filled by'},{k:'fillSupplier',label:'Supplier'},{k:'fillSupplierOther',label:'Other supplier'},{k:'invoiceNo',label:'Invoice #'}];
+  if(type==='private')return [{k:'cylBrand',label:'Cyl brand'},{k:'otherBrand',label:'Other name'},{k:'gasType',label:'Gas'},{k:'pumped',label:'kg'},{k:'customer',label:'Customer / notes'},{k:'filledBy',label:'Filled by'},{k:'fillSupplier',label:'Supplier'},{k:'fillSupplierOther',label:'Other supplier'},{k:'invoiceNo',label:'Invoice #'},{k:'supplierPhoto',label:'Photo'}];
   return [{k:'item',label:'Item'},{k:'brand',label:'Brand'}];
 }
 function capBackFromReview(){show('capView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);}
-function capCommit(){
+async function capCommit(){
   var c=CAP[capType];
   if(store[capType].filter(function(r){return r.branch===capBranch;}).length===0){toast('Nothing to commit',true);return;}
   if(capType==='received'){store._recvOverride=null;}
   if(capType==='manifold'){computeManifoldMismatches(capBranch);}
   var mmM=(store._openMismatch||[]).filter(function(m){return m.branch===capBranch&&m.kind==='manifold';});
+  // Photos here are per-row (each cylinder/refill carries its own), unlike Received's
+  // session-level set - upload per-row right before syncing, not in capReview(), which
+  // can re-run and re-flush store[capType] (would mean re-uploading pointlessly).
+  if(capType==='manifold' || capType==='private'){
+    var photoKey = capType==='manifold' ? 'photo' : 'supplierPhoto';
+    var linkKey = capType==='manifold' ? '_photoLink' : 'photoLinks';
+    var rowsWithPhotos = store[capType].filter(function(r){return r.branch===capBranch && (r[photoKey]||[]).length;});
+    if(rowsWithPhotos.length){
+      toast('Uploading photo(s)…');
+      for(var pi=0;pi<rowsWithPhotos.length;pi++){
+        var pr=rowsWithPhotos[pi];
+        pr[linkKey]=await uploadPhotoSet(capType==='manifold'?'Manifold':'Private', capBranch, pr[photoKey]);
+      }
+    }
+  }
   if(capType==='manifold')syncPush('Manifold',syncRowsManifold(store.manifold.filter(function(r){return r.branch===capBranch;}),capBranch));
   else if(capType==='refill'){
     // record each seal against the active roll history (dedupe handled inside)
@@ -4103,6 +4210,16 @@ function buildCountDoc(src){
   if(recvSizes.length){
     rows+='<h2>Stock Received</h2><table><tr><th>Size</th><th>Full in</th><th>Empty out</th><th>\u0394</th></tr>'+
       recvSizes.map(function(sz){var diff=recv[sz].fullIn-recv[sz].emptyOut;return '<tr><td class="sz">'+sz+'</td><td class="n">'+recv[sz].fullIn+'</td><td class="n">'+recv[sz].emptyOut+'</td><td class="n"'+(diff!==0?' style="color:#C0392B"':'')+'>'+(diff>0?'+':'')+diff+'</td></tr>';}).join('')+'</table>';
+    // Invoice/delivery-note photos are session-level (one set per supplier delivery), so the
+    // same array is duplicated onto every received row - dedupe back down to a single gallery.
+    var recvPhotos=[];
+    (st.received||[]).filter(function(r){return !r.branch||!_b||r.branch===_b;}).forEach(function(r){
+      (Array.isArray(r.photos)?r.photos:[]).forEach(function(p){if(recvPhotos.indexOf(p)===-1)recvPhotos.push(p);});
+    });
+    if(recvPhotos.length){
+      rows+='<div style="margin-top:6px"><b>Invoice / delivery note photo(s):</b><br>'+
+        recvPhotos.map(function(s){return '<img src="'+s+'" style="max-height:70px;border-radius:4px;margin:2px">';}).join('')+'</div>';
+    }
   }
   var rf=(st.refill||[]).filter(inBr);
   if(rf.length){
@@ -4114,15 +4231,18 @@ function buildCountDoc(src){
   var pv=(st.private||[]).filter(inBr);
   if(pv.length){
     var pvTot=pv.reduce(function(a,r){return a+num(r.pumped);},0);
-    rows+='<h2>Private Refills</h2><table><tr><th>Cyl brand</th><th>Gas</th><th>Pumped</th><th>Customer / notes</th></tr>'+
-      pv.map(function(r){var cb=(r.cylBrand==='Other'&&r.otherBrand)?('Other: '+r.otherBrand):(r.cylBrand||'\u2014');return '<tr><td>'+cb+'</td><td>'+(r.gasType||'')+'</td><td class="n">'+(+r.pumped).toFixed(2)+'</td><td>'+(r.customer||'\u2014')+'</td></tr>';}).join('')+
-      '<tr><td colspan="2"><b>Total kg pumped</b></td><td class="n"><b>'+pvTot.toFixed(2)+'</b></td><td></td></tr></table>';
+    rows+='<h2>Private Refills</h2><table><tr><th>Cyl brand</th><th>Gas</th><th>Pumped</th><th>Customer / notes</th><th>Filled by</th><th>Invoice photo</th></tr>'+
+      pv.map(function(r){var cb=(r.cylBrand==='Other'&&r.otherBrand)?('Other: '+r.otherBrand):(r.cylBrand||'\u2014');var ph=Array.isArray(r.supplierPhoto)?r.supplierPhoto:[];return '<tr><td>'+cb+'</td><td>'+(r.gasType||'')+'</td><td class="n">'+(+r.pumped).toFixed(2)+'</td><td>'+(r.customer||'\u2014')+'</td><td>'+(r.filledBy==='Supplier'?('Supplier'+(r.fillSupplier?(' \u2014 '+privateSupplierName(r)):'')):'Us')+'</td><td>'+(ph.length?ph.map(function(s){return '<img src="'+s+'" style="max-height:40px;border-radius:4px;margin:1px">';}).join(''):'\u2014')+'</td></tr>';}).join('')+
+      '<tr><td colspan="2"><b>Total kg pumped</b></td><td class="n"><b>'+pvTot.toFixed(2)+'</b></td><td colspan="3"></td></tr></table>';
   }
   var man=(st.manifold||[]).filter(inBr);
   if(man.length){
-    rows+='<h2>Manifold \u2014 Cylinder Weights</h2><table><tr><th>Stage</th><th>Cyl</th><th>Gas</th><th>Scale</th><th>Tare</th><th>Left</th><th>Note</th></tr>';
+    // Photos are captured client-side as base64 data URIs (m.photo, up to 3 per cylinder) -
+    // embedded directly here since the report is built entirely client-side, no upload needed.
+    function _photoCell(m){var ph=Array.isArray(m.photo)?m.photo:[];return ph.length?ph.map(function(s){return '<img src="'+s+'" style="max-height:40px;border-radius:4px;margin:1px">';}).join(''):'\u2014';}
+    rows+='<h2>Manifold \u2014 Cylinder Weights</h2><table><tr><th>Stage</th><th>Cyl</th><th>Gas</th><th>Scale</th><th>Tare</th><th>Left</th><th>Note</th><th>Photo</th></tr>';
     ['Opening','Added','Closing'].forEach(function(stg){
-      man.filter(function(m){return (m.stage||'Opening')===stg;}).forEach(function(m){rows+='<tr><td><b>'+stg+'</b></td><td>'+m.cyl+'</td><td>'+(m.gasType||'')+'</td><td class="n">'+(+m.scale).toFixed(2)+'</td><td class="n">'+(+m.tare).toFixed(2)+'</td><td class="n">'+(+m.gasLeft).toFixed(2)+'</td><td>'+(m.notes||'\u2014')+'</td></tr>';});
+      man.filter(function(m){return (m.stage||'Opening')===stg;}).forEach(function(m){rows+='<tr><td><b>'+stg+'</b></td><td>'+m.cyl+'</td><td>'+(m.gasType||'')+'</td><td class="n">'+(+m.scale).toFixed(2)+'</td><td class="n">'+(+m.tare).toFixed(2)+'</td><td class="n">'+(+m.gasLeft).toFixed(2)+'</td><td>'+(m.notes||'\u2014')+'</td><td>'+_photoCell(m)+'</td></tr>';});
     });
     rows+='</table>';
     var bal=_manifoldBalFromStore(st,_b);
