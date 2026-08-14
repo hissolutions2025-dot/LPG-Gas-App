@@ -1832,7 +1832,12 @@ function syncFlush(){
 // Used by the Faulty Cylinders feature, which needs actual {ok,...} replies from the backend.
 function apiPost(action,extra){
   var cfg=syncCfg();
-  var payload={action:action,token:cfg.token,caller:operator};
+  // The backend routes on a field called "type" (confirmed directly against the live
+  // endpoint - sending {action:...} came back "unknown type: undefined"; sending
+  // {type:...} at least gets the value echoed back, e.g. "unknown type: suppliersList").
+  // Kept the function's own "action" parameter name/call sites unchanged - only the
+  // wire field name changed here.
+  var payload={type:action,token:cfg.token,caller:operator};
   if(extra){for(var k in extra){if(extra.hasOwnProperty(k))payload[k]=extra[k];}}
   return fetch(cfg.url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)})
     .then(function(r){return r.json();});
@@ -2701,10 +2706,9 @@ const CAP={
   private:{title:'Private Refill',hint:"Customer's own cylinder, sold by weight. Enter each refill.",grid:['Private Refill'],
     header:[], gate:[], multi:true,
     popupFields:[{k:'filledBy',label:'Filled by',type:'tabs',opts:['Us','Supplier'],default:'Us'},
-      {k:'fillSupplier',label:'Supplier / redistributor',type:'select',opts:function(){return privateSuppliersList.map(function(s){return s.name;}).concat(['Other']);},showIf:{k:'filledBy',eq:'Supplier'}},
+      {k:'fillSupplier',label:'Supplier Name',type:'select',opts:function(){return privateSuppliersList.map(function(s){return s.name;}).concat(['Other']);},showIf:{k:'filledBy',eq:'Supplier'}},
       {k:'fillSupplierOther',label:'Other supplier name',type:'text',showIf:[{k:'filledBy',eq:'Supplier'},{k:'fillSupplier',eq:'Other'}]},
       {k:'invoiceNo',label:'Invoice #',type:'text',showIf:{k:'filledBy',eq:'Supplier'}},
-      {k:'totalKgGas',label:'Total kg gas',type:'number',showIf:{k:'filledBy',eq:'Supplier'}},
       {k:'cylBrand',label:'Cylinder brand',type:'select',opts:['Cadac','Safegas','Alva','Other']},
       {k:'otherBrand',label:'Other brand name',type:'text',showIf:{k:'cylBrand',eq:'Other'}},
       {k:'gasType',label:'Gas type',type:'select',opts:['LPG','Propane']},
@@ -3044,7 +3048,11 @@ function addLine(){
     showSaveNudge();
   }
 }
-function resetPopupInputs(c){popPhoto={};c.popupFields.forEach(function(f){var el=document.getElementById('pf-'+f.k);if(el&&f.type!=='auto')el.value=(f.default!==undefined?f.default:'');if(f.type==='tabs')popSetTabField(f.k,el?el.value:f.opts[0]);var th=document.getElementById('pf-'+f.k+'-thumb');if(th)th.innerHTML='';});popCalc();}
+function resetPopupInputs(c){popPhoto={};c.popupFields.forEach(function(f){
+  if(f.type==='tabs')return; // sticky across Add - e.g. Private's Us/Supplier tab stays selected until the user picks a different tab themselves, not reset on every add
+  var el=document.getElementById('pf-'+f.k);if(el&&f.type!=='auto')el.value=(f.default!==undefined?f.default:'');
+  var th=document.getElementById('pf-'+f.k+'-thumb');if(th)th.innerHTML='';
+});popCalc();}
 function removeLine(i){var b=dataBucket();b[modalItem].splice(i,1);if(b[modalItem].length===0)delete b[modalItem];renderModalLines();renderGrid();}
 function closeModal(){document.getElementById('capModal').classList.remove('show');renderGrid();}
 // ---- Masked password prompt (replaces visible prompt()) ----
@@ -3199,7 +3207,7 @@ function capReviewHTML(type){
 function capReviewCols(type){
   if(type==='manifold')return [{k:'cyl',label:'Cylinder'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'gasLeft',label:'Gas left kg'},{k:'notes',label:'Note'},{k:'photo',label:'Photo'}];
   if(type==='refill')return [{k:'size',label:'Size'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'pumped',label:'Pumped kg'},{k:'seal',label:'Seal #'},{k:'notes',label:'Notes'}];
-  if(type==='private')return [{k:'cylBrand',label:'Cyl brand'},{k:'otherBrand',label:'Other name'},{k:'gasType',label:'Gas'},{k:'pumped',label:'kg'},{k:'customer',label:'Customer / notes'},{k:'filledBy',label:'Filled by'},{k:'fillSupplier',label:'Supplier'},{k:'fillSupplierOther',label:'Other supplier'},{k:'invoiceNo',label:'Invoice #'},{k:'totalKgGas',label:'Total kg'}];
+  if(type==='private')return [{k:'cylBrand',label:'Cyl brand'},{k:'otherBrand',label:'Other name'},{k:'gasType',label:'Gas'},{k:'pumped',label:'kg'},{k:'customer',label:'Customer / notes'},{k:'filledBy',label:'Filled by'},{k:'fillSupplier',label:'Supplier'},{k:'fillSupplierOther',label:'Other supplier'},{k:'invoiceNo',label:'Invoice #'}];
   return [{k:'item',label:'Item'},{k:'brand',label:'Brand'}];
 }
 function capBackFromReview(){show('capView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);}
