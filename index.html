@@ -410,7 +410,7 @@
   <div id="capReviewBody"></div>
   <div class="cFooter" style="position:static;box-shadow:none;border:none;padding:16px 0 0;margin-top:10px">
     <button class="cbGhost" onclick="capBackFromReview()">&larr; Back</button>
-    <button class="cbPrimary" onclick="capCommit()">Commit</button>
+    <button class="cbPrimary" id="capCommitBtn" onclick="capCommit()">Commit</button>
   </div>
 </div></div>
 
@@ -677,7 +677,7 @@
         <label class="mLabel">Operator note</label>
         <textarea class="mField" id="fcNote" rows="2" placeholder="Optional note"></textarea>
         <div style="font-size:11px;color:var(--muted);margin:8px 0"><input type="checkbox" disabled style="vertical-align:middle"> Photo evidence — coming soon</div>
-        <button class="saveBtn" onclick="faultySubmit()">Log faulty cylinder</button>
+        <button class="saveBtn" id="faultySubmitBtn" onclick="faultySubmit()">Log faulty cylinder</button>
       </div>
     </div>
 
@@ -706,7 +706,7 @@
       <input type="text" class="mField" id="smName" placeholder="Supplier name">
       <label class="mLabel">Type</label>
       <select class="mField" id="smType"><option>Main brand</option><option>Redistributor</option><option>Other</option></select>
-      <button class="saveBtn" onclick="suppliersMgmtSave()">Save</button>
+      <button class="saveBtn" id="smSaveBtn" onclick="suppliersMgmtSave()">Save</button>
       <button class="sigClear" style="width:100%;margin-top:8px" onclick="suppliersMgmtCancel()">Cancel</button>
     </div>
   </div>
@@ -1331,7 +1331,12 @@ function faultyCalcUpdate(){
   var el=document.getElementById('fcCalc');if(!el)return;
   el.innerHTML='Gas remaining: <b>'+gasRemaining.toFixed(1)+'kg</b> · Nominal: <b>'+nominal+'kg</b> · Gas at risk: <b>'+gasAtRisk.toFixed(1)+'kg</b> (server recalculates on save)';
 }
+var faultySubmitBusy=false;
 function faultySubmit(){
+  // Reentrancy guard - same class of bug as rCommit/capCommit: this fires a fetch and
+  // returns immediately (fire-and-forget .then), so the button stayed fully clickable for
+  // the whole network round-trip and a double-tap logged the same faulty cylinder twice.
+  if(faultySubmitBusy)return;
   if(!perm('faultyCapture')){toast('You do not have Faulty Capture rights',true);return;}
   var qty=num(document.getElementById('fcQty').value);
   if(!(qty>0)){toast('Enter a quantity',true);return;}
@@ -1346,11 +1351,15 @@ function faultySubmit(){
     CylScale:num(document.getElementById('fcScale').value), CylTare:num(document.getElementById('fcTare').value),
     OperatorNote:(document.getElementById('fcNote').value||'').trim()
   };
+  faultySubmitBusy=true;
+  var fsBtn=document.getElementById('faultySubmitBtn');
+  if(fsBtn){fsBtn.disabled=true;fsBtn.style.opacity='.6';}
   apiPost('faultyLog',{row:row}).then(function(res){
     if(!res||!res.ok){toast((res&&res.msg)||'Could not log faulty cylinder',true);return;}
     toast('Faulty cylinder logged'+(res.id?(' — '+res.id):''));
     faultyResetForm();
-  }).catch(function(){toast('Network error — check your connection',true);});
+  }).catch(function(){toast('Network error — check your connection',true);})
+  .finally(function(){setTimeout(function(){faultySubmitBusy=false;if(fsBtn){fsBtn.disabled=false;fsBtn.style.opacity='1';}},600);});
 }
 function faultyResetForm(){
   document.getElementById('fcQty').value=1;
@@ -1528,18 +1537,27 @@ function renderResidualList(){
   var subBtn=document.getElementById('residualSubmitBtn');
   if(subBtn)subBtn.textContent='Submit residual gas ('+residualList.length+')';
 }
+var residualSubmitBusy=false;
 function residualSubmit(){
+  // Reentrancy guard - same class of bug as rCommit/capCommit/faultySubmit: fire-and-forget
+  // .then() left the button clickable for the whole round-trip, so a double-tap submitted
+  // the whole batch of cylinders twice.
+  if(residualSubmitBusy)return;
   if(!perm('residualGas')){toast('You do not have Residual Gas rights',true);return;}
   if(!residualList.length){toast('Add at least one cylinder first',true);return;}
   var rows=residualList.map(function(r){
     return {Branch:r.Branch,Operator:operator,Role:role,Brand:r.Brand,Size:r.Size,GasType:r.GasType,CylScale:r.CylScale,CylTare:r.CylTare,Note:r.Note};
   });
+  residualSubmitBusy=true;
+  var rsBtn=document.getElementById('residualSubmitBtn');
+  if(rsBtn){rsBtn.disabled=true;rsBtn.style.opacity='.6';}
   apiPost('residualLog',{rows:rows}).then(function(res){
     if(!res||!res.ok){toast((res&&res.msg)||'Could not submit residual gas',true);return;}
     toast('Residual gas submitted ('+(res.wrote!==undefined?res.wrote:rows.length)+')');
     residualList=[];
     renderResidualList();
-  }).catch(function(){toast('Network error — check your connection',true);});
+  }).catch(function(){toast('Network error — check your connection',true);})
+  .finally(function(){setTimeout(function(){residualSubmitBusy=false;if(rsBtn){rsBtn.disabled=false;rsBtn.style.opacity='1';}},600);});
 }
 
 // ===== MANAGE SUPPLIERS (Manager/Owner) =====
@@ -1589,7 +1607,12 @@ function suppliersMgmtCancel(){
   var f=document.getElementById('suppliersMgmtForm');if(f)f.style.display='none';
   suppliersMgmtEditingOldName=null;
 }
+var suppliersMgmtSaveBusy=false;
 function suppliersMgmtSave(){
+  // Reentrancy guard - same reasoning as the other commit paths. Lower-stakes here (the
+  // backend already rejects a duplicate "add" outright, and re-running an "edit" is
+  // harmless), but still avoids a confusing double-submit error on a fast double-tap.
+  if(suppliersMgmtSaveBusy)return;
   if(!perm('manageSuppliers')){toast('You do not have rights for Manage Suppliers',true);return;}
   var name=(document.getElementById('smName').value||'').trim();
   if(!name){toast('Enter a supplier name',true);return;}
@@ -1598,12 +1621,16 @@ function suppliersMgmtSave(){
   // it, sending the supplier's category as the routing value instead of the action.
   var extra={name:name,supplierType:document.getElementById('smType').value};
   if(suppliersMgmtEditingOldName)extra.oldName=suppliersMgmtEditingOldName;
+  suppliersMgmtSaveBusy=true;
+  var smBtn=document.getElementById('smSaveBtn');
+  if(smBtn){smBtn.disabled=true;smBtn.style.opacity='.6';}
   apiPost('suppliersSave',extra).then(function(res){
     if(!res||!res.ok){toast((res&&res.msg)||'Could not save supplier',true);return;}
     toast('Supplier saved');
     suppliersMgmtCancel();
     suppliersMgmtLoad();
-  }).catch(function(){toast('Network error — check your connection',true);});
+  }).catch(function(){toast('Network error — check your connection',true);})
+  .finally(function(){setTimeout(function(){suppliersMgmtSaveBusy=false;if(smBtn){smBtn.disabled=false;smBtn.style.opacity='1';}},600);});
 }
 function suppliersMgmtRemove(name){
   if(!perm('manageSuppliers')){toast('You do not have rights for Manage Suppliers',true);return;}
@@ -2580,7 +2607,7 @@ function computeOpeningMismatches(br){
 var R_SIZES=['5kg','9kg','12kg','14kg','19kg','48kg-SV','14kg-FLT','19kg-FLT','48kg-DV','8kg-Prop','18kg-Prop','45kg-Prop-SV','45kg-Prop-DV'];
 var R_ALLBRANDS=['Afrox','Oryx','Easigas','Totalgas','Afrigas','Other'];
 var R_RECVBRANDS={Helderberg:['Afrox','Other'],Kleinmond:['Afrox','Oryx','Other']};
-var rBranch='Helderberg', rDet=null, rData={}, rOverrides={};
+var rBranch='Helderberg', rDet=null, rData={}, rOverrides={}, rCommitBusy=false;
 function rBkt(){if(!rData[rBranch])rData[rBranch]={};return rData[rBranch];}
 function rCell(sz){var b=rBkt();if(!b[sz])b[sz]={recv:[],ret:[]};return b[sz];}
 function rBrands(side){return side==='recv'?R_RECVBRANDS[rBranch]:R_ALLBRANDS;}
@@ -2754,6 +2781,11 @@ function rReview(){
 }
 function rBackFromReview(){document.getElementById('hTitle').textContent='Stock Received';document.getElementById('hSub').textContent='Full received vs empty returned';rShow('recvGridView');rRenderGrid();window.scrollTo(0,0);}
 async function rCommit(){
+  // Reentrancy guard: rCommit now awaits a network round-trip (photo upload) before it
+  // finishes, so a second tap while the first is still in flight used to fire a second,
+  // fully independent commit - duplicating every row (and re-uploading the same photo
+  // again under a new Drive link). Button is also disabled below as a visible backstop.
+  if(rCommitBusy)return;
   var mm=rMismatches();
   // require a reason per mismatched size; collect into rOverrides
   rOverrides={};
@@ -2767,26 +2799,38 @@ async function rCommit(){
   // Compulsory: supplier + delivery note # + invoice # (rOpenDetail already blocks reaching
   // this point without them, but re-check here too in case of a resumed/older draft).
   if(!rSupplierComplete(rBranch)){toast('Select the supplier, delivery note # and invoice # first',true);return;}
-  // Photos are session-level (one set per supplier delivery, not per size/line) - upload
-  // once here, then stamp the same joined link string onto every row pushed below.
-  var photoLinks='';
-  if((sup.photos||[]).length){
-    toast('Uploading photo(s)…');
-    photoLinks=await uploadPhotoSet('Received',rBranch,sup.photos);
+  rCommitBusy=true;
+  var btn=document.getElementById('rCommitBtn');
+  if(btn){btn.disabled=true;btn.style.opacity='.6';}
+  try{
+    // Photos are session-level (one set per supplier delivery, not per size/line) - upload
+    // once here, then stamp the same joined link string onto every row pushed below.
+    var photoLinks='';
+    if((sup.photos||[]).length){
+      toast('Uploading photo(s)…');
+      photoLinks=await uploadPhotoSet('Received',rBranch,sup.photos);
+    }
+    // flush into store.received: one row per brand per side, each carries its size's reason
+    store.received=[];
+    var b=rBkt();
+    R_SIZES.forEach(function(sz){
+      if(!b[sz])return;
+      var reason=rOverrides[sz]||'';
+      b[sz].recv.forEach(function(l){if(num(l.qty)>0)store.received.push({size:sz,brand:l.brand,fullIn:num(l.qty),emptyOut:0,note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
+      b[sz].ret.forEach(function(l){if(num(l.qty)>0)store.received.push({size:sz,brand:l.brand,fullIn:0,emptyOut:num(l.qty),note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
+    });
+    if(store.received.length===0){toast('Nothing to commit',true);return;}
+    syncPush('Received',syncRowsReceived(store.received.filter(function(r){return r.branch===rBranch;}),rBranch));
+    saveWorkingStore();auditLog('Received committed',store.received.length+' line(s) — '+rBranch+(mm.length?' · '+mm.length+' override(s)':''),null,mm.length?rOverrides:null);
+    updateBadges();toast('Received committed'+(mm.length?' ('+mm.length+' override'+(mm.length>1?'s':'')+' logged)':'')+' ✓');goHome();
+  } finally {
+    // Deliberately NOT reset synchronously here: when there's no photo to upload, this
+    // whole function runs with no await at all, so an immediate reset would clear the
+    // guard before a genuine double-tap's second click event even fires - defeating the
+    // guard entirely for the no-photo case (confirmed duplicating rows in testing). A short
+    // cooldown closes that gap regardless of whether an async gap actually occurred.
+    setTimeout(function(){rCommitBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}},600);
   }
-  // flush into store.received: one row per brand per side, each carries its size's reason
-  store.received=[];
-  var b=rBkt();
-  R_SIZES.forEach(function(sz){
-    if(!b[sz])return;
-    var reason=rOverrides[sz]||'';
-    b[sz].recv.forEach(function(l){if(num(l.qty)>0)store.received.push({size:sz,brand:l.brand,fullIn:num(l.qty),emptyOut:0,note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
-    b[sz].ret.forEach(function(l){if(num(l.qty)>0)store.received.push({size:sz,brand:l.brand,fullIn:0,emptyOut:num(l.qty),note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
-  });
-  if(store.received.length===0){toast('Nothing to commit',true);return;}
-  syncPush('Received',syncRowsReceived(store.received.filter(function(r){return r.branch===rBranch;}),rBranch));
-  saveWorkingStore();auditLog('Received committed',store.received.length+' line(s) — '+rBranch+(mm.length?' · '+mm.length+' override(s)':''),null,mm.length?rOverrides:null);
-  updateBadges();toast('Received committed'+(mm.length?' ('+mm.length+' override'+(mm.length>1?'s':'')+' logged)':'')+' ✓');goHome();
 }
 
 /* ============ GENERIC CAPTURE ENGINE ============
@@ -2835,7 +2879,7 @@ const CAP={
     weigh:true, gridLabel:'cylinder', gasLeftCap:true, multiStage:true },
 };
 
-let capType=null, capData={}, toggleSel={}, modalItem=null, capBranch='Helderberg';
+let capType=null, capData={}, toggleSel={}, modalItem=null, capBranch='Helderberg', capCommitBusy=false;
 
 function toggleKey(){ // combined key of all toggle selections e.g. "Opening|Full"
   var c=CAP[capType];
@@ -3359,41 +3403,57 @@ function capReviewCols(type){
 }
 function capBackFromReview(){show('capView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);}
 async function capCommit(){
+  // Reentrancy guard - same reasoning as rCommit's: this now awaits a network round-trip
+  // (photo upload) before finishing, so a second tap mid-commit used to fire a second,
+  // independent commit and duplicate every row. Button is also disabled below.
+  if(capCommitBusy)return;
   var c=CAP[capType];
   if(store[capType].filter(function(r){return r.branch===capBranch;}).length===0){toast('Nothing to commit',true);return;}
-  if(capType==='received'){store._recvOverride=null;}
-  if(capType==='manifold'){computeManifoldMismatches(capBranch);}
-  var mmM=(store._openMismatch||[]).filter(function(m){return m.branch===capBranch&&m.kind==='manifold';});
-  // Photos here are per-row (each cylinder/refill carries its own), unlike Received's
-  // session-level set - upload per-row right before syncing, not in capReview(), which
-  // can re-run and re-flush store[capType] (would mean re-uploading pointlessly).
-  if(capType==='manifold' || capType==='private'){
-    var photoKey = capType==='manifold' ? 'photo' : 'supplierPhoto';
-    var linkKey = capType==='manifold' ? '_photoLink' : 'photoLinks';
-    var rowsWithPhotos = store[capType].filter(function(r){return r.branch===capBranch && (r[photoKey]||[]).length;});
-    if(rowsWithPhotos.length){
-      toast('Uploading photo(s)…');
-      for(var pi=0;pi<rowsWithPhotos.length;pi++){
-        var pr=rowsWithPhotos[pi];
-        pr[linkKey]=await uploadPhotoSet(capType==='manifold'?'Manifold':'Private', capBranch, pr[photoKey]);
+  capCommitBusy=true;
+  var btn=document.getElementById('capCommitBtn');
+  if(btn){btn.disabled=true;btn.style.opacity='.6';}
+  try{
+    if(capType==='received'){store._recvOverride=null;}
+    if(capType==='manifold'){computeManifoldMismatches(capBranch);}
+    var mmM=(store._openMismatch||[]).filter(function(m){return m.branch===capBranch&&m.kind==='manifold';});
+    // Photos here are per-row (each cylinder/refill carries its own), unlike Received's
+    // session-level set - upload per-row right before syncing, not in capReview(), which
+    // can re-run and re-flush store[capType] (would mean re-uploading pointlessly).
+    if(capType==='manifold' || capType==='private'){
+      var photoKey = capType==='manifold' ? 'photo' : 'supplierPhoto';
+      var linkKey = capType==='manifold' ? '_photoLink' : 'photoLinks';
+      var rowsWithPhotos = store[capType].filter(function(r){return r.branch===capBranch && (r[photoKey]||[]).length;});
+      if(rowsWithPhotos.length){
+        toast('Uploading photo(s)…');
+        for(var pi=0;pi<rowsWithPhotos.length;pi++){
+          var pr=rowsWithPhotos[pi];
+          pr[linkKey]=await uploadPhotoSet(capType==='manifold'?'Manifold':'Private', capBranch, pr[photoKey]);
+        }
       }
     }
+    if(capType==='manifold')syncPush('Manifold',syncRowsManifold(store.manifold.filter(function(r){return r.branch===capBranch;}),capBranch));
+    else if(capType==='refill'){
+      // record each seal against the active roll history (dedupe handled inside)
+      store.refill.filter(function(r){return r.branch===capBranch&&r.seal;}).forEach(function(r){sealRecordUse(capBranch,num(r.seal));});
+      syncPush('Refills',syncRowsRefill(store.refill.filter(function(r){return r.branch===capBranch;}),capBranch));
+    }
+    else if(capType==='private')syncPush('Private',syncRowsPrivate(store.private.filter(function(r){return r.branch===capBranch;}),capBranch));
+    clearDraft(capType,capBranch);draftAddCount=0;
+    saveWorkingStore();auditLog(c.title+' committed',store[capType].filter(function(r){return r.branch===capBranch;}).length+' entry(ies) — '+capBranch+(mmM.length?(' · '+mmM.length+' manifold mismatch(es)'):''));
+    updateBadges();
+    if(mmM.length){
+      if(perm('adjust'))toast('⚠ '+mmM.length+' manifold weight(s) differ from previous close — see Count History',true);
+      else toast('⚠ This count is incorrect — see Count History. A manager must review.',true);
+    } else toast(c.title+' committed ✓');
+    goHome();
+  } finally {
+    // Deliberately NOT reset synchronously: when there's nothing to photo-upload (e.g. a
+    // Manifold/Private commit with no photo, or any Refill commit), this whole function
+    // runs with no await at all, so an immediate reset would clear the guard before a
+    // genuine double-tap's second click event even fires - confirmed duplicating rows in
+    // testing. A short cooldown closes that gap regardless of whether an async gap occurred.
+    setTimeout(function(){capCommitBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}},600);
   }
-  if(capType==='manifold')syncPush('Manifold',syncRowsManifold(store.manifold.filter(function(r){return r.branch===capBranch;}),capBranch));
-  else if(capType==='refill'){
-    // record each seal against the active roll history (dedupe handled inside)
-    store.refill.filter(function(r){return r.branch===capBranch&&r.seal;}).forEach(function(r){sealRecordUse(capBranch,num(r.seal));});
-    syncPush('Refills',syncRowsRefill(store.refill.filter(function(r){return r.branch===capBranch;}),capBranch));
-  }
-  else if(capType==='private')syncPush('Private',syncRowsPrivate(store.private.filter(function(r){return r.branch===capBranch;}),capBranch));
-  clearDraft(capType,capBranch);draftAddCount=0;
-  saveWorkingStore();auditLog(c.title+' committed',store[capType].filter(function(r){return r.branch===capBranch;}).length+' entry(ies) — '+capBranch+(mmM.length?(' · '+mmM.length+' manifold mismatch(es)'):''));
-  updateBadges();
-  if(mmM.length){
-    if(perm('adjust'))toast('⚠ '+mmM.length+' manifold weight(s) differ from previous close — see Count History',true);
-    else toast('⚠ This count is incorrect — see Count History. A manager must review.',true);
-  } else toast(c.title+' committed ✓');
-  goHome();
 }
 // Manifold OPENING weights vs previous CLOSE weights, per cylinder, ±0.2kg tolerance
 function computeManifoldMismatches(br){
