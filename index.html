@@ -20,10 +20,15 @@
     justify-content:center;font-weight:800;color:var(--navy-d);font-size:18px;flex:none;}
   header h1{font-size:16px;margin:0;font-weight:700;} header .sub{font-size:11px;opacity:.7;margin-top:1px;}
   #backBtn{background:rgba(255,255,255,.15);border:none;color:#fff;padding:8px 12px;border-radius:8px;font-size:14px;font-weight:600;display:none;cursor:pointer;}
-  #who{margin-left:auto;font-size:11px;opacity:.85;text-align:right;line-height:1.3;}
+  #who{margin-left:auto;position:relative;}
   /* Enforce: user info bar only on the main menu, regardless of JS */
   body:not([data-view="landing"]) #who{display:none !important;}
-  #who button{background:none;border:none;color:#fff;opacity:.7;font-size:10px;text-decoration:underline;cursor:pointer;padding:0;display:block;margin-top:2px;}
+  #userMenuBtn{background:rgba(255,255,255,.15);border:none;color:#fff;width:36px;height:36px;border-radius:50%;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;}
+  .userMenu{display:none;position:absolute;top:44px;right:0;background:#fff;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.25);padding:6px;min-width:190px;z-index:55;}
+  .userMenu.show{display:block;}
+  .userMenu button{display:block;width:100%;text-align:left;background:none;border:none;padding:11px 12px;font-size:13px;font-weight:700;color:var(--navy);cursor:pointer;border-radius:8px;}
+  .userMenu button:active{background:#EEF3F8;}
+  .userMenu button.danger{color:var(--bad);}
   .wrap{padding:18px;} .greet{font-size:13px;color:var(--muted);margin:2px 0 14px;}
   #login{display:flex;flex-direction:column;min-height:calc(100vh - 66px);}
   .loginCard{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:26px 20px;margin:auto 0;}
@@ -186,7 +191,14 @@
   <button id="backBtn" onclick="goHome()">‹ Back</button>
   <div class="logo" title="v53">GS</div>
   <div><h1 id="hTitle">Gas Sales — Operator</h1><div class="sub" id="hSub">Daily capture</div></div>
-  <div id="who" style="display:none"></div>
+  <div id="who" style="display:none">
+    <button id="userMenuBtn" onclick="toggleUserMenu(event)" aria-label="User menu">&#128100;</button>
+    <div id="userMenu" class="userMenu">
+      <button onclick="closeUserMenu();changeMyPw()">Change my password</button>
+      <button onclick="closeUserMenu();switchUser()">Switch user</button>
+      <button class="danger" onclick="closeUserMenu();signOut()">Sign out</button>
+    </div>
+  </div>
 </header>
 
 <!-- LOGIN -->
@@ -240,9 +252,6 @@
       <button class="tile t2" id="tileAdmin" onclick="openAdmin()" style="display:none"><div class="ic">&#9881;</div><h3>Admin</h3><p>Seal register &amp; suppliers</p></button>
     </div>
     <div style="margin-top:18px;display:flex;flex-direction:column;gap:10px;">
-      <button class="exportBtn" style="background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel)" onclick="changeMyPw()">Change my password</button>
-      <button class="exportBtn" style="background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel)" onclick="switchUser()">Switch user</button>
-      <button class="exportBtn" style="background:var(--bad)" onclick="signOut()">Sign out</button>
       <div id="testDateBox" style="display:none;margin-top:8px;border:1.5px dashed var(--amber);border-radius:12px;padding:12px;background:#FFFBF2">
         <div style="font-size:11px;font-weight:800;color:#B5533B;text-transform:uppercase;letter-spacing:.4px">⚙ Test date (demo only)</div>
         <div style="font-size:11px;color:var(--muted);margin:4px 0 8px">Advance the working date to test day-over-day carry-forward. Remove before real use.</div>
@@ -1693,14 +1702,24 @@ function verifyElevatedPw(pw){
   if(me && pw===me.pw && (perm('seal_boundary')||perm('seal_edit_used')||perm('seal_create'))) return me;
   return null;
 }
-// Seal boundary override: current user's own password + seal_boundary right. Logs it. Returns true if authorised.
+// Seal boundary override: current user's own password + seal_boundary right. Logs it.
+// Returns a Promise<boolean> (true if authorised). Uses the app's own custom password
+// modal (askPassword) rather than native prompt() - prompt()/confirm()/alert() are
+// unreliable or unavailable in some mobile/installed-PWA contexts, which is why this
+// override could silently fail to even appear. Same modal already used for Admin tabs,
+// Manage Users, and Audit, so this brings seal overrides in line with the rest of the app.
 function sealBoundaryOverride(msg){
-  var auth=authGate('seal_boundary', msg+'\n\nThis records an out-of-roll seal. Boundary-override right required.');
-  if(!auth)return false;
-  auditLog('Seal boundary override','By '+auth.name+' ('+auth.level+') \u2014 '+capBranch+' \u2014 '+msg);
-  syncPush('Adjustments',[{date:today||'',branch:capBranch,Kind:'SEAL_OVERRIDE',Line:msg,From:'',To:'',Reason:'boundary override',By:auth.name}]);
-  toast('Override authorised by '+auth.name);
-  return true;
+  var me=findUser(operator);
+  if(!me){toast('No active user',true);return Promise.resolve(false);}
+  if(!perm('seal_boundary')){toast('You do not have rights for this action ('+(PERM_LABELS.seal_boundary||'seal_boundary')+')',true);return Promise.resolve(false);}
+  return askPassword('Authorise override', msg+'\n\nThis records an out-of-roll seal. Enter YOUR password to authorise:').then(function(pw){
+    if(pw===null)return false; // cancelled
+    if(pw!==me.pw){toast('Password does not match your login',true);return false;}
+    auditLog('Seal boundary override','By '+me.name+' ('+me.level+') \u2014 '+capBranch+' \u2014 '+msg);
+    syncPush('Adjustments',[{date:today||'',branch:capBranch,Kind:'SEAL_OVERRIDE',Line:msg,From:'',To:'',Reason:'boundary override',By:me.name}]);
+    toast('Override authorised by '+me.name);
+    return true;
+  });
 }
 // VOID a wrongly-captured seal. mode: 'reuse' (number returns to pool) or 'burn' (number retired).
 // Open day (today, not closed) -> seal_void_open. Closed/prior day -> seal_edit_used.
@@ -2016,8 +2035,8 @@ function doLogin(){
   if(!b){toast('Pick a branch',true);return;}
   operator=u.name;role=u.level;branch=b;today=computeToday();currentPerms=userPerms(u);
   document.getElementById('dateVal').textContent=today+(getDateOffset()?'  (TEST +'+getDateOffset()+'d)':'  (today only)');
-  var who=document.getElementById('who');who.style.display='block';
-  who.innerHTML=u.name+' · '+role+' · '+b+'<button onclick="signOut()">Sign out</button>';
+  document.getElementById('who').style.display='block';
+  renderLandingHeader();
   // owner sees Manage Users tile
   document.getElementById('tileUsers').style.display=perm('users')?'flex':'none';
   document.getElementById('tileAudit').style.display=perm('audit')?'flex':'none';
@@ -2033,6 +2052,26 @@ function doLogin(){
 function logout(){if(operator)auditLog('Logout','Signed out');operator=null;branch=null;role=null;document.getElementById('who').style.display='none';document.getElementById('loginPin').value='';document.getElementById('loginUser').value='';loginUserChanged();show('login');}
 function switchUser(){logout();toast('Signed out — next user can sign in');}
 function signOut(){if(confirm('Sign out now?'))logout();}
+// Header title/subtitle on the landing page: the logged-in user's name + role (+ branch),
+// replacing the generic "Gas Sales — Operator" app name once someone's actually signed in.
+function renderLandingHeader(){
+  if(operator){
+    document.getElementById('hTitle').textContent=operator;
+    document.getElementById('hSub').textContent=role+(branch?(' · '+branch):'');
+  } else {
+    document.getElementById('hTitle').textContent='Gas Sales — Operator';
+    document.getElementById('hSub').textContent='Daily capture';
+  }
+}
+function toggleUserMenu(ev){
+  if(ev)ev.stopPropagation();
+  document.getElementById('userMenu').classList.toggle('show');
+}
+function closeUserMenu(){document.getElementById('userMenu').classList.remove('show');}
+document.addEventListener('click',function(ev){
+  var menu=document.getElementById('userMenu');
+  if(menu && menu.classList.contains('show') && !document.getElementById('who').contains(ev.target))closeUserMenu();
+});
 function changeMyPw(){
   var me=findUser(operator);
   if(!me){toast('No user in session',true);return;}
@@ -2057,7 +2096,7 @@ function syncHeader(id){
   var who=document.getElementById('who');
   if(who)who.style.display=(id==='landing'&&operator)?'block':'none';
 }
-function goHome(){show('landing');document.getElementById('hTitle').textContent='Gas Sales — Operator';document.getElementById('hSub').textContent='Daily capture';document.getElementById('backBtn').style.display='none';greyTiles();}
+function goHome(){show('landing');renderLandingHeader();document.getElementById('backBtn').style.display='none';greyTiles();}
 function greyTiles(){
   var map={count:'t1',manifold:'t2',refill:'t3',private:'t4',received:'t5'};
   var br=branch||'Helderberg';
@@ -3007,16 +3046,25 @@ function addLine(){
     var sres=sealValidate(capBranch, d.seal, d.brand);
     if(sres.reject){toast(sres.msg,true);return;}
     if(sres.boundary){
-      // needs manager/owner password override + reason, logged
-      if(!sealBoundaryOverride(sres.msg)){return;} // returns false if cancelled
-      d._sealOverride='OVERRIDE';
-      if(!d.notes||d.notes.trim()===''){toast('Override needs a reason in Notes',true);return;}
+      // needs manager/owner password override + reason, logged. sealBoundaryOverride() is
+      // async (the custom password modal, not native prompt()) - the rest of addLine only
+      // continues once that resolves.
+      sealBoundaryOverride(sres.msg).then(function(ok){
+        if(!ok)return; // cancelled or wrong password - toast already shown
+        d._sealOverride='OVERRIDE';
+        if(!d.notes||d.notes.trim()===''){toast('Override needs a reason in Notes',true);return;}
+        _addLineFinish(c,d);
+      });
+      return;
     } else if(sres.flag){
       // out of range / out of sequence: allowed but reason required in Notes
       if(!d.notes||d.notes.trim()===''){toast(sres.msg+' Enter the reason in Notes first.',true);return;}
       d._sealFlag=(sres.expected!==undefined)?'OUT_OF_SEQUENCE':'OUT_OF_RANGE';
     }
   }
+  _addLineFinish(c,d);
+}
+function _addLineFinish(c,d){
   if(c.receivedMatch){
     if(!d.brand){toast('Pick a brand',true);return;}
     d.fullIn=num(d.fullIn);d.emptyOut=num(d.emptyOut);
