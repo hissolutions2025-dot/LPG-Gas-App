@@ -167,6 +167,14 @@
   .sigLabel{font-size:12px;font-weight:800;color:var(--navy);margin-bottom:6px;}
   .sigPad{width:100%;height:120px;border:1.5px dashed var(--steel);border-radius:10px;background:#FCFDFE;touch-action:none;display:block;}
   .sigClear{margin-top:6px;background:#EEF3F8;color:var(--navy);border:1px solid var(--line);border-radius:8px;padding:6px 14px;font-size:12px;font-weight:700;cursor:pointer;}
+  /* Photo-capture buttons ("Add photo") get their own larger, more prominent style
+     instead of reusing the small generic .sigClear utility button - a primary capture
+     action deserves more visual weight than a "Cancel"/"Edit" button. The larger overall
+     font-size (vs sigClear's 12px) scales the 📷 glyph up along with the label - kept as
+     one plain-text button (no nested icon span) since its label is rewritten via
+     .textContent in several places as the photo count changes, which would strip any
+     inner markup on every update. */
+  .photoBtn{margin-top:6px;background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel);border-radius:10px;padding:12px 16px;font-size:16px;font-weight:800;cursor:pointer;width:100%;}
 
   .histTabs{display:flex;gap:8px;margin-bottom:14px;}
   .htab{flex:1 1 110px;padding:10px 6px;border:1.5px solid var(--navy);border-radius:10px;background:#fff;color:var(--navy);font-size:12.5px;font-weight:800;cursor:pointer;}
@@ -355,7 +363,7 @@
     <div class="cgRow"><label style="width:auto;flex:none">Invoice #</label><input type="text" class="mField" id="rInvoiceNo" style="flex:1;margin:0" placeholder="Optional" oninput="rSupplierFieldChanged('invoiceNo')"></div>
     <div class="cgRow"><label style="width:auto;flex:none">Photos</label><div style="flex:1">
       <input type="file" accept="image/*" capture="environment" id="rSupplierPhotoInput" style="display:none" onchange="rPhotoPick(this)">
-      <button type="button" class="sigClear" id="rSupplierPhotoBtn" onclick="document.getElementById('rSupplierPhotoInput').click()">📷 Add photo (0/2)</button>
+      <button type="button" class="photoBtn" id="rSupplierPhotoBtn" onclick="document.getElementById('rSupplierPhotoInput').click()">📷 Add photo (0/2)</button>
       <div id="rSupplierPhotoThumb" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap"></div>
     </div></div>
   </div>
@@ -706,6 +714,11 @@
       <input type="text" class="mField" id="smName" placeholder="Supplier name">
       <label class="mLabel">Type</label>
       <select class="mField" id="smType"><option>Main brand</option><option>Redistributor</option><option>Other</option></select>
+      <label class="mLabel">Company cylinder brands (Stock Received)</label>
+      <div id="smBrandsRecv" style="margin-bottom:8px"></div>
+      <label class="mLabel">Private cylinder brands (Private Refill)</label>
+      <div id="smBrandsPriv" style="margin-bottom:4px"></div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px">Leave all unchecked to allow this supplier for any brand (no restriction).</div>
       <button class="saveBtn" id="smSaveBtn" onclick="suppliersMgmtSave()">Save</button>
       <button class="sigClear" style="width:100%;margin-top:8px" onclick="suppliersMgmtCancel()">Cancel</button>
     </div>
@@ -1413,6 +1426,7 @@ function renderFaultyRegister(){
         '<b style="color:var(--navy)">'+(r.Brand||'')+' '+(r.Size||'')+' ×'+(r.Qty||1)+'</b>'+
         '<span style="font-size:11px;color:var(--muted)">'+(r.Branch||'')+' · '+id+'</span></div>'+
       '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">'+(r.FaultReason||'')+(r.FaultDetail?(' — '+r.FaultDetail):'')+' · Gas loss risk: '+(r.GasLoss!==undefined&&r.GasLoss!==''?r.GasLoss:'—')+'kg</div>'+
+      (r.OperatorNote?('<div style="font-size:11px;color:var(--steel);margin-bottom:6px;font-style:italic">Note: '+r.OperatorNote+'</div>'):'')+
       '<div class="adminRow"><div class="grow"><label class="mLabel" style="font-size:11px">Status</label>'+
         '<select class="mField frStatus" data-id="'+id+'">'+['Faulty-Held','Uplifted','Replaced','Not Replaced'].map(function(s){return '<option'+(r.Status===s?' selected':'')+'>'+s+'</option>';}).join('')+'</select></div></div>'+
       '<div class="adminRow">'+
@@ -1581,18 +1595,35 @@ function renderSuppliersMgmtList(){
   box.innerHTML=suppliersMgmtList.map(function(s){
     var safe=s.name.replace(/'/g,"\\'");
     return '<div class="brandCard"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'+
-      '<div><b style="color:var(--navy);font-size:15px">'+s.name+'</b><div style="font-size:12px;color:var(--muted)">'+(s.type||'')+'</div></div>'+
+      '<div><b style="color:var(--navy);font-size:15px">'+s.name+'</b><div style="font-size:12px;color:var(--muted)">'+(s.type||'')+'</div>'+
+      ((s.brands&&s.brands.length)?'<div style="font-size:11px;color:var(--steel);margin-top:2px">Brands: '+s.brands.join(', ')+'</div>':'<div style="font-size:11px;color:var(--muted);margin-top:2px;font-style:italic">Any brand (unrestricted)</div>')+
+      '</div>'+
       '<div style="display:flex;gap:8px;flex:none">'+
       '<button class="sigClear" onclick="suppliersMgmtEdit(\''+safe+'\')">Edit</button>'+
       '<button class="sigClear" style="color:#C0392B;border-color:#C0392B!important" onclick="suppliersMgmtRemove(\''+safe+'\')">Remove</button>'+
       '</div></div></div>';
   }).join('');
 }
+// Renders one checkbox-chip group for a given brand universe (BRANDS for Received's company
+// brands, PRIVBRANDS for Private Refill's cylinder brands) - "Other" is left out since it's
+// always an allowed escape hatch (see rBrands()/the private cylBrand popCalc filter below),
+// never something a supplier needs explicitly ticked for.
+function _smBrandCheckboxHtml(cls,brandList,checkedList){
+  return brandList.filter(function(b){return b!=='Other';}).map(function(b){
+    return '<label style="display:inline-block;width:48%;font-size:12px;margin-bottom:4px"><input type="checkbox" class="'+cls+'" value="'+b+'" '+(checkedList.indexOf(b)>-1?'checked':'')+'> '+b+'</label>';
+  }).join('');
+}
+function _smRenderBrandChecks(checkedList){
+  checkedList=checkedList||[];
+  document.getElementById('smBrandsRecv').innerHTML=_smBrandCheckboxHtml('smRecvChk',BRANDS,checkedList);
+  document.getElementById('smBrandsPriv').innerHTML=_smBrandCheckboxHtml('smPrivChk',PRIVBRANDS,checkedList);
+}
 function suppliersMgmtNew(){
   suppliersMgmtEditingOldName=null;
   document.getElementById('suppliersMgmtFormTitle').textContent='Add supplier';
   document.getElementById('smName').value='';
   document.getElementById('smType').value='Main brand';
+  _smRenderBrandChecks([]);
   document.getElementById('suppliersMgmtForm').style.display='block';
 }
 function suppliersMgmtEdit(name){
@@ -1601,6 +1632,7 @@ function suppliersMgmtEdit(name){
   document.getElementById('suppliersMgmtFormTitle').textContent='Edit supplier';
   document.getElementById('smName').value=s.name;
   document.getElementById('smType').value=s.type||'Main brand';
+  _smRenderBrandChecks(s.brands||[]);
   document.getElementById('suppliersMgmtForm').style.display='block';
 }
 function suppliersMgmtCancel(){
@@ -1619,7 +1651,8 @@ function suppliersMgmtSave(){
   // NOTE: must NOT be called "type" here - apiPost() reserves that key for its own
   // routing (type:'suppliersSave'); a same-named key in extra would silently overwrite
   // it, sending the supplier's category as the routing value instead of the action.
-  var extra={name:name,supplierType:document.getElementById('smType').value};
+  var checkedBrands=[].slice.call(document.querySelectorAll('.smRecvChk:checked,.smPrivChk:checked')).map(function(el){return el.value;});
+  var extra={name:name,supplierType:document.getElementById('smType').value,brands:checkedBrands.join(',')};
   if(suppliersMgmtEditingOldName)extra.oldName=suppliersMgmtEditingOldName;
   suppliersMgmtSaveBusy=true;
   var smBtn=document.getElementById('smSaveBtn');
@@ -2564,6 +2597,14 @@ function cCommit(){
     // mark replace-set so the sheet clears old rows for this branch+date first
     syncPush('Counts', rowsForBn.map(function(x){x._replaceKey=(x.date+'|'+x.branch);return x;}));
   });
+  // Every bucket in cData was just flushed into store.count and synced above (the loop
+  // syncs EVERY branch present, not just cBranch) - nothing is left to preserve, so clear
+  // it all. Previously cData was never cleared here, so switching branch after a commit
+  // (e.g. Kleinmond -> Helderberg) left the old branch's counted lines sitting around and
+  // they'd get re-flushed/re-synced on every future commit, including from an unrelated
+  // branch's session - wasteful at best, and risky since each branch resync is a
+  // delete-then-insert that could clobber another device's newer entries for that branch.
+  cData={};
   saveWorkingStore();auditLog('Count committed',store.count.length+' line(s) — '+cBranch+' (Opening/Closing)'+(mm.length?(' · '+mm.length+' opening mismatch(es) flagged'):''));
   updateBadges();
   if(mm.length){
@@ -2615,7 +2656,25 @@ var R_RECVBRANDS={Helderberg:['Afrox','Other'],Kleinmond:['Afrox','Oryx','Other'
 var rBranch='Helderberg', rDet=null, rData={}, rOverrides={}, rCommitBusy=false;
 function rBkt(){if(!rData[rBranch])rData[rBranch]={};return rData[rBranch];}
 function rCell(sz){var b=rBkt();if(!b[sz])b[sz]={recv:[],ret:[]};return b[sz];}
-function rBrands(side){return side==='recv'?R_RECVBRANDS[rBranch]:R_ALLBRANDS;}
+// v10: on the 'recv' side, brand choices are further filtered down to whichever brands the
+// currently-selected supplier is linked to (Manage Suppliers) - a supplier with no brands
+// configured (or the freeform "Other" supplier) stays fully unrestricted, so this only ever
+// narrows the list once someone has actually set it up. 'ret' (empty returns) is never
+// restricted - any brand's empties can come back regardless of who delivered today.
+function rSupplierBrands(){
+  var s=rSupplierFor(rBranch);
+  if(!s.supplier||s.isOther)return null;
+  var rec=rSuppliersList.filter(function(x){return x.name===s.supplier;})[0];
+  return (rec&&rec.brands&&rec.brands.length)?rec.brands:null;
+}
+function rBrands(side){
+  var branchList=R_RECVBRANDS[rBranch]||R_ALLBRANDS;
+  if(side!=='recv')return R_ALLBRANDS;
+  var supBrands=rSupplierBrands();
+  if(!supBrands)return branchList;
+  var filtered=branchList.filter(function(b){return b==='Other'||supBrands.indexOf(b)>-1;});
+  return filtered.length?filtered:branchList; // never leave the picker with zero options
+}
 function rSideTotal(a){return a.reduce(function(x,l){return x+num(l.qty);},0);}
 function rShow(id){var vs=document.querySelectorAll('.view');for(var i=0;i<vs.length;i++)vs[i].classList.remove('active');document.getElementById(id).classList.add('active');syncHeader(id);}
 
@@ -2644,6 +2703,22 @@ function rSupplierChanged(){
   var st=rSupplierFor(rBranch);
   st.isOther=isOther;
   st.supplier=isOther?(document.getElementById('rSupplierOther').value||''):sel.value;
+  _rResetInvalidBrands();
+}
+// If lines were already added under a previous supplier and the newly-selected supplier's
+// brand list no longer allows one of them, reset that line's brand rather than silently
+// leaving an invalid brand sitting in the data - the whole point of this feature is that a
+// captured line's brand always matches who it says it's from.
+function _rResetInvalidBrands(){
+  var allowed=rBrands('recv');
+  var bkt=rData[rBranch];if(!bkt)return;
+  var changed=false;
+  Object.keys(bkt).forEach(function(sz){
+    (bkt[sz].recv||[]).forEach(function(l){
+      if(l.brand && allowed.indexOf(l.brand)===-1){l.brand=allowed[0];changed=true;}
+    });
+  });
+  if(changed)toast('Some brands were reset — not linked to the new supplier',true);
 }
 function rSupplierFieldChanged(key){
   var st=rSupplierFor(rBranch);
@@ -2858,7 +2933,7 @@ const CAP={
       {k:'fillSupplier',label:'Supplier Name',type:'select',opts:function(){return privateSuppliersList.map(function(s){return s.name;}).concat(['Other']);},showIf:{k:'filledBy',eq:'Supplier'}},
       {k:'fillSupplierOther',label:'Other supplier name',type:'text',showIf:[{k:'filledBy',eq:'Supplier'},{k:'fillSupplier',eq:'Other'}]},
       {k:'invoiceNo',label:'Invoice #',type:'text',showIf:{k:'filledBy',eq:'Supplier'}},
-      {k:'cylBrand',label:'Cylinder brand',type:'select',opts:['Cadac','Safegas','Alva','Other']},
+      {k:'cylBrand',label:'Cylinder brand',type:'select',opts:PRIVBRANDS},
       {k:'otherBrand',label:'Other brand name',type:'text',showIf:{k:'cylBrand',eq:'Other'}},
       {k:'gasType',label:'Gas type',type:'select',opts:['LPG','Propane']},
       {k:'pumped',label:'Gas pumped (kg)',type:'number'},
@@ -3061,7 +3136,7 @@ function buildPopupForm(c){
     else if(f.type==='gasType')html+='<select class="mField" id="pf-'+f.k+'" onchange="popCalc()"><option value="">Select…</option></select><div class="mNote" id="pf-gasNote"></div>';
     else if(f.type==='number')html+='<input class="mField" type="number" inputmode="decimal" step="any" id="pf-'+f.k+'" oninput="popCalc()" onwheel="this.blur()">';
     else if(f.type==='text')html+='<input class="mField" type="text" id="pf-'+f.k+'">';
-    else if(f.type==='photo')html+='<input type="file" accept="image/*" capture="environment" id="pf-'+f.k+'" style="display:none" onchange="onPhotoPick(this,\''+f.k+'\')"><button type="button" class="sigClear" id="pf-'+f.k+'-btn" style="width:100%" onclick="document.getElementById(\'pf-'+f.k+'\').click()">📷 Add photo (0/3)</button><div id="pf-'+f.k+'-thumb" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap"></div>';
+    else if(f.type==='photo')html+='<input type="file" accept="image/*" capture="environment" id="pf-'+f.k+'" style="display:none" onchange="onPhotoPick(this,\''+f.k+'\')"><button type="button" class="photoBtn" id="pf-'+f.k+'-btn" onclick="document.getElementById(\'pf-'+f.k+'\').click()">📷 Add photo (0/3)</button><div id="pf-'+f.k+'-thumb" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap"></div>';
     html+='</div>';
   });
   box.innerHTML=html;
@@ -3121,6 +3196,19 @@ function popCalc(){
   if(gt && gnote){var isProp=(modalItem||'').indexOf('Prop')>=0;var cur=gt.value;var opts=isProp?['Propane']:['LPG','Propane'];
     gt.innerHTML='<option value="">Select…</option>'+opts.map(function(x){return '<option '+(x===cur?'selected':'')+'>'+x+'</option>';}).join('');
     gnote.textContent=isProp?'Propane cylinder — Propane only':'LPG cylinder — LPG or leftover Propane';}
+  // v10: Private Refill's cylinder-brand list narrows to whichever private brands the
+  // chosen fillSupplier is linked to (Manage Suppliers) - unrestricted (full PRIVBRANDS
+  // list) when filled by "Us", when no supplier is chosen yet, or when the supplier is
+  // "Other"/has no brands configured. Mirrors rBrands()'s filtering for Stock Received.
+  var cb=document.getElementById('pf-cylBrand');
+  if(cb){
+    var curCb=cb.value;
+    var supRec=(d.filledBy==='Supplier'&&d.fillSupplier&&d.fillSupplier!=='Other')?privateSuppliersList.filter(function(x){return x.name===d.fillSupplier;})[0]:null;
+    var supBrandsP=(supRec&&supRec.brands)?supRec.brands.filter(function(b){return PRIVBRANDS.indexOf(b)>-1;}):[];
+    var cbOpts=supBrandsP.length?PRIVBRANDS.filter(function(b){return b==='Other'||supBrandsP.indexOf(b)>-1;}):PRIVBRANDS;
+    cb.innerHTML='<option value="">Select…</option>'+cbOpts.map(function(x){return '<option'+(x===curCb?' selected':'')+'>'+x+'</option>';}).join('');
+    if(curCb && cbOpts.indexOf(curCb)===-1){cb.value='';toast('Cylinder brand reset — not linked to this supplier',true);}
+  }
   c.popupFields.filter(function(f){return f.type==='auto';}).forEach(function(f){
     var el=document.getElementById('pf-'+f.k);var val=f.calc(popCollect(),modalItem);
     el.value=(val===''||isNaN(val))?'—':(Math.round(val*100)/100).toFixed(2);
@@ -3407,6 +3495,28 @@ function capReviewCols(type){
   return [{k:'item',label:'Item'},{k:'brand',label:'Brand'}];
 }
 function capBackFromReview(){show('capView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);}
+// Removes just-committed lines for branch `br` out of capData, per item (and per toggle
+// bucket for toggle-based types like Manifold). capData was previously never cleared on
+// commit - capReview() re-flushes ALL of capData into store[capType] every time it runs
+// (that's how it correctly rebuilds the review screen if you go back and add more before
+// committing), so any already-committed line still sitting in capData got re-sent to the
+// sheet again on the NEXT commit, appended alongside whatever was genuinely new - "commit
+// again and you get the old refill plus the new one" duplication. Only prunes this
+// branch's lines (matched via each line's own _addedBranch, same as capReview's own
+// branch bookkeeping) so another branch's still-in-progress, not-yet-committed draft
+// lines (from switching branch mid-capture without reviewing) are left alone.
+function _clearCommittedCapData(br){
+  function prune(bucket){
+    Object.keys(bucket).forEach(function(item){
+      if(item==='_type')return;
+      bucket[item]=(bucket[item]||[]).filter(function(l){return (l._addedBranch||capBranch)!==br;});
+      if(bucket[item].length===0)delete bucket[item];
+    });
+  }
+  var c=CAP[capType];
+  if(c.toggles){Object.keys(capData).forEach(function(k){if(k!=='_type')prune(capData[k]);});}
+  else prune(capData['_flat']||{});
+}
 async function capCommit(){
   // Reentrancy guard - same reasoning as rCommit's: this now awaits a network round-trip
   // (photo upload) before finishing, so a second tap mid-commit used to fire a second,
@@ -3443,6 +3553,7 @@ async function capCommit(){
       syncPush('Refills',syncRowsRefill(store.refill.filter(function(r){return r.branch===capBranch;}),capBranch));
     }
     else if(capType==='private')syncPush('Private',syncRowsPrivate(store.private.filter(function(r){return r.branch===capBranch;}),capBranch));
+    _clearCommittedCapData(capBranch);
     clearDraft(capType,capBranch);draftAddCount=0;
     saveWorkingStore();auditLog(c.title+' committed',store[capType].filter(function(r){return r.branch===capBranch;}).length+' entry(ies) — '+capBranch+(mmM.length?(' · '+mmM.length+' manifold mismatch(es)'):''));
     updateBadges();
