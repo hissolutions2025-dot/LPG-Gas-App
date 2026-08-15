@@ -791,6 +791,20 @@
 
 <div id="toast"></div>
 
+<!-- IDLE LOCK OVERLAY - covers the entire app after inactivity to prevent "pocket edits".
+     Not a logout: the underlying view/draft state is left completely untouched underneath -
+     entering the SAME logged-in user's password just hides this overlay again. z-index is
+     the highest in the app (above toast's 70) so nothing else can ever sit on top of it. -->
+<div id="idleLockOverlay" style="display:none;position:fixed;inset:0;background:var(--navy-d);z-index:9999;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center">
+  <div style="font-size:56px;margin-bottom:10px">🔒</div>
+  <h2 style="color:#fff;margin:0 0 4px;font-size:20px">App locked</h2>
+  <div style="color:#B4C1CC;font-size:13px;margin-bottom:4px">Locked after a few minutes of inactivity</div>
+  <div id="idleLockWho" style="color:#fff;font-weight:700;font-size:14px;margin-bottom:20px"></div>
+  <input type="password" class="mField" id="idleLockPw" placeholder="Your password" autocomplete="off" style="max-width:260px;text-align:center" onkeydown="if(event.key==='Enter')idleUnlock()">
+  <button class="saveBtn" style="max-width:260px;margin-top:12px" onclick="idleUnlock()">Unlock</button>
+  <button class="sigClear" style="max-width:260px;margin-top:10px;background:transparent;color:#B4C1CC;border-color:#465A6B" onclick="idleSignOutInstead()">Not you? Sign out instead</button>
+</div>
+
 <script>
 // ===== FEATURE FLAGS (dormant until switched on) =====
 // Flip to true to activate. Backend (Apps Script) handler is deployed but idle until then.
@@ -2162,10 +2176,69 @@ function doLogin(){
   syncFlush();
   refreshTestDateUI();
   show('landing');updateBadges();
+  _armIdleTimer();
 }
-function logout(){if(operator)auditLog('Logout','Signed out');operator=null;branch=null;role=null;document.getElementById('who').style.display='none';document.getElementById('loginPin').value='';document.getElementById('loginUser').value='';loginUserChanged();show('login');}
+function logout(){
+  if(operator)auditLog('Logout','Signed out');
+  operator=null;branch=null;role=null;
+  // idle lock must not be able to outlive its own session - clear it unconditionally on
+  // every logout, whether that's a normal sign-out or the lock screen's own "Not you? Sign
+  // out instead" escape hatch (which just calls this function directly).
+  if(idleTimer){clearTimeout(idleTimer);idleTimer=null;}
+  idleLockActive=false;
+  var _ilo=document.getElementById('idleLockOverlay');if(_ilo)_ilo.style.display='none';
+  document.getElementById('who').style.display='none';document.getElementById('loginPin').value='';document.getElementById('loginUser').value='';loginUserChanged();show('login');
+}
 function switchUser(){logout();toast('Signed out — next user can sign in');}
 function signOut(){if(confirm('Sign out now?'))logout();}
+
+// ===== IDLE LOCK - auto-locks the app after a few minutes of inactivity to stop "pocket
+// edits" (accidental taps changing counts while the device is put away, unattended, without
+// anyone remembering to sign out). Not a logout: the whole app - whatever view/draft was open
+// - sits untouched underneath a full-screen overlay. Typing the SAME logged-in user's own
+// password hides the overlay again and picks up exactly where it left off. Applies to every
+// view uniformly (no exceptions) - idle is idle regardless of which screen happens to be open.
+var IDLE_LOCK_MS=3*60*1000; // 3 minutes
+var idleTimer=null, idleLockActive=false, _lastIdleReset=0;
+function _armIdleTimer(){
+  if(idleTimer){clearTimeout(idleTimer);idleTimer=null;}
+  if(!operator||idleLockActive)return; // nothing logged in yet, or already locked - don't arm
+  idleTimer=setTimeout(triggerIdleLock,IDLE_LOCK_MS);
+}
+function _onUserActivity(){
+  if(!operator||idleLockActive)return; // no-op while locked - unlocking re-arms it explicitly
+  var now=Date.now();
+  if(now-_lastIdleReset<1000)return; // throttle - mousemove/scroll can fire dozens of times a second
+  _lastIdleReset=now;
+  _armIdleTimer();
+}
+['click','touchstart','keydown','mousemove','scroll'].forEach(function(evt){
+  document.addEventListener(evt,_onUserActivity,{passive:true});
+});
+function triggerIdleLock(){
+  if(!operator||idleLockActive)return;
+  idleLockActive=true;
+  document.getElementById('idleLockWho').textContent=operator+' ('+role+')';
+  document.getElementById('idleLockPw').value='';
+  document.getElementById('idleLockOverlay').style.display='flex';
+  setTimeout(function(){var el=document.getElementById('idleLockPw');if(el)el.focus();},50);
+  auditLog('Idle lock','Auto-locked after '+(IDLE_LOCK_MS/60000)+' min inactivity');
+}
+function idleUnlock(){
+  if(!idleLockActive)return;
+  var pw=document.getElementById('idleLockPw').value;
+  var u=findUser(operator);
+  if(!u||pw!==u.pw){toast('Wrong password',true);return;}
+  idleLockActive=false;
+  document.getElementById('idleLockOverlay').style.display='none';
+  document.getElementById('idleLockPw').value='';
+  auditLog('Idle unlock','Resumed after idle lock');
+  _armIdleTimer();
+}
+// Escape hatch for when the device gets handed to someone else while still locked and they
+// don't know the locked user's password - just routes into the normal logout flow (which
+// itself clears the lock state unconditionally, see logout() above).
+function idleSignOutInstead(){logout();}
 // Header title/subtitle on the landing page: the logged-in user's name + role (+ branch),
 // replacing the generic "Gas Sales — Operator" app name once someone's actually signed in.
 function renderLandingHeader(){
