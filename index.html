@@ -2702,6 +2702,17 @@ function rCell(sz){var b=rBkt();if(!b[sz])b[sz]={recv:[],ret:[]};return b[sz];}
 function _suppliersForBranch(list,br){
   return list.filter(function(s){return !s.branches || !s.branches.length || s.branches.indexOf(br)>-1;});
 }
+// A supplier with brands ticked at all only belongs in a dropdown its ticks actually cover -
+// a supplier linked only to company brands (e.g. HelderGas -> Afrox) has never been marked as
+// doing private refills, so it has no business appearing in Private Refill's Supplier Name
+// list (and symmetrically, a private-only supplier shouldn't appear in Received's). A
+// supplier with NOTHING ticked at all is still the one deliberate exception - stays
+// unrestricted/visible everywhere, same backward-compatible default as brand narrowing itself
+// (freshly-added suppliers, or ones from before this feature existed, keep working as-is
+// until someone actually configures them).
+function _supplierAppliesTo(s,brandUniverse){
+  return !s.brands || !s.brands.length || s.brands.some(function(b){return brandUniverse.indexOf(b)>-1;});
+}
 function rSupplierBrands(){
   var s=rSupplierFor(rBranch);
   if(!s.supplier||s.isOther)return null;
@@ -2736,7 +2747,7 @@ function rLoadSuppliers(){
 }
 function rRenderSupplierSelect(){
   var sel=document.getElementById('rSupplierSelect');if(!sel)return;
-  var opts=_suppliersForBranch(rSuppliersList,rBranch);
+  var opts=_suppliersForBranch(rSuppliersList,rBranch).filter(function(s){return _supplierAppliesTo(s,BRANDS);});
   sel.innerHTML='<option value="">Select…</option>'+opts.map(function(s){return '<option value="'+s.name+'">'+s.name+'</option>';}).join('')+'<option value="__other__">Other…</option>';
 }
 function rSupplierChanged(){
@@ -2980,7 +2991,7 @@ const CAP={
   private:{title:'Private Refill',hint:"Customer's own cylinder, sold by weight. Enter each refill.",grid:['Private Refill'],
     header:[], gate:[], multi:true,
     popupFields:[{k:'filledBy',label:'Filled by',type:'tabs',opts:['Us','Supplier'],default:'Us'},
-      {k:'fillSupplier',label:'Supplier Name',type:'select',opts:function(){return _suppliersForBranch(privateSuppliersList,capBranch).map(function(s){return s.name;}).concat(['Other']);},showIf:{k:'filledBy',eq:'Supplier'}},
+      {k:'fillSupplier',label:'Supplier Name',type:'select',opts:function(){return _suppliersForBranch(privateSuppliersList,capBranch).filter(function(s){return _supplierAppliesTo(s,PRIVBRANDS);}).map(function(s){return s.name;}).concat(['Other']);},showIf:{k:'filledBy',eq:'Supplier'}},
       {k:'fillSupplierOther',label:'Other supplier name',type:'text',showIf:[{k:'filledBy',eq:'Supplier'},{k:'fillSupplier',eq:'Other'}]},
       {k:'invoiceNo',label:'Invoice #',type:'text',showIf:{k:'filledBy',eq:'Supplier'}},
       {k:'cylBrand',label:'Cylinder brand',type:'select',opts:PRIVBRANDS},
@@ -3066,7 +3077,7 @@ function loadPrivateSuppliers(){
 function _refreshFillSupplierSelect(){
   var sel=document.getElementById('pf-fillSupplier');if(!sel)return;
   var cur=sel.value;
-  var opts=_suppliersForBranch(privateSuppliersList,capBranch).map(function(s){return s.name;}).concat(['Other']);
+  var opts=_suppliersForBranch(privateSuppliersList,capBranch).filter(function(s){return _supplierAppliesTo(s,PRIVBRANDS);}).map(function(s){return s.name;}).concat(['Other']);
   sel.innerHTML='<option value="">Select…</option>'+opts.map(function(o){return '<option'+(o===cur?' selected':'')+'>'+o+'</option>';}).join('');
 }
 function privateSupplierName(r){return (r.fillSupplier==='Other')?(r.fillSupplierOther||''):(r.fillSupplier||'');}
