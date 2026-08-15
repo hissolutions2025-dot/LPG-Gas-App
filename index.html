@@ -625,9 +625,10 @@
       <div style="margin:10px 0;font-size:13px;color:var(--navy)">
         <div style="font-weight:700;margin-bottom:6px">What to clear:</div>
         <label style="display:block;margin-bottom:4px"><input type="checkbox" class="clrArea" value="Counts" checked> Stock counts (Opening + Closing)</label>
+        <label style="display:block;margin-bottom:4px"><input type="checkbox" class="clrArea" value="Manifold"> Manifold</label>
         <label style="display:block;margin-bottom:4px"><input type="checkbox" class="clrArea" value="Refills"> Refills</label>
         <label style="display:block;margin-bottom:4px"><input type="checkbox" class="clrArea" value="Private"> Private refills</label>
-        <label style="display:block;margin-bottom:4px"><input type="checkbox" class="clrArea" value="Manifold"> Manifold</label>
+        <label style="display:block;margin-bottom:4px"><input type="checkbox" class="clrArea" value="Received"> Stock received</label>
         <label style="display:block;margin-bottom:4px"><input type="checkbox" class="clrArea" value="SealsUsed"> Seals used (returns numbers to roll)</label>
         <label style="display:block;margin-bottom:4px"><input type="checkbox" class="clrArea" value="DayClose"> Day close record</label>
       </div>
@@ -1207,8 +1208,13 @@ function doClearStockTake(){
 function _clearStockTakeDo(date,brSel,areas,branches){
 
   // map areas -> local store keys + sheet tab names
-  var storeKeyByArea={Counts:'count',Refills:'refill',Private:'private',Manifold:'manifold'};
-  var sheetTabByArea={Counts:'Counts',Refills:'Refills',Private:'Private',Manifold:'Manifold',DayClose:'DayClose'};
+  // "Received" was missing here even though the backend's ClearDay whitelist has always
+  // allowed it - Stock Received was added to the app well after this Clear Stock Take
+  // feature was first built, and this mapping (plus the checkbox above) never got updated
+  // to match. Without it, an Owner had no way to undo a bad Stock Received capture short
+  // of editing the Google Sheet directly.
+  var storeKeyByArea={Counts:'count',Refills:'refill',Private:'private',Manifold:'manifold',Received:'received'};
+  var sheetTabByArea={Counts:'Counts',Refills:'Refills',Private:'Private',Manifold:'Manifold',Received:'Received',DayClose:'DayClose'};
 
   branches.forEach(function(bn){
     // ---- LOCAL: clear from saved day record (if this date is closed) ----
@@ -2902,6 +2908,14 @@ async function rCommit(){
     if(store.received.length===0){toast('Nothing to commit',true);return;}
     syncPush('Received',syncRowsReceived(store.received.filter(function(r){return r.branch===rBranch;}),rBranch));
     saveWorkingStore();auditLog('Received committed',store.received.length+' line(s) — '+rBranch+(mm.length?' · '+mm.length+' override(s)':''),null,mm.length?rOverrides:null);
+    // Same class of bug as Refill/Private: rData[rBranch] (the grid's Full In/Empty Out
+    // lines) and rSupplierState[rBranch] (supplier/delivery note/invoice/photos) were never
+    // cleared after a successful commit, so re-opening Received for this branch still showed
+    // the just-committed delivery's lines - any new quantities typed in got added ON TOP of
+    // the old ones, and a second commit re-sent both. A new delivery also has no business
+    // inheriting the previous one's supplier/delivery note/invoice/photos, so both are reset.
+    delete rData[rBranch];
+    delete rSupplierState[rBranch];
     updateBadges();toast('Received committed'+(mm.length?' ('+mm.length+' override'+(mm.length>1?'s':'')+' logged)':'')+' ✓');goHome();
   } finally {
     // Deliberately NOT reset synchronously here: when there's no photo to upload, this
