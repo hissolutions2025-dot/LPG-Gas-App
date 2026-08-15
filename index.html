@@ -326,6 +326,7 @@
   </div>
   <div class="wrap">
     <div class="ctxbar" id="cCtx" style="margin-bottom:10px;"></div>
+    <div id="cTimeWarnBanner" style="display:none;background:var(--yellow);border:1.5px solid var(--amber);border-radius:10px;padding:8px 12px;font-size:12px;color:var(--navy);font-weight:700;margin-bottom:10px"></div>
     <div class="capHint" id="cHint" style="margin-bottom:12px;"></div>
     <div class="cGrid" id="cGrid"></div>
   </div>
@@ -546,6 +547,7 @@
     <button class="htab" id="atab-bsetup" onclick="adminTab('bsetup')">Branch Setup</button>
     <button class="htab" id="atab-faulty" onclick="adminTab('faulty')">Faulty Cylinders</button>
     <button class="htab" id="atab-suppliersmgmt" onclick="adminTab('suppliersmgmt')">Manage Suppliers</button>
+    <button class="htab" id="atab-counttimes" onclick="adminTab('counttimes')">Count Times</button>
   </div>
 
   <!-- SEAL REGISTER PANE -->
@@ -731,6 +733,21 @@
     </div>
   </div>
 
+  <!-- COUNT TIMES (Manager/Owner) -->
+  <div id="adminCountTimes" style="display:none">
+    <div class="histSection">
+      <h4>Opening / Closing count times</h4>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Before this time, the app expects an <b>Opening</b> count. From this time onward, it expects a <b>Closing</b> count. If someone commits the other type, they'll get a heads-up (not blocked) in case it was a mistake.</div>
+      <label class="mLabel">Mon–Fri</label>
+      <input type="time" class="mField" id="ctWeekday">
+      <label class="mLabel">Saturday</label>
+      <input type="time" class="mField" id="ctSaturday">
+      <label class="mLabel">Sunday</label>
+      <input type="time" class="mField" id="ctSunday">
+      <button class="saveBtn" style="margin-top:10px" onclick="saveCountCutoffUI()">Save</button>
+    </div>
+  </div>
+
   <button class="exportBtn" style="background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel);margin-top:8px" onclick="goHome()">&larr; Back to menu</button>
 </div></div>
 
@@ -773,6 +790,14 @@
   <div id="mForm"></div>
   <button class="mAddBtn" id="mAddBtn" onclick="addLine()">Add</button>
   <button class="mDone" onclick="doneModal()">Done</button>
+</div></div>
+
+<div id="countTimeWarnModal" class="modal"><div class="modalCard">
+  <div class="modalHead"><span>Check the count type</span><button onclick="_countTimeWarnCancel()" class="mClose">&#10005;</button></div>
+  <div style="padding:4px 0 10px"><div id="countTimeWarnMsg" style="font-size:13px;color:var(--navy);white-space:pre-line;margin-bottom:14px"></div></div>
+  <button class="saveBtn" id="countTimeWarnSwitchBtn" onclick="_countTimeWarnSwitch()">Switch me</button>
+  <button class="saveBtn" id="countTimeWarnContinueBtn" style="background:var(--steel);margin-top:8px" onclick="_countTimeWarnContinue()">Continue anyway</button>
+  <button class="sigClear" style="width:100%;margin-top:8px" onclick="_countTimeWarnCancel()">Cancel</button>
 </div></div>
 
 <div id="pwModal" class="modal"><div class="modalCard">
@@ -977,11 +1002,11 @@ function openAdmin(){
   show('adminView');window.scrollTo(0,0);
 }
 var _adminUnlocked={}; // per Admin session: which tabs unlocked
-var ADMIN_TAB_PERM={seals:'seal_admin',suppliers:'seal_admin',clear:'seal_edit_used',bsetup:'branch_setup',suppliersmgmt:'manageSuppliers'};
-var ADMIN_TAB_NAME={seals:'Seal Register',suppliers:'Brands',clear:'Clear Stock Take',bsetup:'Branch Setup',faulty:'Faulty Cylinders',suppliersmgmt:'Manage Suppliers'};
+var ADMIN_TAB_PERM={seals:'seal_admin',suppliers:'seal_admin',clear:'seal_edit_used',bsetup:'branch_setup',suppliersmgmt:'manageSuppliers',counttimes:'branch_setup'};
+var ADMIN_TAB_NAME={seals:'Seal Register',suppliers:'Brands',clear:'Clear Stock Take',bsetup:'Branch Setup',faulty:'Faulty Cylinders',suppliersmgmt:'Manage Suppliers',counttimes:'Count Times'};
 function adminShowTabsOnly(){
-  ['adminSeals','adminSuppliers','adminClear','adminBsetup','adminFaulty','adminSuppliersMgmt'].forEach(function(id){var e=document.getElementById(id);if(e)e.style.display='none';});
-  ['atab-seals','atab-suppliers','atab-clear','atab-bsetup','atab-faulty','atab-suppliersmgmt'].forEach(function(id){var e=document.getElementById(id);if(e)e.classList.remove('on');});
+  ['adminSeals','adminSuppliers','adminClear','adminBsetup','adminFaulty','adminSuppliersMgmt','adminCountTimes'].forEach(function(id){var e=document.getElementById(id);if(e)e.style.display='none';});
+  ['atab-seals','atab-suppliers','atab-clear','atab-bsetup','atab-faulty','atab-suppliersmgmt','atab-counttimes'].forEach(function(id){var e=document.getElementById(id);if(e)e.classList.remove('on');});
   _adminUnlocked={}; // reset on each Admin entry
 }
 function adminTab(t){
@@ -1009,18 +1034,21 @@ function _adminTabShow(t){
   var _abs=document.getElementById('adminBsetup');if(_abs)_abs.style.display=(t==='bsetup')?'block':'none';
   var _af=document.getElementById('adminFaulty');if(_af)_af.style.display=(t==='faulty')?'block':'none';
   var _asm=document.getElementById('adminSuppliersMgmt');if(_asm)_asm.style.display=(t==='suppliersmgmt')?'block':'none';
+  var _act=document.getElementById('adminCountTimes');if(_act)_act.style.display=(t==='counttimes')?'block':'none';
   document.getElementById('atab-seals').classList.toggle('on',t==='seals');
   document.getElementById('atab-suppliers').classList.toggle('on',t==='suppliers');
   var _tc=document.getElementById('atab-clear');if(_tc)_tc.classList.toggle('on',t==='clear');
   var _tbs=document.getElementById('atab-bsetup');if(_tbs)_tbs.classList.toggle('on',t==='bsetup');
   var _tf=document.getElementById('atab-faulty');if(_tf)_tf.classList.toggle('on',t==='faulty');
   var _tsm=document.getElementById('atab-suppliersmgmt');if(_tsm)_tsm.classList.toggle('on',t==='suppliersmgmt');
+  var _tct=document.getElementById('atab-counttimes');if(_tct)_tct.classList.toggle('on',t==='counttimes');
   if(t==='bsetup')renderBsetup();
   if(t==='clear'){var d=document.getElementById('clrDate');if(d&&!d.value)d.value=today;}
   if(t==='seals'){fillBrandPicker();renderRolls();}
   if(t==='suppliers')renderSuppliers();
   if(t==='faulty')faultyTabInit();
   if(t==='suppliersmgmt'){suppliersMgmtCancel();suppliersMgmtLoad();}
+  if(t==='counttimes')loadCountCutoffUI();
 }
 function adminSetBranch(b){
   if(role==='Manager' && (findUser(operator).branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
@@ -1740,6 +1768,51 @@ var REFILL_ITEMS=['5kg','9kg','12kg','14kg','19kg','14kg-FLT','19kg-FLT','8kg-Pr
 var SECTION_ITEMS={count:COUNT_ITEMS,refill:REFILL_ITEMS,received:COUNT_ITEMS,private:[],manifold:['Cyl 1','Cyl 2','Cyl 3','Cyl 4']};
 function bcfgLoad(){try{return JSON.parse(localStorage.getItem('gs_bcfg')||'{}');}catch(e){return {};}}
 function bcfgSave(c){localStorage.setItem('gs_bcfg',JSON.stringify(c));}
+
+// ===== COUNT TIMES (Opening vs Closing expected-time-of-day warning) =====
+// Owner/Manager-configurable cutoff time per day-type: before it, an Opening count is
+// expected; from it onward, a Closing count is expected. Purely a heads-up (see
+// _checkCountTimeWarning in cCommit) - never blocks, just catches an honest mis-tap
+// (e.g. committing Closing at 8am when Opening was meant). Device-local setting, same
+// pattern as Branch Setup's bcfg - not synced to the sheet.
+function loadCountCutoffCfg(){
+  try{var raw=localStorage.getItem('gs_count_cutoff_cfg');if(raw)return JSON.parse(raw);}catch(e){}
+  return {weekday:'10:00',saturday:'10:00',sunday:'10:00'};
+}
+function saveCountCutoffCfg(cfg){try{localStorage.setItem('gs_count_cutoff_cfg',JSON.stringify(cfg));}catch(e){}}
+function _countCutoffFor(date){
+  var cfg=loadCountCutoffCfg();
+  var day=(date||new Date()).getDay(); // 0=Sun ... 6=Sat
+  if(day===0)return cfg.sunday||'10:00';
+  if(day===6)return cfg.saturday||'10:00';
+  return cfg.weekday||'10:00';
+}
+// Which count type the current time of day suggests, per the configured cutoff.
+function _expectedCountTypeNow(){
+  var now=new Date();
+  var cutoff=_countCutoffFor(now);
+  var parts=cutoff.split(':');
+  var cutoffMins=(+parts[0]||0)*60+(+parts[1]||0);
+  var nowMins=now.getHours()*60+now.getMinutes();
+  return nowMins<cutoffMins?'Opening':'Closing';
+}
+function _nowHM(){var d=new Date();function p(n){return (n<10?'0':'')+n;}return p(d.getHours())+':'+p(d.getMinutes());}
+function loadCountCutoffUI(){
+  var cfg=loadCountCutoffCfg();
+  document.getElementById('ctWeekday').value=cfg.weekday||'10:00';
+  document.getElementById('ctSaturday').value=cfg.saturday||'10:00';
+  document.getElementById('ctSunday').value=cfg.sunday||'10:00';
+}
+function saveCountCutoffUI(){
+  var cfg={
+    weekday:document.getElementById('ctWeekday').value||'10:00',
+    saturday:document.getElementById('ctSaturday').value||'10:00',
+    sunday:document.getElementById('ctSunday').value||'10:00'
+  };
+  saveCountCutoffCfg(cfg);
+  auditLog('Count times updated','Weekday '+cfg.weekday+' · Saturday '+cfg.saturday+' · Sunday '+cfg.sunday);
+  toast('Count times saved ✓');
+}
 // default: everything ACTIVE (all on) unless explicitly turned off
 function _curUser(){return findUser(operator);}
 // combined gate: branch has it active AND the logged-in user is allowed it
@@ -2559,6 +2632,20 @@ function cCellHtml(sz,side){
 }
 function cRenderGrid(){
   document.getElementById('cCtx').innerHTML='';document.getElementById('cCtx').style.display='none';
+  // Quiet early heads-up if the current toggle doesn't match what time of day it is (e.g.
+  // sitting on Closing before the configured cutoff) - re-evaluated on every render so it
+  // updates live if the toggle changes or the screen is revisited later. Never blocks
+  // anything by itself; the actual gate is the commit-time popup in cCommit.
+  var _twb=document.getElementById('cTimeWarnBanner');
+  var _expected=_expectedCountTypeNow();
+  if(_twb){
+    if(cCT!==_expected){
+      _twb.style.display='block';
+      _twb.textContent='⚠ It\'s '+_nowHM()+' — '+_expected+' counts are usually done around now, but you\'re on '+cCT+'.';
+    } else {
+      _twb.style.display='none';
+    }
+  }
   document.getElementById('cHint').innerHTML='Tap a <b>Full</b> or <b>Empty</b> cell to complete that size. Full brands: '+C_FULLBRANDS[cBranch].join(', ')+' · Empties: any.';
   var html='<div class="cgHead"><div class="gc sz">Size</div><div class="gc">Full</div><div class="gc">Empty</div></div>';
   html+=C_SIZES.map(function(sz){
@@ -2666,7 +2753,49 @@ function cReview(){
   cShow('countReviewView');window.scrollTo(0,0);
 }
 function cBackFromReview(){document.getElementById('hTitle').textContent='Stock Count';document.getElementById('hSub').textContent='Tap Full or Empty on a size';cShow('countGridView');cRenderGrid();window.scrollTo(0,0);}
+// Quiet heads-up (never a hard block) if the count type being committed doesn't match what
+// time of day it is, per the configured Count Times cutoff - catches an honest mis-tap
+// (e.g. committing Closing at 8am when Opening was meant). Returns true to let the real
+// commit proceed immediately (types match); returns false and shows the confirm modal
+// otherwise, which itself calls _cCommitReal() directly once the user chooses to continue.
+var _countTimeWarnPending=null; // {expected, actual}
+function _checkCountTimeWarning(){
+  var expected=_expectedCountTypeNow();
+  if(cCT===expected)return true;
+  _countTimeWarnPending={expected:expected,actual:cCT};
+  document.getElementById('countTimeWarnMsg').textContent=
+    'It\'s currently '+_nowHM()+' — '+expected+' counts are usually done around this time, but you\'re about to commit '+cCT+'.\n\nDid you mean to do an '+expected+' count instead?';
+  document.getElementById('countTimeWarnSwitchBtn').textContent='Switch me to '+expected;
+  document.getElementById('countTimeWarnContinueBtn').textContent='Continue with '+cCT+' anyway';
+  document.getElementById('countTimeWarnModal').classList.add('show');
+  return false;
+}
+function _countTimeWarnCancel(){
+  document.getElementById('countTimeWarnModal').classList.remove('show');
+  _countTimeWarnPending=null;
+}
+function _countTimeWarnContinue(){
+  document.getElementById('countTimeWarnModal').classList.remove('show');
+  var p=_countTimeWarnPending;_countTimeWarnPending=null;
+  if(p)auditLog('Count type time warning overridden',cBranch+' - committed '+p.actual+' at '+_nowHM()+' (expected '+p.expected+')');
+  _cCommitReal();
+}
+function _countTimeWarnSwitch(){
+  var p=_countTimeWarnPending;_countTimeWarnPending=null;
+  document.getElementById('countTimeWarnModal').classList.remove('show');
+  if(!p)return;
+  // Carry over whatever's already been typed into this branch's draft instead of losing it -
+  // just re-labels it under the correct toggle key rather than discarding it.
+  var fromKey=cBranch+'|'+p.actual, toKey=cBranch+'|'+p.expected;
+  if(cData[fromKey]){cData[toKey]=cData[fromKey];delete cData[fromKey];}
+  cSetCT(p.expected);
+  toast('Switched to '+p.expected+' — review and commit when ready');
+}
 function cCommit(){
+  if(!_checkCountTimeWarning())return; // modal shown; it calls _cCommitReal() itself if continued
+  _cCommitReal();
+}
+function _cCommitReal(){
   // Build this commit's fresh rows from cData, and remember exactly which lines (branch +
   // countType + size + state + brand) they cover.
   var freshRows=[];
@@ -2883,16 +3012,65 @@ function rRestoreSupplierFields(){
   document.getElementById('rInvoiceNo').value=s.invoiceNo||'';
   rRenderPhotoThumbs(); // this branch's own photos, not whichever branch was last active
 }
+// Resizes/recompresses a photo client-side before it's ever stored, so a normal phone
+// camera photo (often several MB, 3000-4000px wide) never trips the old "photo too large"
+// wall - the user never has to go dig through their phone's camera settings first. Downscales
+// to a sensible max dimension and re-encodes as JPEG at a moderate quality, which comfortably
+// shrinks a typical phone photo to well under a couple hundred KB with no visible quality
+// loss for record-keeping purposes (this isn't print photography). Uses createImageBitmap
+// with imageOrientation:'from-image' where available (all modern mobile browsers) so a
+// portrait photo doesn't come out sideways - plain <img>/canvas decoding ignores EXIF
+// rotation, which is a well-known gotcha with this kind of resize.
+var PHOTO_MAX_DIM=1600, PHOTO_QUALITY=0.8, PHOTO_HARD_LIMIT=1200000;
+function _resizeImageForCapture(file){
+  function drawToJpeg(src,w,h){
+    var scale=Math.min(1,PHOTO_MAX_DIM/Math.max(w,h));
+    var cw=Math.max(1,Math.round(w*scale)),ch=Math.max(1,Math.round(h*scale));
+    var canvas=document.createElement('canvas');canvas.width=cw;canvas.height=ch;
+    canvas.getContext('2d').drawImage(src,0,0,cw,ch);
+    return canvas.toDataURL('image/jpeg',PHOTO_QUALITY);
+  }
+  if(window.createImageBitmap){
+    return createImageBitmap(file,{imageOrientation:'from-image'}).then(function(bmp){
+      var out=drawToJpeg(bmp,bmp.width,bmp.height);
+      if(bmp.close)bmp.close();
+      return out;
+    });
+  }
+  // Fallback for browsers without createImageBitmap (very old) - doesn't correct EXIF
+  // rotation, but resizing/compressing something (even if occasionally sideways) still
+  // beats rejecting the photo outright.
+  return new Promise(function(resolve,reject){
+    var img=new Image();var url=URL.createObjectURL(file);
+    img.onload=function(){URL.revokeObjectURL(url);resolve(drawToJpeg(img,img.width,img.height));};
+    img.onerror=function(){URL.revokeObjectURL(url);reject(new Error('Could not read image'));};
+    img.src=url;
+  });
+}
+// Shared fallback: if resizing itself fails (corrupt/unsupported file), fall back to the
+// original file when it's already small enough on its own, otherwise give up with a toast -
+// this is now a rare edge case rather than the everyday experience it used to be.
+function _pickPhotoOrFallback(file,onDone){
+  _resizeImageForCapture(file).then(function(dataUri){
+    if(dataUri.length>PHOTO_HARD_LIMIT){toast('Photo still too large after resizing — try a different photo',true);return;}
+    onDone(dataUri);
+  }).catch(function(){
+    if(file.size<=PHOTO_HARD_LIMIT){
+      var reader=new FileReader();
+      reader.onload=function(e){onDone(e.target.result);};
+      reader.readAsDataURL(file);
+    } else {
+      toast('Could not process that photo — try a different one',true);
+    }
+  });
+}
 // Up to 2 photos per branch's delivery session (same reasoning as supplier/deliveryNote/
 // invoiceNo above - keyed per branch so switching branch never mixes up whose photos they are).
 function rPhotoPick(input){
   var f=input.files&&input.files[0];if(!f){return;}
   var st=rSupplierFor(rBranch);if(!st.photos)st.photos=[];
   if(st.photos.length>=2){toast('Max 2 photos per delivery',true);input.value='';return;}
-  if(f.size>1200000){toast('Photo too large — take a smaller/closer shot',true);input.value='';return;}
-  var reader=new FileReader();
-  reader.onload=function(e){st.photos.push(e.target.result);rRenderPhotoThumbs();};
-  reader.readAsDataURL(f);
+  _pickPhotoOrFallback(f,function(dataUri){st.photos.push(dataUri);rRenderPhotoThumbs();});
   input.value='';
 }
 function rRenderPhotoThumbs(){
@@ -3093,7 +3271,13 @@ const CAP={
       {k:'gasType',label:'Gas type',type:'select',opts:['LPG','Propane']},
       {k:'pumped',label:'Gas pumped (kg)',type:'number'},
       {k:'customer',label:'Customer name / notes',type:'text'},
-      {k:'supplierPhoto',label:'Invoice / delivery note photo',type:'photo',max:2,opt:true,showIf:{k:'filledBy',eq:'Supplier'}}] },
+      // Was showIf:{k:'filledBy',eq:'Supplier'} (labelled "Invoice / delivery note photo") -
+      // hid the camera button entirely for the far more common "Filled by: Us" case, which
+      // read as a broken camera rather than a field that simply wasn't there. Now always
+      // available with a generic label (e.g. a photo of the cylinder itself, not just an
+      // invoice) - key name (supplierPhoto) kept as-is since it's already wired through
+      // popCollect/addLine/photoUpload/PhotoLinks; only the label and visibility changed.
+      {k:'supplierPhoto',label:'Photo',type:'photo',max:2,opt:true}] },
   refill:{title:'Refill',hint:'Tap a size, weigh the cylinder — gas pumped is calculated.',grid:FILLSIZES,
     header:[], gate:[], multi:true,
     popupFields:[{k:'brand',label:'Brand',type:'select',opts:BRANDS},{k:'gasType',label:'Gas type',type:'gasType'},
@@ -3126,6 +3310,25 @@ function dataBucket(){
   if(!capData[k])capData[k]={};
   return capData[k];
 }
+// Does a saved draft actually have any captured lines in it? Toggle-based types (Manifold)
+// store lines under toggle-state keys like "Opening"/"Added"/"Closing"; non-toggle types
+// (Refill, Private) store every line under a single '_flat' bucket instead. The only key
+// that should ever be excluded here is '_type' (an internal marker, never real data) - a
+// prefix check like k[0]!=='_' was meant to filter that out but ALSO excluded '_flat' since
+// both happen to start with an underscore, so Refill/Private drafts could never be detected
+// as "has content" even with real captured lines sitting in them - the resume-or-discard
+// prompt silently never fired, and any capData reset (switching to a different capture type,
+// which shares this one global capData variable, or a plain page reload) discarded a
+// still-recoverable draft with no warning at all.
+function _draftHasContent(data){
+  if(!data)return false;
+  return Object.keys(data).some(function(k){
+    if(k==='_type')return false;
+    var bucket=data[k];
+    if(!bucket||typeof bucket!=='object')return false;
+    return Object.keys(bucket).some(function(item){return (bucket[item]||[]).length>0;});
+  });
+}
 function openCap(type){
   if(!canUseSection(branch||'Helderberg',type)){toast(sectionActive(branch||'Helderberg',type)?(type+' is not enabled for your user'):(type+' is deactivated for '+(branch||'this branch')),true);return;}
   if(!requireEdit())return;
@@ -3135,7 +3338,7 @@ function openCap(type){
   // ---- resume/discard an unsaved draft for this section+branch ----
   var _br=branch||'Helderberg';
   var _dft=loadDraft(type,_br);
-  if(_dft && _dft.data && Object.keys(_dft.data).filter(function(k){return k[0]!=='_';}).length){
+  if(_dft && _draftHasContent(_dft.data)){
     if(confirm('Unsaved '+c.title+' capture found (from '+(_dft.ts||'earlier')+'). Resume it?\n\nOK = resume · Cancel = discard and start fresh')){
       capData=_dft.data; capData._type=type;
     } else { clearDraft(type,_br); capData={_type:type}; }
@@ -3298,7 +3501,7 @@ function buildPopupForm(c){
     else if(f.type==='gasType')html+='<select class="mField" id="pf-'+f.k+'" onchange="popCalc()"><option value="">Select…</option></select><div class="mNote" id="pf-gasNote"></div>';
     else if(f.type==='number')html+='<input class="mField" type="number" inputmode="decimal" step="any" id="pf-'+f.k+'" oninput="popCalc()" onwheel="this.blur()">';
     else if(f.type==='text')html+='<input class="mField" type="text" id="pf-'+f.k+'">';
-    else if(f.type==='photo')html+='<input type="file" accept="image/*" capture="environment" id="pf-'+f.k+'" style="display:none" onchange="onPhotoPick(this,\''+f.k+'\')"><button type="button" class="photoBtn" id="pf-'+f.k+'-btn" onclick="document.getElementById(\'pf-'+f.k+'\').click()">📷 Add photo (0/3)</button><div id="pf-'+f.k+'-thumb" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap"></div>';
+    else if(f.type==='photo')html+='<input type="file" accept="image/*" capture="environment" id="pf-'+f.k+'" style="display:none" onchange="onPhotoPick(this,\''+f.k+'\')"><button type="button" class="photoBtn" id="pf-'+f.k+'-btn" onclick="document.getElementById(\'pf-'+f.k+'\').click()">📷 Add photo (0/'+(f.max||3)+')</button><div id="pf-'+f.k+'-thumb" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap"></div>';
     html+='</div>';
   });
   box.innerHTML=html;
@@ -3325,13 +3528,7 @@ function onPhotoPick(input,key){
   var max=_photoMaxFor(key);
   if(!popPhoto[key])popPhoto[key]=[];
   if(popPhoto[key].length>=max){toast('Max '+max+' photos',true);input.value='';return;}
-  if(f.size>1200000){toast('Photo too large — take a smaller/closer shot',true);input.value='';return;}
-  var reader=new FileReader();
-  reader.onload=function(e){
-    popPhoto[key].push(e.target.result);
-    renderPhotoThumbs(key);
-  };
-  reader.readAsDataURL(f);
+  _pickPhotoOrFallback(f,function(dataUri){popPhoto[key].push(dataUri);renderPhotoThumbs(key);});
   input.value=''; // reset so the same file/camera can be used again
 }
 function renderPhotoThumbs(key){
