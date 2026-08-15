@@ -715,6 +715,12 @@
       <input type="text" class="mField" id="smName" placeholder="Supplier name">
       <label class="mLabel">Type</label>
       <select class="mField" id="smType"><option>Main brand</option><option>Redistributor</option><option>Other</option></select>
+      <label class="mLabel">Branch(es)</label>
+      <div style="margin-bottom:4px">
+        <label style="display:inline-block;width:48%;font-size:12px"><input type="checkbox" id="smBrHelderberg" value="Helderberg"> Helderberg</label>
+        <label style="display:inline-block;width:48%;font-size:12px"><input type="checkbox" id="smBrKleinmond" value="Kleinmond"> Kleinmond</label>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px">Leave both unchecked to allow this supplier at any branch.</div>
       <label class="mLabel">Company cylinder brands (Stock Received)</label>
       <div id="smBrandsRecv" style="margin-bottom:8px"></div>
       <label class="mLabel">Private cylinder brands (Private Refill)</label>
@@ -1602,6 +1608,7 @@ function renderSuppliersMgmtList(){
     var safe=s.name.replace(/'/g,"\\'");
     return '<div class="brandCard"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'+
       '<div><b style="color:var(--navy);font-size:15px">'+s.name+'</b><div style="font-size:12px;color:var(--muted)">'+(s.type||'')+'</div>'+
+      '<div style="font-size:11px;color:var(--steel);margin-top:2px">'+((s.branches&&s.branches.length===1)?s.branches[0]+' only':'Both branches')+'</div>'+
       ((s.brands&&s.brands.length)?'<div style="font-size:11px;color:var(--steel);margin-top:2px">Brands: '+s.brands.join(', ')+'</div>':'<div style="font-size:11px;color:var(--muted);margin-top:2px;font-style:italic">Any brand (unrestricted)</div>')+
       '</div>'+
       '<div style="display:flex;gap:8px;flex:none">'+
@@ -1624,11 +1631,17 @@ function _smRenderBrandChecks(checkedList){
   document.getElementById('smBrandsRecv').innerHTML=_smBrandCheckboxHtml('smRecvChk',BRANDS,checkedList);
   document.getElementById('smBrandsPriv').innerHTML=_smBrandCheckboxHtml('smPrivChk',PRIVBRANDS,checkedList);
 }
+function _smRenderBranchChecks(checkedList){
+  checkedList=checkedList||[];
+  document.getElementById('smBrHelderberg').checked=checkedList.indexOf('Helderberg')>-1;
+  document.getElementById('smBrKleinmond').checked=checkedList.indexOf('Kleinmond')>-1;
+}
 function suppliersMgmtNew(){
   suppliersMgmtEditingOldName=null;
   document.getElementById('suppliersMgmtFormTitle').textContent='Add supplier';
   document.getElementById('smName').value='';
   document.getElementById('smType').value='Main brand';
+  _smRenderBranchChecks([]);
   _smRenderBrandChecks([]);
   document.getElementById('suppliersMgmtForm').style.display='block';
 }
@@ -1638,6 +1651,7 @@ function suppliersMgmtEdit(name){
   document.getElementById('suppliersMgmtFormTitle').textContent='Edit supplier';
   document.getElementById('smName').value=s.name;
   document.getElementById('smType').value=s.type||'Main brand';
+  _smRenderBranchChecks(s.branches||[]);
   _smRenderBrandChecks(s.brands||[]);
   document.getElementById('suppliersMgmtForm').style.display='block';
 }
@@ -1658,7 +1672,10 @@ function suppliersMgmtSave(){
   // routing (type:'suppliersSave'); a same-named key in extra would silently overwrite
   // it, sending the supplier's category as the routing value instead of the action.
   var checkedBrands=[].slice.call(document.querySelectorAll('.smRecvChk:checked,.smPrivChk:checked')).map(function(el){return el.value;});
-  var extra={name:name,supplierType:document.getElementById('smType').value,brands:checkedBrands.join(',')};
+  var checkedBranches=[];
+  if(document.getElementById('smBrHelderberg').checked)checkedBranches.push('Helderberg');
+  if(document.getElementById('smBrKleinmond').checked)checkedBranches.push('Kleinmond');
+  var extra={name:name,supplierType:document.getElementById('smType').value,brands:checkedBrands.join(','),branches:checkedBranches.join(',')};
   if(suppliersMgmtEditingOldName)extra.oldName=suppliersMgmtEditingOldName;
   suppliersMgmtSaveBusy=true;
   var smBtn=document.getElementById('smSaveBtn');
@@ -2658,7 +2675,18 @@ function computeOpeningMismatches(br){
    rData[branch][size] = {recv:[{brand,qty,note}], ret:[...]} */
 var R_SIZES=['5kg','9kg','12kg','14kg','19kg','48kg-SV','14kg-FLT','19kg-FLT','48kg-DV','8kg-Prop','18kg-Prop','45kg-Prop-SV','45kg-Prop-DV'];
 var R_ALLBRANDS=['Afrox','Oryx','Easigas','Totalgas','Afrigas','Other'];
-var R_RECVBRANDS={Helderberg:['Afrox','Other'],Kleinmond:['Afrox','Oryx','Other']};
+// 2026-08-15: used to be a real per-branch restriction (Helderberg: Afrox only; Kleinmond:
+// Afrox+Oryx only) - but that meant Easigas/Totalgas/Afrigas could never be selected as a
+// Full In brand at ANY branch, for ANY supplier, which broke the whole point of linking a
+// supplier (e.g. Strand Gas) to Easigas under Manage Suppliers - the brand it was linked to
+// simply had nowhere to appear. Confirmed with the user: both branches must be able to
+// receive all 5 real company brands: which ones are actually offered per delivery is now
+// meant to be controlled entirely by which SUPPLIER is selected (see rBrands()/
+// rSupplierBrands() below), not by a static per-branch list - so this is intentionally the
+// same full list for every branch now, kept as its own per-branch map (rather than just
+// using R_ALLBRANDS directly in rBrands()) only so a real branch-specific restriction can be
+// reintroduced later without having to re-thread it through rBrands() again.
+var R_RECVBRANDS={Helderberg:R_ALLBRANDS,Kleinmond:R_ALLBRANDS};
 var rBranch='Helderberg', rDet=null, rData={}, rOverrides={}, rCommitBusy=false;
 function rBkt(){if(!rData[rBranch])rData[rBranch]={};return rData[rBranch];}
 function rCell(sz){var b=rBkt();if(!b[sz])b[sz]={recv:[],ret:[]};return b[sz];}
@@ -2667,6 +2695,13 @@ function rCell(sz){var b=rBkt();if(!b[sz])b[sz]={recv:[],ret:[]};return b[sz];}
 // configured (or the freeform "Other" supplier) stays fully unrestricted, so this only ever
 // narrows the list once someone has actually set it up. 'ret' (empty returns) is never
 // restricted - any brand's empties can come back regardless of who delivered today.
+// Shared by Received's supplier dropdown and Private Refill's fillSupplier dropdown - a
+// supplier with no branches ticked in Manage Suppliers is available everywhere (same
+// unrestricted-by-default convention as the brand links above), so this only ever narrows
+// the list once someone has actually set it up for a specific branch.
+function _suppliersForBranch(list,br){
+  return list.filter(function(s){return !s.branches || !s.branches.length || s.branches.indexOf(br)>-1;});
+}
 function rSupplierBrands(){
   var s=rSupplierFor(rBranch);
   if(!s.supplier||s.isOther)return null;
@@ -2701,7 +2736,8 @@ function rLoadSuppliers(){
 }
 function rRenderSupplierSelect(){
   var sel=document.getElementById('rSupplierSelect');if(!sel)return;
-  sel.innerHTML='<option value="">Select…</option>'+rSuppliersList.map(function(s){return '<option value="'+s.name+'">'+s.name+'</option>';}).join('')+'<option value="__other__">Other…</option>';
+  var opts=_suppliersForBranch(rSuppliersList,rBranch);
+  sel.innerHTML='<option value="">Select…</option>'+opts.map(function(s){return '<option value="'+s.name+'">'+s.name+'</option>';}).join('')+'<option value="__other__">Other…</option>';
 }
 function rSupplierChanged(){
   var sel=document.getElementById('rSupplierSelect');var isOther=(sel.value==='__other__');
@@ -2775,7 +2811,7 @@ function openReceived(){
 }
 function rSetBranch(x){
   if(role==='Operator' && x!==branch){toast('Locked to '+branch,true);return;}
-  rBranch=x;applyBranchLock('rbr-',x);rRenderGrid();rRestoreSupplierFields();
+  rBranch=x;applyBranchLock('rbr-',x);rRenderGrid();rRenderSupplierSelect();rRestoreSupplierFields();
 }
 
 function rCellHtml(sz,side){
@@ -2944,7 +2980,7 @@ const CAP={
   private:{title:'Private Refill',hint:"Customer's own cylinder, sold by weight. Enter each refill.",grid:['Private Refill'],
     header:[], gate:[], multi:true,
     popupFields:[{k:'filledBy',label:'Filled by',type:'tabs',opts:['Us','Supplier'],default:'Us'},
-      {k:'fillSupplier',label:'Supplier Name',type:'select',opts:function(){return privateSuppliersList.map(function(s){return s.name;}).concat(['Other']);},showIf:{k:'filledBy',eq:'Supplier'}},
+      {k:'fillSupplier',label:'Supplier Name',type:'select',opts:function(){return _suppliersForBranch(privateSuppliersList,capBranch).map(function(s){return s.name;}).concat(['Other']);},showIf:{k:'filledBy',eq:'Supplier'}},
       {k:'fillSupplierOther',label:'Other supplier name',type:'text',showIf:[{k:'filledBy',eq:'Supplier'},{k:'fillSupplier',eq:'Other'}]},
       {k:'invoiceNo',label:'Invoice #',type:'text',showIf:{k:'filledBy',eq:'Supplier'}},
       {k:'cylBrand',label:'Cylinder brand',type:'select',opts:PRIVBRANDS},
@@ -3018,14 +3054,20 @@ var privateSuppliersList=[];
 function loadPrivateSuppliers(){
   apiPost('suppliersList',{}).then(function(res){
     if(res&&res.ok)privateSuppliersList=res.suppliers||[];
-    // The Supplier/redistributor dropdown may have already been built (from the empty list)
-    // if a popup opened before this fetch finished - refresh it in place if so, preserving
-    // whatever's currently selected. No-op if no popup is open right now.
-    var sel=document.getElementById('pf-fillSupplier');if(!sel)return;
-    var cur=sel.value;
-    var opts=privateSuppliersList.map(function(s){return s.name;}).concat(['Other']);
-    sel.innerHTML='<option value="">Select…</option>'+opts.map(function(o){return '<option'+(o===cur?' selected':'')+'>'+o+'</option>';}).join('');
+    _refreshFillSupplierSelect();
   }).catch(function(){});
+}
+// The Supplier/redistributor dropdown may have already been built (from a stale list, or
+// for a since-changed branch) if a popup opened before this ran - refresh it in place if
+// so, preserving whatever's currently selected (falls back to no selection if that supplier
+// isn't valid for the branch anymore, same as any other stale-selection case). No-op if no
+// popup is open right now. Called both when the supplier list finishes loading and when the
+// branch changes, since the branch filter (_suppliersForBranch) depends on both.
+function _refreshFillSupplierSelect(){
+  var sel=document.getElementById('pf-fillSupplier');if(!sel)return;
+  var cur=sel.value;
+  var opts=_suppliersForBranch(privateSuppliersList,capBranch).map(function(s){return s.name;}).concat(['Other']);
+  sel.innerHTML='<option value="">Select…</option>'+opts.map(function(o){return '<option'+(o===cur?' selected':'')+'>'+o+'</option>';}).join('');
 }
 function privateSupplierName(r){return (r.fillSupplier==='Other')?(r.fillSupplierOther||''):(r.fillSupplier||'');}
 function capSetBranch(x){
@@ -3033,6 +3075,7 @@ function capSetBranch(x){
   capBranch=x;applyBranchLock('capbr-',x);
   document.getElementById('hSub').textContent=capBranch;
   renderGrid(); // grid must re-render on the new branch, not keep showing the old branch's stale state
+  if(capType==='private')_refreshFillSupplierSelect();
 }
 function buildHeader(c){
   var box=document.getElementById('capHeadControls');var html='';
