@@ -2667,8 +2667,10 @@ function cReview(){
 }
 function cBackFromReview(){document.getElementById('hTitle').textContent='Stock Count';document.getElementById('hSub').textContent='Tap Full or Empty on a size';cShow('countGridView');cRenderGrid();window.scrollTo(0,0);}
 function cCommit(){
-  // flush all cData buckets into store.count (replace all count rows)
-  store.count=[];
+  // Build this commit's fresh rows from cData, and remember exactly which lines (branch +
+  // countType + size + state + brand) they cover.
+  var freshRows=[];
+  var touchedLineKeys={};
   Object.keys(cData).forEach(function(k){
     var parts=k.split('|');var countType=parts[1];var br=parts[0];var bkt=cData[k];
     C_SIZES.forEach(function(sz){
@@ -2676,34 +2678,51 @@ function cCommit(){
       ['full','empty'].forEach(function(side){
         bkt[sz][side].forEach(function(l){
           if(num(l.qty)===0)return;
-          store.count.push({countType:countType,state:(side==='full'?'Full':'Empty'),size:sz,brand:l.brand,qty:num(l.qty),note:l.note||'',branch:br,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});
+          var st=(side==='full'?'Full':'Empty');
+          touchedLineKeys[br+'|'+countType+'|'+sz+'|'+st+'|'+l.brand]=true;
+          freshRows.push({countType:countType,state:st,size:sz,brand:l.brand,qty:num(l.qty),note:l.note||'',branch:br,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});
         });
       });
     });
   });
-  if(store.count.length===0){toast('Nothing to commit',true);return;}
+  if(freshRows.length===0){toast('Nothing to commit',true);return;}
+  // MERGE at the exact (branch, countType, size, state, brand) line level - this used to be
+  // "store.count=[]; rebuild only from cData", which wiped out EVERY previously-committed
+  // line for that branch+day that wasn't part of THIS commit. That silently deleted an
+  // already-committed Opening count the moment Closing was committed (different countType,
+  // never touched by the Closing commit, but wiped anyway), and equally wiped out earlier
+  // Opening lines if you later committed a few more Opening lines you'd forgotten. Filtering
+  // out only the EXACT lines this commit is re-supplying (not the whole countType, not
+  // everything) fixes both: unrelated lines survive untouched, while re-committing the exact
+  // same size+brand+state a second time still correctly REPLACES that one line's value
+  // instead of duplicating it - a same-day "recount it correctly and recommit" fix for a
+  // wrong figure, without needing a separate correction tool for this specific case.
+  store.count=store.count.filter(function(r){
+    return !touchedLineKeys[(r.branch||'')+'|'+r.countType+'|'+r.size+'|'+r.state+'|'+r.brand];
+  }).concat(freshRows);
   // #4 OPENING vs previous-day CLOSE (expected opening). Per size+brand+state exact match.
   computeOpeningMismatches(cBranch);
   var mm=(store._openMismatch||[]).filter(function(m){return m.branch===cBranch;});
-  // FIX (Kleinmond + duplicates + removals): sync EVERY branch present in this commit,
-  // each as a REPLACE-SET for that branch+date. Apps Script deletes that branch+date's
-  // existing rows then writes the fresh set, so nothing is dropped or duplicated.
+  // Sync only the branch(es) THIS commit actually touched (from freshRows, not the whole
+  // merged store.count) - each push carries that branch's COMPLETE current-day picture
+  // (every countType, old lines plus new), so the sheet's replace-set (still whole
+  // branch+date, unchanged) always ends up matching the full local truth. Never re-sync a
+  // branch this commit didn't touch - its local copy could be stale versus another device's
+  // newer entries, and a replace-set push would clobber them.
   var branchesInCommit={};
-  store.count.forEach(function(r){branchesInCommit[r.branch]=true;});
+  freshRows.forEach(function(r){branchesInCommit[r.branch]=true;});
   Object.keys(branchesInCommit).forEach(function(bn){
     var rowsForBn=syncRowsCount(store.count.filter(function(r){return r.branch===bn;}),bn);
     // mark replace-set so the sheet clears old rows for this branch+date first
     syncPush('Counts', rowsForBn.map(function(x){x._replaceKey=(x.date+'|'+x.branch);return x;}));
   });
-  // Every bucket in cData was just flushed into store.count and synced above (the loop
-  // syncs EVERY branch present, not just cBranch) - nothing is left to preserve, so clear
-  // it all. Previously cData was never cleared here, so switching branch after a commit
-  // (e.g. Kleinmond -> Helderberg) left the old branch's counted lines sitting around and
-  // they'd get re-flushed/re-synced on every future commit, including from an unrelated
-  // branch's session - wasteful at best, and risky since each branch resync is a
-  // delete-then-insert that could clobber another device's newer entries for that branch.
+  // Every bucket in cData was just flushed into store.count (merged, not wiped) and synced
+  // above - nothing is left to preserve in the DRAFT, so clear it all. Previously cData was
+  // never cleared here, so switching branch after a commit (e.g. Kleinmond -> Helderberg)
+  // left the old branch's counted lines sitting around and they'd get re-flushed/re-synced
+  // on every future commit, including from an unrelated branch's session.
   cData={};
-  saveWorkingStore();auditLog('Count committed',store.count.length+' line(s) — '+cBranch+' (Opening/Closing)'+(mm.length?(' · '+mm.length+' opening mismatch(es) flagged'):''));
+  saveWorkingStore();auditLog('Count committed',freshRows.length+' line(s) — '+cBranch+' (Opening/Closing)'+(mm.length?(' · '+mm.length+' opening mismatch(es) flagged'):''));
   updateBadges();
   if(mm.length){
     if(role==='Manager'||role==='Owner')toast('⚠ '+mm.length+' opening line(s) do not match previous close - see Count History',true);
