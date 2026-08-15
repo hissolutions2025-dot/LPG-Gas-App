@@ -1505,7 +1505,7 @@ function residualSetBranch(b){
 }
 function residualPopulateSize(){
   var sel=document.getElementById('rgSize');if(!sel||sel.options.length)return;
-  sel.innerHTML=RESIDUAL_SIZES.map(function(g){
+  sel.innerHTML='<option value="">Select…</option>'+RESIDUAL_SIZES.map(function(g){
     return '<optgroup label="'+g.group+'">'+g.items.map(function(s){return '<option value="'+s+'">'+s+'</option>';}).join('')+'</optgroup>';
   }).join('');
 }
@@ -1518,8 +1518,8 @@ var RESIDUAL_BRANDS_BY_BRANCH={Helderberg:['Afrox','Other'],Kleinmond:['Afrox','
 function residualPopulateBrand(){
   var sel=document.getElementById('rgBrand');if(!sel)return;
   var opts=RESIDUAL_BRANDS_BY_BRANCH[residualBranch]||['Afrox','Oryx','Other'];
-  sel.innerHTML=opts.map(function(o){return '<option value="'+o+'">'+o+'</option>';}).join('');
-  sel.value=opts[0]; // reset-to-default, same as Size's selectedIndex=0
+  sel.innerHTML='<option value="">Select…</option>'+opts.map(function(o){return '<option value="'+o+'">'+o+'</option>';}).join('');
+  sel.value=''; // reset-to-blank, forces a deliberate pick each time (same as Size)
   residualBrandChanged();
 }
 // Full reset of the "Add a cylinder" form - Brand/Size included, not just Scale/Tare/Note.
@@ -1543,7 +1543,9 @@ function residualCalcUpdate(){
 function residualAdd(){
   if(!perm('residualGas')){toast('You do not have Residual Gas rights',true);return;}
   var size=document.getElementById('rgSize').value;
+  if(!size){toast('Select a size',true);return;}
   var brand=document.getElementById('rgBrand').value;
+  if(!brand){toast('Select a brand',true);return;}
   if(brand==='Other'){brand=(document.getElementById('rgBrandOther').value||'').trim();if(!brand){toast('Enter the other brand name',true);return;}}
   var scale=num(document.getElementById('rgScale').value),tare=num(document.getElementById('rgTare').value);
   if(!(scale>0)){toast('Enter the cylinder scale weight',true);return;}
