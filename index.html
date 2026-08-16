@@ -382,6 +382,7 @@
   <div class="wrap">
     <div class="ctxbar" id="rCtx" style="margin-bottom:10px;"></div>
     <div class="capHint" id="rHint" style="margin-bottom:12px;"></div>
+    <button type="button" id="rAdjustLink" style="display:none;background:none;border:none;color:var(--steel);font-size:11px;font-weight:700;padding:0 0 12px;cursor:pointer" onclick="openReceivedAdjust()">✎ Adjust an already-committed entry (today only)</button>
     <div class="cGrid" id="rGrid"></div>
   </div>
   <div class="cFooter"><button class="cbGhost" onclick="goHome()">Menu</button><button class="cbPrimary" onclick="rReview()">Review &amp; submit &rarr;</button></div>
@@ -419,6 +420,7 @@
   <div class="wrap" style="padding-top:14px;">
     <div class="lockmsg" id="capLock"></div>
     <div id="capTimeWarnBanner" style="display:none;background:rgba(230,57,70,.12);border:2px solid var(--alert);border-radius:10px;padding:8px 12px;font-size:12px;color:var(--alert);font-weight:800;margin-bottom:10px"></div>
+    <button type="button" id="capAdjustLink" style="display:none;background:none;border:none;color:var(--steel);font-size:11px;font-weight:700;padding:0 0 12px;cursor:pointer" onclick="openCapAdjust()">✎ Adjust an already-committed entry (today only)</button>
     <div class="capHint" id="capHint"></div>
     <div class="csizegrid" id="capGrid"></div>
     <button class="saveBtn" onclick="capReview()">Review &amp; commit &rarr;</button>
@@ -3246,15 +3248,44 @@ function rSetBranch(x){
   rBranch=x;applyBranchLock('rbr-',x);rRenderGrid();rRenderSupplierSelect();rRestoreSupplierFields();
 }
 
-function rCellHtml(sz,side){
-  var arr=rCell(sz)[side];var t=rSideTotal(arr);var filled=arr.length>0&&t>0;
-  var brs=filled?arr.filter(function(l){return num(l.qty)>0;}).map(function(l){return l.brand.slice(0,4)+' '+num(l.qty);}).join(', '):'';
-  return '<button class="cCell'+(filled?' filled':' z')+'" onclick="rOpenDetail(\''+sz+'\',\''+side+'\')">'+
-    '<span class="val">'+(filled?t:'–')+'</span>'+(brs?'<span class="brs">'+brs+'</span>':'')+'</button>';
+// Three-state cell, same visual language as Count's cCellHtml (shares the same .cCell.
+// pending/.committed/.z CSS, nothing new to add there): amber "pending" while something's
+// typed but not yet committed - exactly the light-orange "review before you commit" signal
+// requested, so an operator can capture a WHOLE delivery across every size first, cross-
+// check it against the paperwork, then commit once - green "committed" once it's actually
+// on the sheet (from rCommittedSummary, the real synced truth, not the draft); grey dash
+// otherwise. Pending always wins the color even when this size also has earlier committed
+// history today - a new delivery is an ADDITIONAL event, not a replacement of the old one,
+// so the amber number here is only ever this delivery's own not-yet-committed total.
+function rCellHtml(sz,side,csum){
+  var arr=rCell(sz)[side];var t=rSideTotal(arr);var pending=arr.length>0&&t>0;
+  var committedByBrand=(csum[sz]||{})[side]||{};var cTotal=_rSummaryTotal(committedByBrand);
+  var stateClass=pending?'pending':(cTotal>0?'committed':'z');
+  var val,brs;
+  if(pending){
+    val=t;
+    brs=arr.filter(function(l){return num(l.qty)>0;}).map(function(l){return l.brand.slice(0,4)+' '+num(l.qty);}).join(', ');
+  } else if(cTotal>0){
+    val='✓ '+cTotal;
+    brs=Object.keys(committedByBrand).map(function(b){return b.slice(0,4)+' '+committedByBrand[b];}).join(', ');
+  } else {
+    val='–';brs='';
+  }
+  return '<button class="cCell '+stateClass+'" onclick="rOpenDetail(\''+sz+'\',\''+side+'\')">'+
+    '<span class="val">'+val+'</span>'+(brs?'<span class="brs">'+brs+'</span>':'')+'</button>';
 }
 function rRenderGrid(){
   document.getElementById('rCtx').innerHTML='';document.getElementById('rCtx').style.display='none';
   document.getElementById('rHint').innerHTML='Tap <b>Full in</b> or <b>Empty out</b> to enter brands. Δ shows the per-size difference.';
+  var csum=rCommittedSummary(rBranch);
+  // Only offer same-day adjustment while there's something committed today for this branch
+  // to actually adjust, AND the day hasn't been closed yet (closing hands off to the
+  // existing 48-hour post-close correction tool instead - see openReceivedAdjust()).
+  var _al=document.getElementById('rAdjustLink');
+  if(_al){
+    var _hasCommittedToday=store.received.some(function(r){return r.branch===rBranch && (r._date||today)===today;});
+    _al.style.display=(_hasCommittedToday && !loadSavedDay(today,rBranch))?'block':'none';
+  }
   var html='<div class="cgHead"><div class="gc sz">Size</div><div class="gc">Full in</div><div class="gc">Empty out</div><div class="gc diff">Δ</div></div>';
   html+=R_SIZES.map(function(sz){
     if(!canUseItem(rBranch,'received',sz)){
@@ -3263,8 +3294,8 @@ function rRenderGrid(){
     var c=rCell(sz);var f=rSideTotal(c.recv),e=rSideTotal(c.ret);var d=f-e;var has=(f+e)>0;
     var dtxt=has?((d>0?'+':'')+d):'';
     return '<div class="cgLine"><div class="gc sz">'+sz+'</div>'+
-      '<div class="gc recvcol">'+rCellHtml(sz,'recv')+'</div>'+
-      '<div class="gc retcol">'+rCellHtml(sz,'ret')+'</div>'+
+      '<div class="gc recvcol">'+rCellHtml(sz,'recv',csum)+'</div>'+
+      '<div class="gc retcol">'+rCellHtml(sz,'ret',csum)+'</div>'+
       '<div class="gc diff '+(d===0?'diffok':'diffbad')+'">'+dtxt+'</div></div>';
   }).join('');
   document.getElementById('rGrid').innerHTML=html;
@@ -3306,9 +3337,103 @@ function rMismatches(){
   R_SIZES.forEach(function(sz){if(!b[sz])return;var f=rSideTotal(b[sz].recv),e=rSideTotal(b[sz].ret);if((f+e)>0&&f!==e)out.push({size:sz,f:f,e:e,d:f-e});});
   return out;
 }
+// Per-size Full-in/Empty-out totals (by brand) already committed today for this branch -
+// built from store.received (the real synced truth, same pattern as Count's
+// cCommittedLines/Refill-Private's _committed rows), NOT the in-progress draft. Used so
+// Review can show what's already on the sheet today, not just whatever's currently being
+// typed - previously rReview() only ever looked at the current delivery's draft, so it
+// showed nothing (or blocked entirely with "Nothing received yet") the moment you'd
+// already committed and had nothing new drafted yet.
+function rCommittedSummary(br){
+  var out={};
+  store.received.forEach(function(r){
+    if(r.branch!==br)return;
+    // store.received is meant to only ever hold TODAY's rows, but the "Test date" advance
+    // feature can leave a prior day's rows sitting in it if that day was never formally
+    // closed - without this filter they'd show up as "committed today" indistinguishably,
+    // including as something the same-day Adjustment tool could be pointed at by mistake.
+    if((r._date||today)!==today)return;
+    if(!out[r.size])out[r.size]={recv:{},ret:{}};
+    if(num(r.fullIn)>0)out[r.size].recv[r.brand]=(out[r.size].recv[r.brand]||0)+num(r.fullIn);
+    if(num(r.emptyOut)>0)out[r.size].ret[r.brand]=(out[r.size].ret[r.brand]||0)+num(r.emptyOut);
+  });
+  return out;
+}
+function _rSummaryLine(byBrand){
+  var keys=Object.keys(byBrand);
+  return keys.length?keys.map(function(b){return b+' '+byBrand[b];}).join('<br>'):'—';
+}
+function _rSummaryTotal(byBrand){return Object.keys(byBrand).reduce(function(s,b){return s+byBrand[b];},0);}
+// Same-day correction for an already-committed Received line - "capture the whole order,
+// review the amber pending cells against the paperwork, THEN commit" (see rCellHtml/
+// rReview above) covers catching a mistake BEFORE commit; this covers catching one AFTER,
+// while the day's still open. Deliberately only reaches into TODAY's still-open store.received
+// for this branch (not a frozen historical snapshot) - once the day is closed, this link
+// hides itself and the existing 48-hour post-close correction tool (Count History > a
+// saved day > Correct) takes over instead, which is scoped to closed days specifically.
+// Reuses the exact same Manager/Owner-password + reason + audit-logged picker
+// (openCorrection/corrLines) already built for that 48-hour tool - corrLines' get/set
+// closures mutate whichever store object is handed to them, and here that's the LIVE
+// `store` (not a JSON-cloned snapshot), so the fix is immediate for Review/Count History.
+// Known limitation, same as the 48-hour tool: this corrects the app's own copy and logs a
+// traceable Adjustments-tab entry (old value -> new value, reason, who) - it does NOT
+// silently rewrite the original row already sitting in the Received sheet tab, since the
+// backend only supports appending new rows, not updating an existing one by id. Reading
+// the books straight means checking Received + Adjustments together, same as today.
+function openReceivedAdjust(){
+  if(loadSavedDay(today,rBranch)){toast('Day already closed for '+rBranch+' - use the correction tool from Count History instead',true);return;}
+  // Filtered VIEW, not a filtered COPY - corrLines' get/set closures still mutate the exact
+  // same row objects sitting in the real store.received (array#filter doesn't clone the
+  // objects it keeps), so a correction still lands live. This just keeps a stale prior day's
+  // row (see rCommittedSummary's note above) from ever appearing as something to "adjust
+  // today" - can't do this filtering inside corrLines() itself, since that function is
+  // shared with the 48-hour post-close tool, which deliberately passes a HISTORICAL day's
+  // snapshot (not today's) and must keep seeing all of it.
+  var todaysStore={received:store.received.filter(function(r){return r.branch===rBranch && (r._date||today)===today;})};
+  openCorrection({
+    title:'Adjust Stock Received — '+rBranch+' (today, before close)',
+    store:todaysStore, branch:rBranch, sections:['Received'],
+    // Committing a fresh delivery forces a reason if Full-in != Empty-out for that
+    // delivery; correcting an already-committed line had no equivalent check - a Manager
+    // could fix one side and leave the other mismatched with nothing catching it in the
+    // moment (only visible later as a red Diff in Count History, passively). This
+    // re-simulates the SAME delivery's (same branch+date+size+invoice+deliveryNote+
+    // supplier) Full-in/Empty-out balance with the new value applied, and requires an
+    // explicit confirm if it creates or worsens an imbalance - declining leaves the
+    // original value untouched (this runs before corrPick.set()).
+    validate:function(sel,oldVal,newVal){
+      if(!sel.row||!sel.field)return true;
+      var r=sel.row;
+      var siblings=store.received.filter(function(x){
+        return x.branch===r.branch && (x._date||today)===today && x.size===r.size &&
+          x.invoiceNo===r.invoiceNo && x.deliveryNote===r.deliveryNote && x.supplier===r.supplier;
+      });
+      var fullIn=0,emptyOut=0;
+      siblings.forEach(function(x){
+        fullIn+=(x===r&&sel.field==='fullIn')?newVal:num(x.fullIn);
+        emptyOut+=(x===r&&sel.field==='emptyOut')?newVal:num(x.emptyOut);
+      });
+      if(fullIn!==emptyOut){
+        return confirm('This leaves '+r.size+' off by '+(fullIn-emptyOut)+' for this delivery (Full in '+fullIn+' vs Empty out '+emptyOut+').\n\nApply the correction anyway?');
+      }
+      return true;
+    },
+    onApply:function(sel,oldVal,newVal,reason,auth){
+      syncPush('Adjustments',[{date:today,branch:rBranch,Kind:'SameDayReceivedAdjustment',Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:auth.name+' ('+auth.level+')'}]);
+      saveWorkingStore();
+      auditLog('Stock Received adjusted (same day)',rBranch+' '+sel.tag+': '+oldVal+' → '+newVal+' by '+auth.name+' - '+reason,{was:oldVal},{now:newVal});
+    },
+    afterClose:function(){
+      rRenderGrid();
+      if(document.querySelector('.view.active')&&document.querySelector('.view.active').id==='historyView')openHistory();
+    }
+  });
+}
 function rReview(){
   var b=rBkt();var sizes=R_SIZES.filter(function(sz){return b[sz]&&(rSideTotal(b[sz].recv)+rSideTotal(b[sz].ret))>0;});
-  if(sizes.length===0){toast('Nothing received yet',true);return;}
+  var committed=rCommittedSummary(rBranch);
+  var committedSizes=R_SIZES.filter(function(sz){return committed[sz];});
+  if(sizes.length===0 && committedSizes.length===0){toast('Nothing received yet',true);return;}
   var mm=rMismatches();var html='';
   if(mm.length){
     html+='<div class="mmCard"><h4>⚠ '+mm.length+' size'+(mm.length>1?'s':'')+' do not match — each needs its own reason</h4>';
@@ -3319,18 +3444,40 @@ function rReview(){
     }).join('');
     html+='</div>';
   }
-  html+='<table style="width:100%;border-collapse:collapse;font-size:12px"><tr><th style="text-align:left;color:#6B7885;padding:5px;border-bottom:1.5px solid #D9DEE5">Size</th><th style="text-align:left;color:#6B7885;padding:5px;border-bottom:1.5px solid #D9DEE5">Full in</th><th style="text-align:left;color:#6B7885;padding:5px;border-bottom:1.5px solid #D9DEE5">Empty out</th><th style="color:#6B7885;padding:5px;border-bottom:1.5px solid #D9DEE5">Δ</th></tr>';
-  sizes.forEach(function(sz){
-    var f=b[sz].recv.filter(function(l){return num(l.qty)>0;}).map(function(l){return l.brand+' '+num(l.qty)+(l.note?' ('+l.note+')':'');}).join('<br>')||'—';
-    var e=b[sz].ret.filter(function(l){return num(l.qty)>0;}).map(function(l){return l.brand+' '+num(l.qty)+(l.note?' ('+l.note+')':'');}).join('<br>')||'—';
-    var d=rSideTotal(b[sz].recv)-rSideTotal(b[sz].ret);
-    html+='<tr><td style="padding:6px;border-bottom:1px solid #EEF1F4"><b>'+sz+'</b></td><td style="padding:6px;border-bottom:1px solid #EEF1F4">'+f+'</td><td style="padding:6px;border-bottom:1px solid #EEF1F4">'+e+'</td><td style="padding:6px;border-bottom:1px solid #EEF1F4;text-align:center;font-weight:800;color:'+(d===0?'#B4C1CC':'#C0392B')+'">'+(d>0?'+':'')+d+'</td></tr>';
-  });
-  html+='</table>';
+  var tableHead='<tr><th style="text-align:left;color:#6B7885;padding:5px;border-bottom:1.5px solid #D9DEE5">Size</th><th style="text-align:left;color:#6B7885;padding:5px;border-bottom:1.5px solid #D9DEE5">Full in</th><th style="text-align:left;color:#6B7885;padding:5px;border-bottom:1.5px solid #D9DEE5">Empty out</th><th style="color:#6B7885;padding:5px;border-bottom:1.5px solid #D9DEE5">Δ</th></tr>';
+  if(committedSizes.length){
+    html+='<div style="font-size:12px;color:var(--ok);font-weight:800;margin:2px 0 4px">✓ Already committed today</div>';
+    html+='<table style="width:100%;border-collapse:collapse;font-size:12px;opacity:.75">'+tableHead;
+    committedSizes.forEach(function(sz){
+      var f=_rSummaryLine(committed[sz].recv),e=_rSummaryLine(committed[sz].ret);
+      var d=_rSummaryTotal(committed[sz].recv)-_rSummaryTotal(committed[sz].ret);
+      html+='<tr><td style="padding:6px;border-bottom:1px solid #EEF1F4"><b>'+sz+'</b></td><td style="padding:6px;border-bottom:1px solid #EEF1F4">'+f+'</td><td style="padding:6px;border-bottom:1px solid #EEF1F4">'+e+'</td><td style="padding:6px;border-bottom:1px solid #EEF1F4;text-align:center;font-weight:800;color:'+(d===0?'#B4C1CC':'#C0392B')+'">'+(d>0?'+':'')+d+'</td></tr>';
+    });
+    html+='</table>';
+  }
+  if(sizes.length){
+    html+='<div style="font-size:12px;color:var(--amber);font-weight:800;margin:14px 0 4px">New — about to commit</div>';
+    html+='<table style="width:100%;border-collapse:collapse;font-size:12px">'+tableHead;
+    sizes.forEach(function(sz){
+      var f=b[sz].recv.filter(function(l){return num(l.qty)>0;}).map(function(l){return l.brand+' '+num(l.qty)+(l.note?' ('+l.note+')':'');}).join('<br>')||'—';
+      var e=b[sz].ret.filter(function(l){return num(l.qty)>0;}).map(function(l){return l.brand+' '+num(l.qty)+(l.note?' ('+l.note+')':'');}).join('<br>')||'—';
+      var d=rSideTotal(b[sz].recv)-rSideTotal(b[sz].ret);
+      html+='<tr><td style="padding:6px;border-bottom:1px solid #EEF1F4"><b>'+sz+'</b></td><td style="padding:6px;border-bottom:1px solid #EEF1F4">'+f+'</td><td style="padding:6px;border-bottom:1px solid #EEF1F4">'+e+'</td><td style="padding:6px;border-bottom:1px solid #EEF1F4;text-align:center;font-weight:800;color:'+(d===0?'#B4C1CC':'#C0392B')+'">'+(d>0?'+':'')+d+'</td></tr>';
+    });
+    html+='</table>';
+  } else {
+    html+='<div style="font-size:12px;color:var(--muted);margin-top:12px">Nothing new drafted yet — showing today\'s already-committed deliveries only.</div>';
+  }
   document.getElementById('rRevCtx').innerHTML='Review before commit · <b>'+today+'</b> · '+operator+' · <b>'+rBranch+'</b>';
   document.getElementById('rRevBody').innerHTML=html;
   document.getElementById('hTitle').textContent='Review Received';document.getElementById('hSub').textContent='Check, then commit';
-  var btn=document.getElementById('rCommitBtn');btn.textContent=mm.length?'Commit with override':'Commit received';btn.className='cbPrimary'+(mm.length?' cbDanger':'');
+  var btn=document.getElementById('rCommitBtn');
+  if(sizes.length===0){
+    btn.textContent='Nothing new to commit';btn.className='cbPrimary';btn.disabled=true;btn.style.opacity='.5';
+  } else {
+    btn.disabled=false;btn.style.opacity='1';
+    btn.textContent=mm.length?'Commit with override':'Commit received';btn.className='cbPrimary'+(mm.length?' cbDanger':'');
+  }
   rShow('recvReviewView');window.scrollTo(0,0);
 }
 function rBackFromReview(){document.getElementById('hTitle').textContent='Stock Received';document.getElementById('hSub').textContent='Full received vs empty returned';rShow('recvGridView');rRenderGrid();window.scrollTo(0,0);}
@@ -3601,6 +3748,13 @@ function renderGrid(){
   var c=CAP[capType];var bucket=dataBucket();
   var bh=document.getElementById('sealBannerSlot'); if(bh)bh.innerHTML=sealBannerHTML();
   var _secKey=capType; // refill/private/manifold map directly
+  // Same-day adjustment link - see openCapAdjust(). Only offered while there's something
+  // committed today for this branch to actually adjust, and the day hasn't been closed yet.
+  var _cal=document.getElementById('capAdjustLink');
+  if(_cal){
+    var _hasCommittedToday=(store[capType]||[]).some(function(r){return r.branch===capBranch && (r._date||today)===today;});
+    _cal.style.display=(_hasCommittedToday && !loadSavedDay(today,capBranch))?'block':'none';
+  }
   // Same quiet time-bracket heads-up as Stock Count, but only for Manifold's Opening/Closing
   // stages - Added is a mid-day cylinder swap triggered by an empty cylinder, not a schedule,
   // so there's no "expected time" for it and it never shows this banner/border.
@@ -3630,6 +3784,34 @@ function renderGrid(){
     var det=done?capSummary(c,lines):(c.gridLabel==='cylinder'?'tap to weigh':'tap to add');
     return '<button class="csize'+(done?' done':'')+(capTimerisk?' timerisk':'')+'" onclick="openModal(\''+item+'\')"><span class="sz">'+item+'</span><span class="det">'+det+'</span></button>';
   }).join('');
+}
+// Same-day correction for Manifold/Refill/Private, same pattern as openReceivedAdjust() -
+// reuses the existing Manager/Owner-password + reason + audit-logged picker (openCorrection/
+// corrLines already had generic 'Refills'/'Private'/'Manifold' sections, just never reachable
+// against today's still-open store, only a closed day's frozen snapshot via the 48-hour tool).
+// No mismatch-style validate() hook here - unlike Received's Full-in/Empty-out, none of these
+// three have an equivalent "two sides must balance" concept to re-check.
+var CAP_ADJUST_SECTION={refill:'Refills',private:'Private',manifold:'Manifold'};
+function openCapAdjust(){
+  var sectionName=CAP_ADJUST_SECTION[capType];
+  if(!sectionName){toast('Not available for this section',true);return;}
+  if(loadSavedDay(today,capBranch)){toast('Day already closed for '+capBranch+' - use the correction tool from Count History instead',true);return;}
+  var c=CAP[capType];
+  var todaysStore={};
+  todaysStore[capType]=(store[capType]||[]).filter(function(r){return r.branch===capBranch && (r._date||today)===today;});
+  openCorrection({
+    title:'Adjust '+c.title+' — '+capBranch+' (today, before close)',
+    store:todaysStore, branch:capBranch, sections:[sectionName],
+    onApply:function(sel,oldVal,newVal,reason,auth){
+      syncPush('Adjustments',[{date:today,branch:capBranch,Kind:'SameDay'+sectionName+'Adjustment',Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:auth.name+' ('+auth.level+')'}]);
+      saveWorkingStore();
+      auditLog(c.title+' adjusted (same day)',capBranch+' '+sel.tag+': '+oldVal+' → '+newVal+' by '+auth.name+' - '+reason,{was:oldVal},{now:newVal});
+    },
+    afterClose:function(){
+      renderGrid();
+      if(document.querySelector('.view.active')&&document.querySelector('.view.active').id==='historyView')openHistory();
+    }
+  });
 }
 function capSummary(c,lines){
   if(c.weigh){
@@ -4052,7 +4234,10 @@ function capReviewHTML(type){
     '</table><div style="font-size:12px;color:var(--muted);margin-top:8px">'+newCount+' new entry(ies) will be committed'+(committedCount?' · '+committedCount+' already committed today':'')+'.</div>';
 }
 function capReviewCols(type){
-  if(type==='manifold')return [{k:'cyl',label:'Cylinder'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'gasLeft',label:'Gas left kg'},{k:'notes',label:'Note'},{k:'photo',label:'Photo'}];
+  // 'stage' (Opening/Added/Closing) is already on every row - capReview()'s toggle-extra
+  // logic sets it from the toggle bucket key - it just was never shown in Review, so a
+  // cylinder's stage was invisible right up until commit.
+  if(type==='manifold')return [{k:'stage',label:'Stage'},{k:'cyl',label:'Cylinder'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'gasLeft',label:'Gas left kg'},{k:'notes',label:'Note'},{k:'photo',label:'Photo'}];
   if(type==='refill')return [{k:'size',label:'Size'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'pumped',label:'Pumped kg'},{k:'seal',label:'Seal #'},{k:'notes',label:'Notes'}];
   if(type==='private')return [{k:'cylBrand',label:'Cyl brand'},{k:'otherBrand',label:'Other name'},{k:'gasType',label:'Gas'},{k:'pumped',label:'kg'},{k:'customer',label:'Customer / notes'},{k:'filledBy',label:'Filled by'},{k:'fillSupplier',label:'Supplier'},{k:'fillSupplierOther',label:'Other supplier'},{k:'invoiceNo',label:'Invoice #'},{k:'supplierPhoto',label:'Photo'}];
   return [{k:'item',label:'Item'},{k:'brand',label:'Brand'}];
@@ -4618,7 +4803,7 @@ function loadManifoldExpected(br){try{var r=localStorage.getItem(mExpKey(br));re
 function loadExpectedOpening(br){try{var r=localStorage.getItem(expKey(br));return r?JSON.parse(r):null;}catch(e){return null;}}
 // #3 correct a specific line in a saved (closed) day, within 48hrs, manager/owner + reason
 // ===== REUSABLE CORRECTION PICKER (section -> line -> value+reason) =====
-var corrCfg=null, corrAuth=null, corrPick=null;
+var corrCfg=null, corrAuth=null, corrPick=null, corrApplyBusy=false;
 function closeCorr(){document.getElementById('corrModal').classList.remove('show');if(corrCfg&&corrCfg.afterClose)corrCfg.afterClose();corrCfg=null;corrAuth=null;corrPick=null;}
 function corrLines(st,section,br){
   function inBr(r){return !br||!r.branch||r.branch===br;}
@@ -4628,9 +4813,21 @@ function corrLines(st,section,br){
       out.push({label:r.size+' \u00b7 '+r.state+' \u00b7 '+r.brand+' = '+r.qty, get:function(){return r.qty;}, set:function(v){r.qty=v;}, tag:section+' '+r.state+' '+r.size+' '+r.brand});
     });
   } else if(section==='Received'){
+    // Distinguish one delivery from another same-size/brand delivery by invoice #, delivery
+    // note #, and supplier - every committed row has all three (rSupplierComplete() blocks
+    // commit otherwise), so this is reliable, not a best-effort fallback. Included in BOTH
+    // the picker label (so the person picking a line can tell deliveries apart before
+    // touching anything) and the tag (so the Adjustments-tab/audit-log entry a manager reads
+    // later is also self-identifying, not just "Received 5kg Afrox fullIn" with no way to
+    // tell which of several same-day deliveries it was).
     (st.received||[]).filter(inBr).forEach(function(r){
-      out.push({label:r.size+' \u00b7 '+r.brand+' \u00b7 Full in='+r.fullIn+' (edit)', get:function(){return r.fullIn;}, set:function(v){r.fullIn=v;}, tag:'Received '+r.size+' '+r.brand+' fullIn'});
-      out.push({label:r.size+' \u00b7 '+r.brand+' \u00b7 Empty out='+r.emptyOut+' (edit)', get:function(){return r.emptyOut;}, set:function(v){r.emptyOut=v;}, tag:'Received '+r.size+' '+r.brand+' emptyOut'});
+      var ref=[r.invoiceNo?('Inv '+r.invoiceNo):'',r.deliveryNote?('DN '+r.deliveryNote):'',r.supplier||''].filter(Boolean).join(' \u00b7 ');
+      var refTxt=ref?(' \u2014 '+ref):'';
+      // row+field: only used by openReceivedAdjust()'s validate() hook to re-simulate this
+      // delivery's Full-in/Empty-out balance before committing the edit - ignored everywhere
+      // else (the 48-hour historical tool's onApply doesn't look at them).
+      out.push({label:r.size+' \u00b7 '+r.brand+' \u00b7 Full in='+r.fullIn+refTxt+' (edit)', get:function(){return r.fullIn;}, set:function(v){r.fullIn=v;}, tag:'Received '+r.size+' '+r.brand+' fullIn'+(ref?' ('+ref+')':''), row:r, field:'fullIn'});
+      out.push({label:r.size+' \u00b7 '+r.brand+' \u00b7 Empty out='+r.emptyOut+refTxt+' (edit)', get:function(){return r.emptyOut;}, set:function(v){r.emptyOut=v;}, tag:'Received '+r.size+' '+r.brand+' emptyOut'+(ref?' ('+ref+')':''), row:r, field:'emptyOut'});
     });
   } else if(section==='Refills'){
     (st.refill||[]).filter(inBr).forEach(function(r,idx){
@@ -4686,22 +4883,37 @@ function corrStepEdit(i){
     '<div style="font-size:12px;color:var(--muted)">Current value: <b>'+cur+'</b></div>'+
     '<input class="mField" id="corrNewVal" type="number" inputmode="numeric" placeholder="Correct value" value="'+cur+'" style="width:100%;margin:8px 0">'+
     '<textarea id="corrReason" placeholder="Reason for correction (required)" style="width:100%;min-height:60px;border:1px solid var(--line);border-radius:10px;padding:8px;font:inherit;box-sizing:border-box"></textarea>'+
-    '<button class="mDone" style="margin-top:8px" onclick="corrApply()">Apply correction</button>';
+    '<button class="mDone" id="corrApplyBtn" style="margin-top:8px" onclick="corrApply()">Apply correction</button>';
   document.getElementById('corrBody').innerHTML=html;
 }
 function corrApply(){
+  // Every other commit-style button in the app (capCommit/rCommit/cCommit) guards against a
+  // double-tap firing the action twice - this one never did. The number itself would still
+  // land correctly either way (set() is idempotent for the same value), but the Adjustments-
+  // tab sync and audit log would each get a spurious duplicate entry for one real correction.
+  if(corrApplyBusy)return;
   var nv=document.getElementById('corrNewVal').value;
   if(nv===''){toast('Enter the correct value',true);return;}
   var newVal=num(nv);
   var reason=(document.getElementById('corrReason').value||'').trim();
   if(!reason){toast('A reason is required',true);return;}
   var oldVal=corrPick.get();
+  var sel={tag:corrPick.tag,section:corrCfg._section,row:corrPick.row,field:corrPick.field};
+  // Optional pre-apply gate (e.g. Received's same-day adjust uses this to catch a correction
+  // that creates/worsens a Full-in vs Empty-out mismatch) - runs BEFORE the value is set, so
+  // declining it (returns false) leaves the original data untouched. Most callers (the 48-hour
+  // historical tool, Refill/Private/Manifold's same-day adjust) don't set one, in which case
+  // this is a no-op and behaves exactly as before.
+  if(corrCfg.validate && !corrCfg.validate(sel,oldVal,newVal))return;
+  corrApplyBusy=true;
+  var btn=document.getElementById('corrApplyBtn');if(btn){btn.disabled=true;btn.style.opacity='.6';}
   corrPick.set(newVal);
-  corrCfg.onApply({tag:corrPick.tag,section:corrCfg._section},oldVal,newVal,reason,corrAuth);
+  corrCfg.onApply(sel,oldVal,newVal,reason,corrAuth);
   document.getElementById('corrModal').classList.remove('show');
   toast('Correction logged \u2713');
   if(corrCfg.afterClose)corrCfg.afterClose();
   corrCfg=null;corrAuth=null;corrPick=null;
+  setTimeout(function(){corrApplyBusy=false;},600);
 }
 function correctSavedLine(ds){
   if(!perm('edit')){toast('You do not have edit/correct rights',true);return;}
