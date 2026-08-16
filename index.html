@@ -3390,39 +3390,15 @@ function openReceivedAdjust(){
   // shared with the 48-hour post-close tool, which deliberately passes a HISTORICAL day's
   // snapshot (not today's) and must keep seeing all of it.
   var todaysStore={received:store.received.filter(function(r){return r.branch===rBranch && (r._date||today)===today;})};
+  // No validate()/onApply() here - the Received flow now bypasses the generic single-field
+  // corrStepEdit()/corrApply() entirely (corrStepLines('Received') redirects straight to
+  // corrStepReceivedGroups()/corrStepReceivedGroupEdit()/corrApplyReceivedGroup() below,
+  // which edit Full-in AND Empty-out together under one shared reason and do their own
+  // balance-check + sync + audit inline). Kept here only for auth, the shared modal shell,
+  // and afterClose.
   openCorrection({
     title:'Adjust Stock Received — '+rBranch+' (today, before close)',
     store:todaysStore, branch:rBranch, sections:['Received'],
-    // Committing a fresh delivery forces a reason if Full-in != Empty-out for that
-    // delivery; correcting an already-committed line had no equivalent check - a Manager
-    // could fix one side and leave the other mismatched with nothing catching it in the
-    // moment (only visible later as a red Diff in Count History, passively). This
-    // re-simulates the SAME delivery's (same branch+date+size+invoice+deliveryNote+
-    // supplier) Full-in/Empty-out balance with the new value applied, and requires an
-    // explicit confirm if it creates or worsens an imbalance - declining leaves the
-    // original value untouched (this runs before corrPick.set()).
-    validate:function(sel,oldVal,newVal){
-      if(!sel.row||!sel.field)return true;
-      var r=sel.row;
-      var siblings=store.received.filter(function(x){
-        return x.branch===r.branch && (x._date||today)===today && x.size===r.size &&
-          x.invoiceNo===r.invoiceNo && x.deliveryNote===r.deliveryNote && x.supplier===r.supplier;
-      });
-      var fullIn=0,emptyOut=0;
-      siblings.forEach(function(x){
-        fullIn+=(x===r&&sel.field==='fullIn')?newVal:num(x.fullIn);
-        emptyOut+=(x===r&&sel.field==='emptyOut')?newVal:num(x.emptyOut);
-      });
-      if(fullIn!==emptyOut){
-        return confirm('This leaves '+r.size+' off by '+(fullIn-emptyOut)+' for this delivery (Full in '+fullIn+' vs Empty out '+emptyOut+').\n\nApply the correction anyway?');
-      }
-      return true;
-    },
-    onApply:function(sel,oldVal,newVal,reason,auth){
-      syncPush('Adjustments',[{date:today,branch:rBranch,Kind:'SameDayReceivedAdjustment',Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:auth.name+' ('+auth.level+')'}]);
-      saveWorkingStore();
-      auditLog('Stock Received adjusted (same day)',rBranch+' '+sel.tag+': '+oldVal+' → '+newVal+' by '+auth.name+' - '+reason,{was:oldVal},{now:newVal});
-    },
     afterClose:function(){
       rRenderGrid();
       if(document.querySelector('.view.active')&&document.querySelector('.view.active').id==='historyView')openHistory();
@@ -3525,8 +3501,13 @@ async function rCommit(){
     R_SIZES.forEach(function(sz){
       if(!b[sz])return;
       var reason=rOverrides[sz]||'';
-      b[sz].recv.forEach(function(l){if(num(l.qty)>0)newRows.push({size:sz,brand:l.brand,fullIn:num(l.qty),emptyOut:0,note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
-      b[sz].ret.forEach(function(l){if(num(l.qty)>0)newRows.push({size:sz,brand:l.brand,fullIn:0,emptyOut:num(l.qty),note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
+      // _side records which field this row actually represents, independent of its current
+      // value - a row is always fundamentally either a Full-in record or an Empty-out record
+      // (never both), but without this tag, correcting a value down to 0 would make it
+      // indistinguishable from "never had anything on this side" and vanish from the
+      // Adjustment picker (see corrLines' Received branch below).
+      b[sz].recv.forEach(function(l){if(num(l.qty)>0)newRows.push({size:sz,brand:l.brand,fullIn:num(l.qty),emptyOut:0,_side:'recv',note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
+      b[sz].ret.forEach(function(l){if(num(l.qty)>0)newRows.push({size:sz,brand:l.brand,fullIn:0,emptyOut:num(l.qty),_side:'ret',note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
     });
     if(newRows.length===0){toast('Nothing to commit',true);return;}
     store.received=(store.received||[]).concat(newRows);
@@ -4823,11 +4804,21 @@ function corrLines(st,section,br){
     (st.received||[]).filter(inBr).forEach(function(r){
       var ref=[r.invoiceNo?('Inv '+r.invoiceNo):'',r.deliveryNote?('DN '+r.deliveryNote):'',r.supplier||''].filter(Boolean).join(' \u00b7 ');
       var refTxt=ref?(' \u2014 '+ref):'';
-      // row+field: only used by openReceivedAdjust()'s validate() hook to re-simulate this
-      // delivery's Full-in/Empty-out balance before committing the edit - ignored everywhere
-      // else (the 48-hour historical tool's onApply doesn't look at them).
-      out.push({label:r.size+' \u00b7 '+r.brand+' \u00b7 Full in='+r.fullIn+refTxt+' (edit)', get:function(){return r.fullIn;}, set:function(v){r.fullIn=v;}, tag:'Received '+r.size+' '+r.brand+' fullIn'+(ref?' ('+ref+')':''), row:r, field:'fullIn'});
-      out.push({label:r.size+' \u00b7 '+r.brand+' \u00b7 Empty out='+r.emptyOut+refTxt+' (edit)', get:function(){return r.emptyOut;}, set:function(v){r.emptyOut=v;}, tag:'Received '+r.size+' '+r.brand+' emptyOut'+(ref?' ('+ref+')':''), row:r, field:'emptyOut'});
+      // A row is always fundamentally EITHER a Full-in record OR an Empty-out record, never
+      // both (rCommit() only ever creates one or the other per line) - only expose the side
+      // it actually represents, not both fields with the untouched side always sitting at a
+      // meaningless "=0". Was pushing both unconditionally, which doubled the picker's line
+      // count for no reason (a single Full-in-only delivery showed as "Full in=10" AND a
+      // useless "Empty out=0" right next to it). `_side` (tagged at commit time) is the
+      // source of truth so a value legitimately corrected down to 0 stays visible/correctable
+      // afterwards - falls back to inferring from the current values for any row committed
+      // before `_side` existed.
+      var side=r._side||(num(r.fullIn)>0?'recv':(num(r.emptyOut)>0?'ret':'recv'));
+      if(side==='recv'){
+        out.push({label:r.size+' \u00b7 '+r.brand+' \u00b7 Full in='+r.fullIn+refTxt+' (edit)', get:function(){return r.fullIn;}, set:function(v){r.fullIn=v;}, tag:'Received '+r.size+' '+r.brand+' fullIn'+(ref?' ('+ref+')':''), row:r, field:'fullIn'});
+      } else {
+        out.push({label:r.size+' \u00b7 '+r.brand+' \u00b7 Empty out='+r.emptyOut+refTxt+' (edit)', get:function(){return r.emptyOut;}, set:function(v){r.emptyOut=v;}, tag:'Received '+r.size+' '+r.brand+' emptyOut'+(ref?' ('+ref+')':''), row:r, field:'emptyOut'});
+      }
     });
   } else if(section==='Refills'){
     // Seal/serial number shown in the list itself (not just after opening a line) - same
@@ -4887,12 +4878,121 @@ function corrStepSection(){
 function corrStepLines(section){
   var lines=corrLines(corrCfg.store,section,corrCfg.branch);
   corrCfg._section=section;corrCfg._lines=lines;
+  if(section==='Received'){corrStepReceivedGroups();return;}
   var html='<div style="font-size:12px;color:var(--muted);margin-bottom:6px"><button class="sigClear" onclick="corrStepSection()">\u2039 Back</button> &nbsp; <b>'+section+'</b> \u2014 tap the line to correct:</div>';
   lines.forEach(function(l,i){
     html+='<button class="sigClear" style="width:100%;margin-bottom:6px;text-align:left" onclick="corrStepEdit('+i+')">'+l.label+'</button>';
   });
   if(!lines.length)html+='<div class="histEmpty">No populated lines in this section.</div>';
   document.getElementById('corrBody').innerHTML=html;
+}
+// ---- Received-specific picker: ONE TAB per delivery+size, opening ONE combined edit
+// screen for both Full-in and Empty-out at once, under a single shared reason. ----
+// Was (v1): a flat list with one entry PER FIELD per row (Full in AND Empty out for every
+// row, even the always-zero side) - four look-alike lines for one delivery's one size.
+// Was (v2): fixed the duplicate lines, but still routed each brand/amount to its own
+// separate tap->edit->reason->apply cycle via the generic corrStepEdit()/corrApply() -
+// fixing a delivery that needed BOTH sides corrected meant two full round-trips, two
+// separate reasons, for one real mistake. This version groups by delivery+size (same size
+// can legitimately appear in more than one delivery, so grouping by size alone would mix
+// them back together) into ONE tappable tab; tapping it opens BOTH sides as editable
+// inputs on one screen with one shared reason - one brand's own input when a side has
+// just one brand, one input per brand when a side has more than one (never collapse
+// multiple brands into a single total - that would hide which brand is actually wrong).
+// Bypasses corrStepEdit()/corrApply() entirely for Received - see corrApplyReceivedGroup().
+function corrStepReceivedGroups(){
+  var lines=corrCfg._lines;
+  var groups={},order=[];
+  lines.forEach(function(l,i){
+    var r=l.row;
+    var key=r.size+'|'+(r.invoiceNo||'')+'|'+(r.deliveryNote||'')+'|'+(r.supplier||'');
+    if(!groups[key]){groups[key]={size:r.size,invoiceNo:r.invoiceNo,deliveryNote:r.deliveryNote,supplier:r.supplier,recv:[],ret:[]};order.push(key);}
+    groups[key][l.field==='fullIn'?'recv':'ret'].push({idx:i,brand:r.brand,val:l.get()});
+  });
+  corrCfg._receivedGroups=groups;
+  corrCfg._receivedGroupOrder=order;
+  var html='<div style="font-size:12px;color:var(--muted);margin-bottom:10px"><button class="sigClear" onclick="corrStepSection()">\u2039 Back</button> &nbsp; <b>Received</b> \u2014 tap a delivery to correct:</div>';
+  if(!order.length)html+='<div class="histEmpty">No populated lines in this section.</div>';
+  function sideSummary(rows){return rows.length?rows.map(function(x){return x.brand+' '+x.val;}).join(', '):'\u2014';}
+  order.forEach(function(key,gi){
+    var g=groups[key];
+    var ref=[g.invoiceNo?('Inv '+g.invoiceNo):'',g.deliveryNote?('DN '+g.deliveryNote):'',g.supplier||''].filter(Boolean).join(' \u00b7 ');
+    html+='<button class="sigClear" style="width:100%;margin-bottom:8px;text-align:left" onclick="corrStepReceivedGroupEdit('+gi+')">'+
+      '<div style="font-weight:800;color:var(--navy);font-size:13px">'+g.size+'</div>'+
+      '<div style="font-size:12px;margin-top:3px"><span style="color:var(--muted);font-weight:700">Full in</span> '+sideSummary(g.recv)+' &nbsp;\u00b7&nbsp; <span style="color:var(--muted);font-weight:700">Empty out</span> '+sideSummary(g.ret)+'</div>'+
+      (ref?'<div style="font-size:11px;color:var(--muted);margin-top:4px">'+ref+'</div>':'')+
+      '</button>';
+  });
+  document.getElementById('corrBody').innerHTML=html;
+}
+function corrStepReceivedGroupEdit(gi){
+  var key=corrCfg._receivedGroupOrder[gi];
+  var g=corrCfg._receivedGroups[key];
+  corrCfg._receivedGroupActive=gi;
+  var ref=[g.invoiceNo?('Inv '+g.invoiceNo):'',g.deliveryNote?('DN '+g.deliveryNote):'',g.supplier||''].filter(Boolean).join(' \u00b7 ');
+  function colInputs(rows){
+    if(!rows.length)return '<div style="font-size:11px;color:var(--muted)">\u2014</div>';
+    return rows.map(function(x){
+      return '<div style="margin-bottom:8px">'+
+        (rows.length>1?'<div style="font-size:11px;color:var(--muted);margin-bottom:3px">'+x.brand+'</div>':'')+
+        '<input class="mField" type="number" inputmode="numeric" data-idx="'+x.idx+'" data-orig="'+x.val+'" value="'+x.val+'" style="width:100%;margin:0">'+
+        '</div>';
+    }).join('');
+  }
+  var html='<div style="font-size:12px;color:var(--muted);margin-bottom:8px"><button class="sigClear" onclick="corrStepReceivedGroups()">\u2039 Back</button></div>'+
+    '<div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:2px">Received '+g.size+'</div>'+
+    (ref?'<div style="font-size:11px;color:var(--muted);margin-bottom:12px">'+ref+'</div>':'')+
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">'+
+    '<div><div style="font-size:10px;font-weight:800;color:var(--muted);margin-bottom:6px">FULL IN</div>'+colInputs(g.recv)+'</div>'+
+    '<div><div style="font-size:10px;font-weight:800;color:var(--muted);margin-bottom:6px">EMPTY OUT</div>'+colInputs(g.ret)+'</div>'+
+    '</div>'+
+    '<textarea id="corrReason" placeholder="Reason for correction (required)" style="width:100%;min-height:60px;border:1px solid var(--line);border-radius:10px;padding:8px;font:inherit;box-sizing:border-box"></textarea>'+
+    '<button class="mDone" id="corrApplyBtn" style="margin-top:8px" onclick="corrApplyReceivedGroup()">Apply correction</button>';
+  document.getElementById('corrBody').innerHTML=html;
+}
+function corrApplyReceivedGroup(){
+  if(corrApplyBusy)return;
+  var gi=corrCfg._receivedGroupActive;
+  var key=corrCfg._receivedGroupOrder[gi];
+  var g=corrCfg._receivedGroups[key];
+  var inputs=Array.prototype.slice.call(document.querySelectorAll('#corrBody input[data-idx]'));
+  var changed=inputs.filter(function(el){return num(el.value)!==num(el.getAttribute('data-orig'));});
+  if(changed.length===0){toast('Nothing changed',true);return;}
+  var reasonEl=document.getElementById('corrReason');
+  var reason=(reasonEl.value||'').trim();
+  if(!reason){toast('A reason is required',true);return;}
+  // Check the FULL combined new state (every brand on each side, changed or not) against
+  // each other ONCE for the whole delivery+size - more correct than checking one field at a
+  // time (the old v2 behaviour), since a manager editing both sides together should be
+  // checked against what they're actually about to save, not one change in isolation.
+  function inputFor(idx){return inputs.filter(function(e){return Number(e.getAttribute('data-idx'))===idx;})[0];}
+  function sideTotal(rows){return rows.reduce(function(s,x){var el=inputFor(x.idx);return s+(el?num(el.value):x.val);},0);}
+  var fullTotal=sideTotal(g.recv), emptyTotal=sideTotal(g.ret);
+  if(fullTotal!==emptyTotal){
+    if(!confirm('This leaves '+g.size+' off by '+(fullTotal-emptyTotal)+' for this delivery (Full in '+fullTotal+' vs Empty out '+emptyTotal+').\n\nApply the correction anyway?'))return;
+  }
+  corrApplyBusy=true;
+  var btn=document.getElementById('corrApplyBtn');if(btn){btn.disabled=true;btn.style.opacity='.6';}
+  var changes=[];
+  changed.forEach(function(el){
+    var idx=Number(el.getAttribute('data-idx'));
+    var line=corrCfg._lines[idx];
+    var oldVal=num(el.getAttribute('data-orig')), newVal=num(el.value);
+    line.set(newVal);
+    changes.push({brand:line.row.brand,field:line.field,oldVal:oldVal,newVal:newVal});
+  });
+  syncPush('Adjustments',changes.map(function(c){
+    return {date:today,branch:corrCfg.branch,Kind:'SameDayReceivedAdjustment',
+      Line:'Received '+g.size+' '+c.brand+' '+c.field+(g.invoiceNo||g.deliveryNote||g.supplier?(' (Inv '+(g.invoiceNo||'')+' \u00b7 DN '+(g.deliveryNote||'')+' \u00b7 '+(g.supplier||'')+')'):''),
+      From:c.oldVal,To:c.newVal,Reason:reason,By:corrAuth.name+' ('+corrAuth.level+')'};
+  }));
+  saveWorkingStore();
+  var summary=changes.map(function(c){return c.brand+' '+(c.field==='fullIn'?'Full in':'Empty out')+' '+c.oldVal+'\u2192'+c.newVal;}).join(', ');
+  auditLog('Stock Received adjusted (same day)',corrCfg.branch+' '+g.size+' \u2014 '+summary+' by '+corrAuth.name+' - '+reason);
+  if(corrCfg.afterClose)corrCfg.afterClose();
+  toast('Correction logged \u2713');
+  setTimeout(function(){corrApplyBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}},600);
+  corrStepReceivedGroups(); // rebuild+redisplay the list with the new values, modal stays open for further corrections
 }
 function corrStepEdit(i){
   var l=corrCfg._lines[i];corrPick=l;
