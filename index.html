@@ -4839,8 +4839,16 @@ function corrLines(st,section,br){
       out.push({label:cb+' \u00b7 '+(r.gasType||'')+' \u00b7 '+r.pumped+'kg'+(r.customer?(' \u00b7 '+r.customer):''), get:function(){return r.pumped;}, set:function(v){r.pumped=v;}, tag:'Private '+cb+' #'+(idx+1)});
     });
   } else if(section==='Manifold'){
+    // Correct gas left (kg) directly - it's the figure that actually matters downstream
+    // (manifoldBalance(), computeManifoldMismatches() both read r.gasLeft, never re-derive
+    // it from scale/tare), and it's what a manager actually knows when fixing a mistake
+    // (a re-check found the cylinder had X kg left), not necessarily what the scale itself
+    // read. Was editing scale instead, with gasLeft only a side-effect of that math - wrong
+    // field to be correcting. Tare (the cylinder's own known empty weight) is treated as the
+    // fixed anchor and scale is back-computed (scale=gasLeft+tare) so the three stay
+    // arithmetically consistent, rather than leaving a stale scale reading sitting there.
     (st.manifold||[]).filter(inBr).forEach(function(r,idx){
-      out.push({label:(r.stage||'Opening')+' \u00b7 '+r.cyl+' \u00b7 scale '+r.scale+'/tare '+r.tare+'='+r.gasLeft+'kg (edit scale)', get:function(){return r.scale;}, set:function(v){r.scale=v;r.gasLeft=num(r.scale)-num(r.tare);}, tag:'Manifold '+(r.stage||'Opening')+' '+r.cyl+' scale'});
+      out.push({label:(r.stage||'Opening')+' \u00b7 '+r.cyl+' \u00b7 gas left='+r.gasLeft+'kg (edit)', get:function(){return r.gasLeft;}, set:function(v){r.gasLeft=v;r.scale=num(v)+num(r.tare);}, tag:'Manifold '+(r.stage||'Opening')+' '+r.cyl+' gasLeft'});
     });
   }
   return out;
