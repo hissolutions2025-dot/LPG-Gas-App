@@ -84,6 +84,7 @@
   .csizegrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;} .csizegrid.locked{opacity:.4;pointer-events:none;}
   .csize{background:var(--card);border:1.5px solid var(--line);border-radius:14px;padding:14px 12px;text-align:left;cursor:pointer;min-height:64px;display:flex;flex-direction:column;gap:4px;transition:transform .08s;}
   .csize:active{transform:scale(.97);} .csize.done{border-color:var(--ok);background:#F1F8F3;}
+  .csize.timerisk{border:2px solid var(--alert);}
   .csize .sz{font-size:15px;font-weight:800;color:var(--navy);}
   .csize .det{font-size:11px;color:var(--muted);line-height:1.4;} .csize.done .det{color:var(--ok);font-weight:600;}
   .csize .det .bl{display:block;}
@@ -417,6 +418,7 @@
   </div>
   <div class="wrap" style="padding-top:14px;">
     <div class="lockmsg" id="capLock"></div>
+    <div id="capTimeWarnBanner" style="display:none;background:rgba(230,57,70,.12);border:2px solid var(--alert);border-radius:10px;padding:8px 12px;font-size:12px;color:var(--alert);font-weight:800;margin-bottom:10px"></div>
     <div class="capHint" id="capHint"></div>
     <div class="csizegrid" id="capGrid"></div>
     <button class="saveBtn" onclick="capReview()">Review &amp; commit &rarr;</button>
@@ -2258,9 +2260,18 @@ function doLogin(){
   auditLog('Login','Signed in to '+b);
   editUnlocked=false;
   loadWorkingStore();
+  // Load today's saved Stock Count / Stock Received drafts into memory regardless of which
+  // screen we land on below - so they're already there if the user navigates to that section
+  // manually later this session, not only if it happens to be the one being auto-resumed.
+  cLoadDraftIntoMemory();
+  rLoadDraftIntoMemory();
   syncFlush();
   refreshTestDateUI();
-  show('landing');updateBadges();
+  // "Where was I" - resume the same section (with its data) this operator was on when this
+  // device last left off, instead of always landing on the home screen. Falls back to home
+  // if there's nothing to resume (new day, different operator, or they were on home anyway).
+  if(!_restoreCurrentSection())show('landing');
+  updateBadges();
   _armIdleTimer();
 }
 function logout(){
@@ -2368,7 +2379,7 @@ function syncHeader(id){
   var who=document.getElementById('who');
   if(who)who.style.display=(id==='landing'&&operator)?'block':'none';
 }
-function goHome(){show('landing');renderLandingHeader();document.getElementById('backBtn').style.display='none';greyTiles();}
+function goHome(){show('landing');renderLandingHeader();document.getElementById('backBtn').style.display='none';greyTiles();_saveCurrentSection('home');}
 function greyTiles(){
   var map={count:'t1',manifold:'t2',refill:'t3',private:'t4',received:'t5'};
   var br=branch||'Helderberg';
@@ -2623,6 +2634,7 @@ function openCount(){
   document.getElementById('hSub').textContent='Tap Full or Empty on a size';
   document.getElementById('backBtn').style.display='block';
   cShow('countGridView');cRenderGrid();window.scrollTo(0,0);
+  _saveCurrentSection('count');
 }
 function cSetBranch(x){
   if(role==='Operator' && x!==branch){toast('Locked to '+branch,true);return;}
@@ -2756,7 +2768,7 @@ function cDelLine(i){
   // session) can just be spliced out as before - there's nothing on the sheet to clear.
   if(a[i]&&a[i]._fromCommitted){a[i].qty=0;} else {a.splice(i,1);}
   if(a.length===0)a.push({brand:cBrands(cDet.side)[0],qty:''});
-  cRenderDetail();
+  cSaveDraft();cRenderDetail();
 }
 function cTrimEmpty(){if(!cDet)return;var a=cCell(cDet.size)[cDet.side];for(var i=a.length-1;i>=0;i--){if(num(a[i].qty)===0&&!a[i].note&&!a[i]._fromCommitted)a.splice(i,1);}}
 function cResetSizeConfirm(){document.getElementById('cResetConfirm').style.display='block';}
@@ -2770,7 +2782,7 @@ function cResetSizeDo(){
   cCell(cDet.size)[cDet.side]=committedNow.length?committedNow.map(function(r){return {brand:r.brand,qty:0,note:'',_fromCommitted:true};}):[];
   document.getElementById('cResetConfirm').style.display='none';
   toast((committedNow.length?'Reset — commit to apply':'Nothing was committed for this cell'));
-  cRenderDetail();
+  cSaveDraft();cRenderDetail();
 }
 function cSaveDetail(){
   cTrimEmpty();
@@ -2803,7 +2815,7 @@ function cSaveDetail(){
       cRenderDetail();return; // stay on the line so he can re-count
     }
   }
-  toast(cDet.size+' '+cDet.side+' saved');cBackToGrid();
+  toast(cDet.size+' '+cDet.side+' saved');cSaveDraft();cBackToGrid();
 }
 function cBackToGrid(){cTrimEmpty();cDet=null;
   document.getElementById('hTitle').textContent='Stock Count';document.getElementById('hSub').textContent='Tap Full or Empty on a size';
@@ -2849,20 +2861,36 @@ function cReview(){
   cShow('countReviewView');window.scrollTo(0,0);
 }
 function cBackFromReview(){document.getElementById('hTitle').textContent='Stock Count';document.getElementById('hSub').textContent='Tap Full or Empty on a size';cShow('countGridView');cRenderGrid();window.scrollTo(0,0);}
-// Quiet heads-up (never a hard block) if the count type being committed doesn't match what
-// time of day it is, per the configured Count Times cutoff - catches an honest mis-tap
-// (e.g. committing Closing at 8am when Opening was meant). Returns true to let the real
-// commit proceed immediately (types match); returns false and shows the confirm modal
-// otherwise, which itself calls _cCommitReal() directly once the user chooses to continue.
-var _countTimeWarnPending=null; // {expected, actual}
+// Quiet heads-up (never a hard block) if what's being committed doesn't match what time
+// of day it is, per the configured Count Times cutoff - catches an honest mis-tap (e.g.
+// committing Closing at 8am when Opening was meant). Shared by Stock Count (cCT) and
+// Manifold's Opening/Closing stages (Manifold's mid-day "Added" stage is exempt - a
+// cylinder swap happens whenever one actually runs empty, not on a schedule, so there's
+// no "wrong time" for it). _countTimeWarnPending.kind picks which real commit function
+// and which draft-move logic the Continue/Switch buttons drive.
+var _countTimeWarnPending=null; // {kind:'count'|'manifold', expected, actual}
 function _checkCountTimeWarning(){
   var expected=_expectedCountTypeNow();
   if(cCT===expected)return true;
-  _countTimeWarnPending={expected:expected,actual:cCT};
+  _countTimeWarnPending={kind:'count',expected:expected,actual:cCT};
   document.getElementById('countTimeWarnMsg').textContent=
     'It\'s currently '+_nowHM()+' — '+expected+' counts are usually done around this time, but you\'re about to commit '+cCT+'.\n\nDid you mean to do an '+expected+' count instead?';
   document.getElementById('countTimeWarnSwitchBtn').textContent='Switch me to '+expected;
   document.getElementById('countTimeWarnContinueBtn').textContent='Continue with '+cCT+' anyway';
+  document.getElementById('countTimeWarnModal').classList.add('show');
+  return false;
+}
+function _checkCapTimeWarning(){
+  if(capType!=='manifold')return true; // only Manifold gets this, and only its Opening/Closing stages (see below)
+  var stage=toggleSel.stage;
+  if(stage!=='Opening'&&stage!=='Closing')return true; // Added: event-driven, no expected time
+  var expected=_expectedCountTypeNow();
+  if(stage===expected)return true;
+  _countTimeWarnPending={kind:'manifold',expected:expected,actual:stage};
+  document.getElementById('countTimeWarnMsg').textContent=
+    'It\'s currently '+_nowHM()+' — '+expected+' is usually done around this time, but you\'re about to commit the Manifold '+stage+' stage.\n\nDid you mean '+expected+' instead?';
+  document.getElementById('countTimeWarnSwitchBtn').textContent='Switch me to '+expected;
+  document.getElementById('countTimeWarnContinueBtn').textContent='Continue with '+stage+' anyway';
   document.getElementById('countTimeWarnModal').classList.add('show');
   return false;
 }
@@ -2873,18 +2901,29 @@ function _countTimeWarnCancel(){
 function _countTimeWarnContinue(){
   document.getElementById('countTimeWarnModal').classList.remove('show');
   var p=_countTimeWarnPending;_countTimeWarnPending=null;
-  if(p)auditLog('Count type time warning overridden',cBranch+' - committed '+p.actual+' at '+_nowHM()+' (expected '+p.expected+')');
-  _cCommitReal();
+  if(!p)return;
+  if(p.kind==='manifold'){
+    auditLog('Manifold stage time warning overridden',capBranch+' - committed '+p.actual+' at '+_nowHM()+' (expected '+p.expected+')');
+    _capCommitReal();
+  } else {
+    auditLog('Count type time warning overridden',cBranch+' - committed '+p.actual+' at '+_nowHM()+' (expected '+p.expected+')');
+    _cCommitReal();
+  }
 }
 function _countTimeWarnSwitch(){
   var p=_countTimeWarnPending;_countTimeWarnPending=null;
   document.getElementById('countTimeWarnModal').classList.remove('show');
   if(!p)return;
-  // Carry over whatever's already been typed into this branch's draft instead of losing it -
-  // just re-labels it under the correct toggle key rather than discarding it.
-  var fromKey=cBranch+'|'+p.actual, toKey=cBranch+'|'+p.expected;
-  if(cData[fromKey]){cData[toKey]=cData[fromKey];delete cData[fromKey];}
-  cSetCT(p.expected);
+  // Carry over whatever's already been typed instead of losing it - just re-labels it
+  // under the correct toggle key rather than discarding it.
+  if(p.kind==='manifold'){
+    if(capData[p.actual]){capData[p.expected]=capData[p.actual];delete capData[p.actual];}
+    setToggle('stage',p.expected);
+  } else {
+    var fromKey=cBranch+'|'+p.actual, toKey=cBranch+'|'+p.expected;
+    if(cData[fromKey]){cData[toKey]=cData[fromKey];delete cData[fromKey];}
+    cSetCT(p.expected);
+  }
   toast('Switched to '+p.expected+' — review and commit when ready');
 }
 function cCommit(){
@@ -2956,7 +2995,7 @@ function _cCommitReal(){
   // never cleared here, so switching branch after a commit (e.g. Kleinmond -> Helderberg)
   // left the old branch's counted lines sitting around and they'd get re-flushed/re-synced
   // on every future commit, including from an unrelated branch's session.
-  cData={};
+  cData={};cSaveDraft();
   var removedCount=Object.keys(touchedLineKeys).length-freshRows.length;
   saveWorkingStore();auditLog('Count committed',freshRows.length+' line(s)'+(removedCount>0?(' · '+removedCount+' removed'):'')+' — '+cBranch+' (Opening/Closing)'+(mm.length?(' · '+mm.length+' opening mismatch(es) flagged'):''));
   updateBadges();
@@ -3087,6 +3126,7 @@ function rSupplierChanged(){
   st.isOther=isOther;
   st.supplier=isOther?(document.getElementById('rSupplierOther').value||''):sel.value;
   _rResetInvalidBrands();
+  rSaveDraft();
 }
 // If lines were already added under a previous supplier and the newly-selected supplier's
 // brand list no longer allows one of them, reset that line's brand rather than silently
@@ -3108,6 +3148,7 @@ function rSupplierFieldChanged(key){
   if(key==='other')st.supplier=document.getElementById('rSupplierOther').value;
   else if(key==='deliveryNote')st.deliveryNote=document.getElementById('rDeliveryNote').value;
   else if(key==='invoiceNo')st.invoiceNo=document.getElementById('rInvoiceNo').value;
+  rSaveDraft();
 }
 function rRestoreSupplierFields(){
   var s=rSupplierFor(rBranch);
@@ -3177,7 +3218,7 @@ function rPhotoPick(input){
   var f=input.files&&input.files[0];if(!f){return;}
   var st=rSupplierFor(rBranch);if(!st.photos)st.photos=[];
   if(st.photos.length>=2){toast('Max 2 photos per delivery',true);input.value='';return;}
-  _pickPhotoOrFallback(f,function(dataUri){st.photos.push(dataUri);rRenderPhotoThumbs();});
+  _pickPhotoOrFallback(f,function(dataUri){st.photos.push(dataUri);rRenderPhotoThumbs();rSaveDraft();});
   input.value='';
 }
 function rRenderPhotoThumbs(){
@@ -3187,7 +3228,7 @@ function rRenderPhotoThumbs(){
   var btn=document.getElementById('rSupplierPhotoBtn');
   if(btn){btn.textContent='📷 Add photo ('+arr.length+'/2)';btn.disabled=(arr.length>=2);btn.style.opacity=(arr.length>=2)?'.5':'1';}
 }
-function rRemovePhoto(i){var st=rSupplierFor(rBranch);if(st.photos){st.photos.splice(i,1);rRenderPhotoThumbs();}}
+function rRemovePhoto(i){var st=rSupplierFor(rBranch);if(st.photos){st.photos.splice(i,1);rRenderPhotoThumbs();rSaveDraft();}}
 
 function openReceived(){
   if(!canUseSection(branch||'Helderberg','received')){toast(sectionActive(branch||'Helderberg','received')?'Stock Received is not enabled for your user':'Stock Received is deactivated for '+(branch||'this branch'),true);return;}
@@ -3198,6 +3239,7 @@ function openReceived(){
   document.getElementById('hSub').textContent='Full received vs empty returned';
   document.getElementById('backBtn').style.display='block';
   rShow('recvGridView');rRenderGrid();rLoadSuppliers();window.scrollTo(0,0);
+  _saveCurrentSection('received');
 }
 function rSetBranch(x){
   if(role==='Operator' && x!==branch){toast('Locked to '+branch,true);return;}
@@ -3256,7 +3298,7 @@ function rSetQty(i,v){var l=rCell(rDet.size)[rDet.side][i];l.qty=v;if(num(v)>0&&
 function rSetNote(i,v){rCell(rDet.size)[rDet.side][i].note=v;}
 function rDelLine(i){var a=rCell(rDet.size)[rDet.side];a.splice(i,1);if(a.length===0)a.push({brand:rBrands(rDet.side)[0],qty:''});rRenderDetail();}
 function rTrim(){if(!rDet)return;var a=rCell(rDet.size)[rDet.side];for(var i=a.length-1;i>=0;i--){if(num(a[i].qty)===0&&!a[i].note)a.splice(i,1);}}
-function rSaveDetail(){rTrim();toast(rDet.size+' saved');rBackToGrid();}
+function rSaveDetail(){rTrim();toast(rDet.size+' saved');rSaveDraft();rBackToGrid();}
 function rBackToGrid(){rTrim();rDet=null;document.getElementById('hTitle').textContent='Stock Received';document.getElementById('hSub').textContent='Full received vs empty returned';rShow('recvGridView');rRenderGrid();window.scrollTo(0,0);}
 
 function rMismatches(){
@@ -3322,18 +3364,27 @@ async function rCommit(){
       toast('Uploading photo(s)…');
       photoLinks=await uploadPhotoSet('Received',rBranch,sup.photos);
     }
-    // flush into store.received: one row per brand per side, each carries its size's reason
-    store.received=[];
+    // Build only THIS delivery's new rows and append them onto store.received - was
+    // `store.received=[]` (wiped EVERY branch's already-committed delivery, not just this
+    // one) then rebuilt purely from this branch's current grid. Since a normal delivery isn't
+    // re-committed (rData[rBranch] is deleted below on success, so a later commit for this
+    // branch starts from a genuinely fresh, empty grid), there's no risk of resending an old
+    // row here - the wipe was pure unnecessary data loss, erasing every earlier delivery
+    // (this branch's or the other branch's) from local memory the moment ANY delivery was
+    // committed, which is exactly why Count History's "Stock Received" section only ever
+    // showed the latest delivery instead of the whole day.
+    var newRows=[];
     var b=rBkt();
     R_SIZES.forEach(function(sz){
       if(!b[sz])return;
       var reason=rOverrides[sz]||'';
-      b[sz].recv.forEach(function(l){if(num(l.qty)>0)store.received.push({size:sz,brand:l.brand,fullIn:num(l.qty),emptyOut:0,note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
-      b[sz].ret.forEach(function(l){if(num(l.qty)>0)store.received.push({size:sz,brand:l.brand,fullIn:0,emptyOut:num(l.qty),note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
+      b[sz].recv.forEach(function(l){if(num(l.qty)>0)newRows.push({size:sz,brand:l.brand,fullIn:num(l.qty),emptyOut:0,note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
+      b[sz].ret.forEach(function(l){if(num(l.qty)>0)newRows.push({size:sz,brand:l.brand,fullIn:0,emptyOut:num(l.qty),note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
     });
-    if(store.received.length===0){toast('Nothing to commit',true);return;}
-    syncPush('Received',syncRowsReceived(store.received.filter(function(r){return r.branch===rBranch;}),rBranch));
-    saveWorkingStore();auditLog('Received committed',store.received.length+' line(s) — '+rBranch+(mm.length?' · '+mm.length+' override(s)':''),null,mm.length?rOverrides:null);
+    if(newRows.length===0){toast('Nothing to commit',true);return;}
+    store.received=(store.received||[]).concat(newRows);
+    syncPush('Received',syncRowsReceived(newRows,rBranch));
+    saveWorkingStore();auditLog('Received committed',newRows.length+' line(s) — '+rBranch+(mm.length?' · '+mm.length+' override(s)':''),null,mm.length?rOverrides:null);
     // Same class of bug as Refill/Private: rData[rBranch] (the grid's Full In/Empty Out
     // lines) and rSupplierState[rBranch] (supplier/delivery note/invoice/photos) were never
     // cleared after a successful commit, so re-opening Received for this branch still showed
@@ -3342,6 +3393,7 @@ async function rCommit(){
     // inheriting the previous one's supplier/delivery note/invoice/photos, so both are reset.
     delete rData[rBranch];
     delete rSupplierState[rBranch];
+    rSaveDraft();
     updateBadges();toast('Received committed'+(mm.length?' ('+mm.length+' override'+(mm.length>1?'s':'')+' logged)':'')+' ✓');goHome();
   } finally {
     // Deliberately NOT reset synchronously here: when there's no photo to upload, this
@@ -3436,17 +3488,22 @@ function _draftHasContent(data){
     return Object.keys(bucket).some(function(item){return (bucket[item]||[]).length>0;});
   });
 }
-function openCap(type){
+function openCap(type,opts){
   if(!canUseSection(branch||'Helderberg',type)){toast(sectionActive(branch||'Helderberg',type)?(type+' is not enabled for your user'):(type+' is deactivated for '+(branch||'this branch')),true);return;}
   if(!requireEdit())return;
   capType=type; var c=CAP[type];
   if(!capData||capData._type!==type){capData={_type:type};}
   toggleSel={};
   // ---- resume/discard an unsaved draft for this section+branch ----
+  // Skipped (auto-resume, no prompt) when opened via the "where was I" restore-on-login path
+  // (opts.silent) - that's already an intentional resume, asking again would be a redundant
+  // second confirmation for the same thing doLogin() just decided to do.
   var _br=branch||'Helderberg';
   var _dft=loadDraft(type,_br);
   if(_dft && _draftHasContent(_dft.data)){
-    if(confirm('Unsaved '+c.title+' capture found (from '+(_dft.ts||'earlier')+'). Resume it?\n\nOK = resume · Cancel = discard and start fresh')){
+    if(opts&&opts.silent){
+      capData=_dft.data; capData._type=type;
+    } else if(confirm('Unsaved '+c.title+' capture found (from '+(_dft.ts||'earlier')+'). Resume it?\n\nOK = resume · Cancel = discard and start fresh')){
       capData=_dft.data; capData._type=type;
     } else { clearDraft(type,_br); capData={_type:type}; }
   }
@@ -3462,6 +3519,7 @@ function openCap(type){
   renderGrid();
   if(type==='private')loadPrivateSuppliers(); // populate the Supplier/redistributor dropdown
   show('capView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);
+  _saveCurrentSection(type);
 }
 // Same backend-synced list Manage Suppliers/Stock Received use - kept as its own module var
 // (not shared state with rSuppliersList) so this feature stays self-contained.
@@ -3543,6 +3601,22 @@ function renderGrid(){
   var c=CAP[capType];var bucket=dataBucket();
   var bh=document.getElementById('sealBannerSlot'); if(bh)bh.innerHTML=sealBannerHTML();
   var _secKey=capType; // refill/private/manifold map directly
+  // Same quiet time-bracket heads-up as Stock Count, but only for Manifold's Opening/Closing
+  // stages - Added is a mid-day cylinder swap triggered by an empty cylinder, not a schedule,
+  // so there's no "expected time" for it and it never shows this banner/border.
+  var _twb=document.getElementById('capTimeWarnBanner');
+  var capTimerisk=false;
+  if(_twb){
+    var _stage=toggleSel.stage;
+    if(capType==='manifold' && (_stage==='Opening'||_stage==='Closing')){
+      var _expected=_expectedCountTypeNow();
+      if(_stage!==_expected){
+        capTimerisk=true;
+        _twb.style.display='block';
+        _twb.textContent='⚠ It\'s '+_nowHM()+' — '+_expected+' is usually done around now, but you\'re on '+_stage+'.';
+      } else _twb.style.display='none';
+    } else _twb.style.display='none';
+  }
   document.getElementById('capGrid').innerHTML=c.grid.map(function(item){
     // Show only THIS branch's lines - the bucket itself can hold lines from more than one
     // branch (switched mid-capture without reviewing/committing), so an unfiltered read here
@@ -3554,7 +3628,7 @@ function renderGrid(){
       return '<button class="csize" style="background:#EDEDED;color:#B0B0B0;opacity:.7;cursor:not-allowed" onclick="toast(\''+item+' is deactivated for this branch/user\',true)"><span class="sz" style="color:#B0B0B0">'+item+'</span><span class="det" style="font-size:10px">—</span></button>';
     }
     var det=done?capSummary(c,lines):(c.gridLabel==='cylinder'?'tap to weigh':'tap to add');
-    return '<button class="csize'+(done?' done':'')+'" onclick="openModal(\''+item+'\')"><span class="sz">'+item+'</span><span class="det">'+det+'</span></button>';
+    return '<button class="csize'+(done?' done':'')+(capTimerisk?' timerisk':'')+'" onclick="openModal(\''+item+'\')"><span class="sz">'+item+'</span><span class="det">'+det+'</span></button>';
   }).join('');
 }
 function capSummary(c,lines){
@@ -3922,7 +3996,19 @@ function capReview(){
   }
   if(c.toggles){Object.keys(capData).forEach(function(k){if(k!=='_type')collectBranches(capData[k]);});}
   else collectBranches(capData['_flat']||{});
-  store[capType]=(store[capType]||[]).filter(function(r){return !(r.branch&&branchesInDraft[r.branch]);});
+  // Only rebuild the NOT-YET-COMMITTED portion of store[capType] for these branches from the
+  // current draft - an already-committed row (_committed, set by _capCommitReal after a
+  // successful sync) is never touched here. Previously this wiped EVERY row for the branch,
+  // committed or not, and rebuilt purely from capData - which is exactly right for the still-
+  // pending stuff, but silently erased anything already committed earlier today (capData no
+  // longer has it, since it was cleared post-commit) the moment a new capture began. That both
+  // made Review/Count History show only the newest batch instead of the whole day, AND (since
+  // "erased locally" isn't "erased from the sheet") left already-synced rows sitting untouched
+  // in store[capType] if you reopened Review with nothing new - which the old "nothing
+  // captured" guard didn't distinguish from a genuinely empty draft, so hitting Commit again
+  // resent those same already-synced rows and duplicated them (Refill/Private/Manifold sync by
+  // APPENDING, not replacing, so a resend is a real duplicate row on the sheet).
+  store[capType]=(store[capType]||[]).filter(function(r){return r._committed || !(r.branch&&branchesInDraft[r.branch]);});
   function flush(bucket,extra){
     Object.keys(bucket).forEach(function(item){
       if(item==='_type')return;
@@ -3949,10 +4035,21 @@ function capReview(){
   show('capReviewView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);
 }
 function capReviewHTML(type){
+  // Shows the WHOLE day's picture for this branch, not just what's about to be committed -
+  // already-_committed rows (from an earlier commit today) stay listed (dimmed, tagged
+  // "committed") alongside the new ones so this doubles as "what have I actually committed
+  // today" (Count's grid already shows this distinction; this mirrors it for Manifold/
+  // Refill/Private, whose review previously only ever showed the latest batch since
+  // already-committed rows used to get silently wiped out of store[capType] - see capReview()).
   var rows=store[type].filter(function(r){return r.branch===capBranch;});
-  return '<table class="htable"><tr>'+capReviewCols(type).map(function(c){return '<th>'+c.label+'</th>';}).join('')+'</tr>'+
-    rows.map(function(r){return '<tr>'+capReviewCols(type).map(function(c){var v=r[c.k];if(c.k==='photo'){var ph=Array.isArray(v)?v:(v?[v]:[]);return '<td>'+(ph.length?ph.map(function(s){return '<img src="'+s+'" style="max-height:40px;border-radius:4px;margin:1px">';}).join(''):'—')+'</td>';}return '<td>'+(v===undefined||v===''||v===null?'—':v)+'</td>';}).join('')+'</tr>';}).join('')+
-    '</table><div style="font-size:12px;color:var(--muted);margin-top:8px">'+rows.length+' entry(ies) will be committed.</div>';
+  var newCount=rows.filter(function(r){return !r._committed;}).length;
+  var committedCount=rows.length-newCount;
+  return '<table class="htable"><tr><th></th>'+capReviewCols(type).map(function(c){return '<th>'+c.label+'</th>';}).join('')+'</tr>'+
+    rows.map(function(r){
+      var tag=r._committed?'<span style="color:var(--ok);font-weight:800">✓</span>':'<span style="color:var(--amber);font-weight:800">new</span>';
+      return '<tr'+(r._committed?' style="opacity:.7"':'')+'><td>'+tag+'</td>'+capReviewCols(type).map(function(c){var v=r[c.k];if(c.k==='photo'){var ph=Array.isArray(v)?v:(v?[v]:[]);return '<td>'+(ph.length?ph.map(function(s){return '<img src="'+s+'" style="max-height:40px;border-radius:4px;margin:1px">';}).join(''):'—')+'</td>';}return '<td>'+(v===undefined||v===''||v===null?'—':v)+'</td>';}).join('')+'</tr>';
+    }).join('')+
+    '</table><div style="font-size:12px;color:var(--muted);margin-top:8px">'+newCount+' new entry(ies) will be committed'+(committedCount?' · '+committedCount+' already committed today':'')+'.</div>';
 }
 function capReviewCols(type){
   if(type==='manifold')return [{k:'cyl',label:'Cylinder'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'gasLeft',label:'Gas left kg'},{k:'notes',label:'Note'},{k:'photo',label:'Photo'}];
@@ -3984,12 +4081,21 @@ function _clearCommittedCapData(br){
   else prune(capData['_flat']||{});
 }
 async function capCommit(){
+  if(capCommitBusy)return;
+  if(!_checkCapTimeWarning())return; // modal shown (Manifold Opening/Closing only); it calls _capCommitReal() itself if continued
+  await _capCommitReal();
+}
+async function _capCommitReal(){
   // Reentrancy guard - same reasoning as rCommit's: this now awaits a network round-trip
   // (photo upload) before finishing, so a second tap mid-commit used to fire a second,
   // independent commit and duplicate every row. Button is also disabled below.
   if(capCommitBusy)return;
   var c=CAP[capType];
-  if(store[capType].filter(function(r){return r.branch===capBranch;}).length===0){toast('Nothing to commit',true);return;}
+  // Only rows not already synced count as "something to commit" - an already-_committed row
+  // sitting in store[capType] (kept around now so Review/History can show the full day, see
+  // capReview()) must never be re-sent just because Review was reopened with nothing new drafted.
+  var freshRows=store[capType].filter(function(r){return r.branch===capBranch && !r._committed;});
+  if(freshRows.length===0){toast('Nothing new to commit',true);return;}
   capCommitBusy=true;
   var btn=document.getElementById('capCommitBtn');
   if(btn){btn.disabled=true;btn.style.opacity='.6';}
@@ -3999,11 +4105,13 @@ async function capCommit(){
     var mmM=(store._openMismatch||[]).filter(function(m){return m.branch===capBranch&&m.kind==='manifold';});
     // Photos here are per-row (each cylinder/refill carries its own), unlike Received's
     // session-level set - upload per-row right before syncing, not in capReview(), which
-    // can re-run and re-flush store[capType] (would mean re-uploading pointlessly).
+    // can re-run and re-flush store[capType] (would mean re-uploading pointlessly). Only
+    // freshRows need this - an already-_committed row already has its _photoLink/photoLinks
+    // set from its own commit and must not be re-uploaded.
     if(capType==='manifold' || capType==='private'){
       var photoKey = capType==='manifold' ? 'photo' : 'supplierPhoto';
       var linkKey = capType==='manifold' ? '_photoLink' : 'photoLinks';
-      var rowsWithPhotos = store[capType].filter(function(r){return r.branch===capBranch && (r[photoKey]||[]).length;});
+      var rowsWithPhotos = freshRows.filter(function(r){return (r[photoKey]||[]).length;});
       if(rowsWithPhotos.length){
         toast('Uploading photo(s)…');
         for(var pi=0;pi<rowsWithPhotos.length;pi++){
@@ -4012,16 +4120,20 @@ async function capCommit(){
         }
       }
     }
-    if(capType==='manifold')syncPush('Manifold',syncRowsManifold(store.manifold.filter(function(r){return r.branch===capBranch;}),capBranch));
+    if(capType==='manifold')syncPush('Manifold',syncRowsManifold(freshRows,capBranch));
     else if(capType==='refill'){
       // record each seal against the active roll history (dedupe handled inside)
-      store.refill.filter(function(r){return r.branch===capBranch&&r.seal;}).forEach(function(r){sealRecordUse(capBranch,num(r.seal));});
-      syncPush('Refills',syncRowsRefill(store.refill.filter(function(r){return r.branch===capBranch;}),capBranch));
+      freshRows.filter(function(r){return r.seal;}).forEach(function(r){sealRecordUse(capBranch,num(r.seal));});
+      syncPush('Refills',syncRowsRefill(freshRows,capBranch));
     }
-    else if(capType==='private')syncPush('Private',syncRowsPrivate(store.private.filter(function(r){return r.branch===capBranch;}),capBranch));
+    else if(capType==='private')syncPush('Private',syncRowsPrivate(freshRows,capBranch));
+    // Mark these rows synced so a later Review-with-nothing-new (or this whole function
+    // re-running) never re-sends them - see the freshRows guard above and capReview()'s
+    // preserve-committed-rows filter.
+    freshRows.forEach(function(r){r._committed=true;});
     _clearCommittedCapData(capBranch);
     clearDraft(capType,capBranch);draftAddCount=0;
-    saveWorkingStore();auditLog(c.title+' committed',store[capType].filter(function(r){return r.branch===capBranch;}).length+' entry(ies) — '+capBranch+(mmM.length?(' · '+mmM.length+' manifold mismatch(es)'):''));
+    saveWorkingStore();auditLog(c.title+' committed',freshRows.length+' entry(ies) — '+capBranch+(mmM.length?(' · '+mmM.length+' manifold mismatch(es)'):''));
     updateBadges();
     if(mmM.length){
       if(perm('adjust'))toast('⚠ '+mmM.length+' manifold weight(s) differ from previous close — see Count History',true);
@@ -4068,6 +4180,7 @@ function openHistory(){
   applyBranchLock('hbr-',histBranch);
   document.getElementById('hCtx').innerHTML='';document.getElementById('hCtx').style.display='none';
   document.getElementById('hTitle').textContent='Count History';document.getElementById('hSub').textContent=histBranch||"";
+  _saveCurrentSection('history');
   var html='';
   // Branch-scoped views: History shows ONLY the selected branch's captures.
   var branch=histBranch; // shadow so all filters below use the toggle's branch
@@ -4356,6 +4469,79 @@ function loadDraft(type,br){
 function clearDraft(type,br){try{localStorage.removeItem(draftKey(today,br,type));}catch(e){}}
 // counter for the save-checkpoint nudge
 var draftAddCount=0; var SAVE_NUDGE_EVERY=5;
+// ---- STOCK COUNT / STOCK RECEIVED draft persistence ----
+// Count (cData) and Received (rData/rSupplierState) never had ANY localStorage persistence -
+// unlike Manifold/Refill/Private above, an in-progress count or delivery lived purely in a JS
+// variable, so a killed/reloaded tab (very ordinary for a backgrounded phone PWA - easy to
+// mistake for "I got logged out") silently lost it, commit-worthy typing and all. Both are
+// saved as ONE object per day (not per-branch like draftKey above) since cData/rData already
+// internally key by branch (and cData also by countType) themselves.
+function cDraftKey(){return 'gs_countdraft_'+today;}
+function cSaveDraft(){
+  try{ if(!today)return;
+    localStorage.setItem(cDraftKey(),JSON.stringify({data:cData,cBranch:cBranch,cCT:cCT,ts:nowStamp(),by:operator}));
+  }catch(e){}
+}
+// Loads today's saved Count draft (if any, and if it's this operator's) straight into the
+// live cData/cBranch/cCT globals - called once at login so the draft is already there
+// whether or not this session happens to land back on the Count screen itself.
+function cLoadDraftIntoMemory(){
+  try{
+    var raw=localStorage.getItem(cDraftKey());if(!raw)return false;
+    var d=JSON.parse(raw);if(!d||d.by!==operator)return false;
+    cData=d.data||{};cBranch=d.cBranch||cBranch;cCT=d.cCT||cCT;
+    return true;
+  }catch(e){return false;}
+}
+function rDraftKey(){return 'gs_recvdraft_'+today;}
+function rSaveDraft(){
+  try{ if(!today)return;
+    localStorage.setItem(rDraftKey(),JSON.stringify({data:rData,supplierState:rSupplierState,ts:nowStamp(),by:operator}));
+  }catch(e){}
+}
+function rLoadDraftIntoMemory(){
+  try{
+    var raw=localStorage.getItem(rDraftKey());if(!raw)return false;
+    var d=JSON.parse(raw);if(!d||d.by!==operator)return false;
+    rData=d.data||{};rSupplierState=d.supplierState||{};
+    return true;
+  }catch(e){return false;}
+}
+// ---- "WHERE WAS I" - resume the same screen (with its data) on the next login ----
+// Scoped to this operator+today+branch so a different person signing into the same device
+// never lands in someone else's still-open, uncommitted capture. Updated on every section
+// entry and on goHome() (so backing out - or committing, which itself calls goHome() - clears
+// it back to "nothing to resume", matching that the section is no longer "where I was").
+function _saveCurrentSection(section){
+  try{localStorage.setItem('gs_last_section',JSON.stringify({section:section,operator:operator,branch:branch,date:today,ts:Date.now()}));}catch(e){}
+}
+function _loadCurrentSection(){
+  try{var raw=localStorage.getItem('gs_last_section');return raw?JSON.parse(raw):null;}catch(e){return null;}
+}
+// Called once right after login. Returns true if it actually navigated somewhere so the
+// caller can skip its own default (show landing).
+function _restoreCurrentSection(){
+  var s=_loadCurrentSection();
+  if(!s||s.operator!==operator||s.date!==today)return false; // stale, different user, or a new day
+  if(s.branch&&s.branch!==branch)return false; // don't silently jump them to a branch they didn't just pick at login
+  if(s.section==='count'){
+    // openCount() unconditionally resets cBranch to the login branch (it's meant for a fresh
+    // manual open, where that's correct) - which would clobber whatever branch the restored
+    // draft was actually for (cLoadDraftIntoMemory(), called just before this in doLogin(),
+    // may have set cBranch/cCT to a DIFFERENT branch, e.g. a Manager/Owner was viewing
+    // Kleinmond's count while logged in under Helderberg). Re-apply after, not before -
+    // openCount() itself is what shows the screen and runs the auth gates.
+    var savedCBranch=cBranch, savedCCT=cCT;
+    openCount();
+    if(cBranch!==savedCBranch)cSetBranch(savedCBranch);
+    if(cCT!==savedCCT)cSetCT(savedCCT);
+    return true;
+  }
+  if(s.section==='received'){openReceived();return true;}
+  if(s.section==='history'){openHistory();return true;}
+  if(s.section==='manifold'||s.section==='refill'||s.section==='private'){openCap(s.section,{silent:true});return true;}
+  return false;
+}
 function saveWorkingStore(){
   try{
     if(!today||!branch)return;
