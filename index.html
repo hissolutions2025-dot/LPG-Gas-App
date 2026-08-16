@@ -305,6 +305,10 @@
     <div style="font-size:12px;color:var(--navy);margin:6px 0;padding:8px;border:1px dashed var(--steel);border-radius:8px" id="rgCalc">Gas type: — · Residual: —</div>
     <label class="mLabel">Note (optional)</label>
     <input type="text" class="mField" id="rgNote" placeholder="Optional note">
+    <label class="mLabel">Photo (optional)</label>
+    <input type="file" accept="image/*" capture="environment" id="rgPhotoInput" style="display:none" onchange="rgPhotoPick(this)">
+    <button type="button" class="photoBtn" id="rgPhotoBtn" onclick="document.getElementById('rgPhotoInput').click()">📷 Add photo (0/2)</button>
+    <div id="rgPhotoThumb" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap"></div>
     <button class="saveBtn" style="margin-top:10px" onclick="residualAdd()">+ Add cylinder to list</button>
   </div>
 
@@ -1572,8 +1576,26 @@ function residualResetForm(){
   document.getElementById('rgBrandOther').value='';
   var sizeEl=document.getElementById('rgSize');if(sizeEl&&sizeEl.options.length)sizeEl.selectedIndex=0;
   document.getElementById('rgScale').value='';document.getElementById('rgTare').value='';document.getElementById('rgNote').value='';
+  rgPhoto=[];rgRenderPhotoThumbs();
   residualBrandChanged();residualCalcUpdate();
 }
+// One cylinder's photo(s), same reasoning as Received's per-delivery photos - reset after
+// each residualAdd() (see residualResetForm() above) since the next cylinder in the batch
+// is its own separate weigh-in, not a continuation of this one's paperwork.
+var rgPhoto=[];
+function rgPhotoPick(input){
+  var f=input.files&&input.files[0];if(!f){return;}
+  if(rgPhoto.length>=2){toast('Max 2 photos per cylinder',true);input.value='';return;}
+  _pickPhotoOrFallback(f,function(dataUri){rgPhoto.push(dataUri);rgRenderPhotoThumbs();});
+  input.value='';
+}
+function rgRenderPhotoThumbs(){
+  var t=document.getElementById('rgPhotoThumb');
+  if(t)t.innerHTML=rgPhoto.map(function(src,i){return '<span style="position:relative;display:inline-block"><img src="'+src+'" style="max-height:60px;border-radius:8px;border:1px solid var(--line)"><button type="button" class="sigClear" style="padding:2px 6px;position:absolute;top:-6px;right:-6px;border-radius:50%" onclick="rgRemovePhoto('+i+')">×</button></span>';}).join('');
+  var btn=document.getElementById('rgPhotoBtn');
+  if(btn){btn.textContent='📷 Add photo ('+rgPhoto.length+'/2)';btn.disabled=(rgPhoto.length>=2);btn.style.opacity=(rgPhoto.length>=2)?'.5':'1';}
+}
+function rgRemovePhoto(i){rgPhoto.splice(i,1);rgRenderPhotoThumbs();}
 function residualCalcUpdate(){
   var sel=document.getElementById('rgSize');var size=sel?sel.value:'';
   var gasType=RESIDUAL_GASTYPE[size]||'—';
@@ -1596,7 +1618,7 @@ function residualAdd(){
   // Branch is captured HERE, per row, from whatever's selected right now - never re-derived
   // later from the (possibly since-changed) branch toggle. This is what stops a cylinder
   // added under one branch from being submitted under whichever branch is selected later.
-  residualList.push({Branch:residualBranch||branch,Brand:brand,Size:size,GasType:gasType,CylScale:scale,CylTare:tare,Residual:residual,Note:(document.getElementById('rgNote').value||'').trim()});
+  residualList.push({Branch:residualBranch||branch,Brand:brand,Size:size,GasType:gasType,CylScale:scale,CylTare:tare,Residual:residual,Note:(document.getElementById('rgNote').value||'').trim(),photos:rgPhoto.slice()});
   renderResidualList();
   residualResetForm();
 }
@@ -1610,8 +1632,9 @@ function renderResidualList(){
     box.innerHTML='<div class="histEmpty" style="text-align:center;padding:16px">No cylinders added yet.</div>';
   } else {
     box.innerHTML=residualList.map(function(r,i){
+      var photoTxt=(r.photos&&r.photos.length)?(' · 📷'+r.photos.length):'';
       return '<div class="brandCard" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">'+
-        '<div><b style="color:var(--navy)">'+r.Brand+' '+r.Size+'</b><div style="font-size:11px;color:var(--muted)">'+r.Branch+' · '+r.GasType+' · Residual '+r.Residual.toFixed(1)+'kg</div></div>'+
+        '<div><b style="color:var(--navy)">'+r.Brand+' '+r.Size+'</b><div style="font-size:11px;color:var(--muted)">'+r.Branch+' · '+r.GasType+' · Residual '+r.Residual.toFixed(1)+'kg'+photoTxt+'</div></div>'+
         '<button class="sigClear" style="width:auto;padding:6px 10px;margin:0" onclick="residualRemove('+i+')">✕</button></div>';
     }).join('');
   }
@@ -1622,26 +1645,40 @@ function renderResidualList(){
   if(subBtn)subBtn.textContent='Submit residual gas ('+residualList.length+')';
 }
 var residualSubmitBusy=false;
-function residualSubmit(){
+async function residualSubmit(){
   // Reentrancy guard - same class of bug as rCommit/capCommit/faultySubmit: fire-and-forget
   // .then() left the button clickable for the whole round-trip, so a double-tap submitted
   // the whole batch of cylinders twice.
   if(residualSubmitBusy)return;
   if(!perm('residualGas')){toast('You do not have Residual Gas rights',true);return;}
   if(!residualList.length){toast('Add at least one cylinder first',true);return;}
-  var rows=residualList.map(function(r){
-    return {Branch:r.Branch,Operator:operator,Role:role,Brand:r.Brand,Size:r.Size,GasType:r.GasType,CylScale:r.CylScale,CylTare:r.CylTare,Note:r.Note};
-  });
   residualSubmitBusy=true;
   var rsBtn=document.getElementById('residualSubmitBtn');
   if(rsBtn){rsBtn.disabled=true;rsBtn.style.opacity='.6';}
-  apiPost('residualLog',{rows:rows}).then(function(res){
+  try{
+    // Photos are per-cylinder here (each has its own scale/tare weigh-in), same pattern as
+    // Manifold's per-row photo - upload each cylinder's own set right before submitting.
+    var rowsWithPhotos=residualList.filter(function(r){return (r.photos||[]).length;});
+    if(rowsWithPhotos.length){
+      toast('Uploading photo(s)…');
+      for(var i=0;i<rowsWithPhotos.length;i++){
+        var pr=rowsWithPhotos[i];
+        pr.photoLinks=await uploadPhotoSet('Residual',pr.Branch,pr.photos);
+      }
+    }
+    var rows=residualList.map(function(r){
+      return {Branch:r.Branch,Operator:operator,Role:role,Brand:r.Brand,Size:r.Size,GasType:r.GasType,CylScale:r.CylScale,CylTare:r.CylTare,Note:r.Note,PhotoLinks:(r.photoLinks||'')};
+    });
+    var res=await apiPost('residualLog',{rows:rows});
     if(!res||!res.ok){toast((res&&res.msg)||'Could not submit residual gas',true);return;}
     toast('Residual gas submitted ('+(res.wrote!==undefined?res.wrote:rows.length)+')');
     residualList=[];
     renderResidualList();
-  }).catch(function(){toast('Network error — check your connection',true);})
-  .finally(function(){setTimeout(function(){residualSubmitBusy=false;if(rsBtn){rsBtn.disabled=false;rsBtn.style.opacity='1';}},600);});
+  }catch(e){
+    toast('Network error — check your connection',true);
+  }finally{
+    setTimeout(function(){residualSubmitBusy=false;if(rsBtn){rsBtn.disabled=false;rsBtn.style.opacity='1';}},600);
+  }
 }
 
 // ===== MANAGE SUPPLIERS (Manager/Owner) =====
@@ -2072,6 +2109,30 @@ async function uploadPhotoSet(category, br, photos){
   }
   return links.join(', ');
 }
+// Client-generated id stamped on every Refill/Private/Received/Manifold row at the moment
+// it's built for commit (see flush() and rCommit() below) - matched against a RowId column
+// on those 4 sheet tabs (backend v13+, see adjustSheetRow()) so a same-day Adjustment can
+// find and update the EXACT row it corresponds to, instead of only ever appending new rows
+// (which is all syncPush()/the generic TABS writer can do) or logging to a side Adjustments
+// tab with no link back to the row it's actually correcting.
+function _rid(){return 'r'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);}
+// Corrects the ORIGINAL sheet row in place (Refills/Private/Received/Manifold) once a
+// same-day Adjustment has already fixed the app's own local copy and logged to Adjustments
+// - closes the gap where only the local copy + a side-note ever changed, never the actual
+// row someone reading the sheet directly would see. Needs a real response (not syncPush's
+// fire-and-forget), since a silent failure here is worse than usual - the manager would
+// believe the sheet is fixed when it isn't - so this goes through apiPost(), not syncPush().
+// A row committed before backend v13 has no _rid and this silently no-ops for it (the local
+// fix + Adjustments log still happen regardless, exactly as before v13 existed) - there's
+// no reliable way to find that row on the sheet without an id to match on.
+function adjustSheetRow(sheet,rowId,updates){
+  if(!rowId)return;
+  apiPost('adjustRow',{sheet:sheet,rowId:rowId,updates:updates}).then(function(res){
+    if(!res||!res.ok)toast('Correction saved locally, but could not update the '+sheet+' sheet row (it may predate row tracking) - see Adjustments tab',true);
+  }).catch(function(){
+    toast('Correction saved locally, but could not reach the server to update the '+sheet+' sheet row',true);
+  });
+}
 // build row objects for each type from the committed data
 // Full-schema sync (v3). Every row carries ts + date + branch + Operator + Role + section fields.
 function _nowISO(){return new Date().toISOString();}
@@ -2081,19 +2142,19 @@ function syncRowsReceived(list,br){return list.map(function(r){var w=_who(r);
   // Field name here MUST match the backend's TABS.Received key ('Invoice', not 'InvoiceNo') -
   // confirmed against the deployed v6/v7 Apps Script. Same class of bug as the earlier
   // Private SupplierName/Invoice mismatch: was silently dropping every Invoice # on commit.
-  return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Size:r.size,Brand:r.brand,FullIn:r.fullIn,EmptyOut:r.emptyOut,Note:(r.note||''),OverrideReason:(r.overrideReason||''),Supplier:(r.supplier||''),DeliveryNote:(r.deliveryNote||''),Invoice:(r.invoiceNo||''),PhotoLinks:(r.photoLinks||'')};});}
-function syncRowsRefill(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Size:r.size,Brand:r.brand,GasType:(r.gasType||''),Scale:(r.scale!==undefined?r.scale:''),Tare:(r.tare!==undefined?r.tare:''),GasLeft:(r.gasLeft!==undefined?r.gasLeft:''),Pumped:r.pumped,Seal:(r.seal||''),SealFlag:(r._sealOverride||r._sealFlag||''),FlagReason:(r._flagReason||r._sealReason||''),Notes:(r.notes||'')};});}
+  return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Size:r.size,Brand:r.brand,FullIn:r.fullIn,EmptyOut:r.emptyOut,Note:(r.note||''),OverrideReason:(r.overrideReason||''),Supplier:(r.supplier||''),DeliveryNote:(r.deliveryNote||''),Invoice:(r.invoiceNo||''),PhotoLinks:(r.photoLinks||''),RowId:(r._rid||'')};});}
+function syncRowsRefill(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Size:r.size,Brand:r.brand,GasType:(r.gasType||''),Scale:(r.scale!==undefined?r.scale:''),Tare:(r.tare!==undefined?r.tare:''),GasLeft:(r.gasLeft!==undefined?r.gasLeft:''),Pumped:r.pumped,Seal:(r.seal||''),SealFlag:(r._sealOverride||r._sealFlag||''),FlagReason:(r._flagReason||r._sealReason||''),Notes:(r.notes||''),RowId:(r._rid||'')};});}
 function syncRowsPrivate(list,br){return list.map(function(r){var w=_who(r);var viaSupplier=(r.filledBy==='Supplier');
   // Field names here MUST match the backend's TABS.Private key names exactly
   // (SupplierName / Invoice, not FillSupplier / InvoiceNo) - confirmed against the
   // actual deployed Apps Script, which is why these two silently landed blank before.
-  return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,CylBrand:(r.cylBrand||''),OtherBrand:(r.otherBrand||''),GasType:(r.gasType||''),Pumped:r.pumped,Customer:(r.customer||''),FilledBy:(r.filledBy||'Us'),SupplierName:(viaSupplier?privateSupplierName(r):''),Invoice:(viaSupplier?(r.invoiceNo||''):''),PhotoLinks:(r.photoLinks||'')};});}
+  return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,CylBrand:(r.cylBrand||''),OtherBrand:(r.otherBrand||''),GasType:(r.gasType||''),Pumped:r.pumped,Customer:(r.customer||''),FilledBy:(r.filledBy||'Us'),SupplierName:(viaSupplier?privateSupplierName(r):''),Invoice:(viaSupplier?(r.invoiceNo||''):''),PhotoLinks:(r.photoLinks||''),RowId:(r._rid||'')};});}
 function syncRowsManifold(list,br){return list.map(function(r){var w=_who(r);
   // Field name here MUST match the popup field's key ('notes', not 'note') - CAP.manifold's
   // popupFields defines the field as k:'notes', so r.note was always undefined and the Note
   // column silently stayed blank no matter what the operator typed. Same class of bug as the
   // earlier Invoice/InvoiceNo and SupplierName/Invoice mismatches.
-  return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Stage:(r.stage||'Opening'),Cylinder:r.cyl,Brand:(r.brand||''),GasType:(r.gasType||''),Scale:r.scale,Tare:r.tare,GasLeft:r.gasLeft,FillCheck:(r._fillCheck||''),Note:(r.notes||''),PhotoLink:(r._photoLink||'')};});}
+  return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Stage:(r.stage||'Opening'),Cylinder:r.cyl,Brand:(r.brand||''),GasType:(r.gasType||''),Scale:r.scale,Tare:r.tare,GasLeft:r.gasLeft,FillCheck:(r._fillCheck||''),Note:(r.notes||''),PhotoLink:(r._photoLink||''),RowId:(r._rid||'')};});}
 // ----- Audit report (Owner only, password-gated) -----
 var auditSelDate=null;
 function openAudit(){
@@ -3506,8 +3567,11 @@ async function rCommit(){
       // (never both), but without this tag, correcting a value down to 0 would make it
       // indistinguishable from "never had anything on this side" and vanish from the
       // Adjustment picker (see corrLines' Received branch below).
-      b[sz].recv.forEach(function(l){if(num(l.qty)>0)newRows.push({size:sz,brand:l.brand,fullIn:num(l.qty),emptyOut:0,_side:'recv',note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
-      b[sz].ret.forEach(function(l){if(num(l.qty)>0)newRows.push({size:sz,brand:l.brand,fullIn:0,emptyOut:num(l.qty),_side:'ret',note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
+      // _rid: see flush()'s note above - same client-generated id + RowId-column matching
+      // scheme, so a same-day Adjustment can update the exact sheet row instead of only
+      // logging to Adjustments.
+      b[sz].recv.forEach(function(l){if(num(l.qty)>0)newRows.push({size:sz,brand:l.brand,fullIn:num(l.qty),emptyOut:0,_side:'recv',_rid:_rid(),note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
+      b[sz].ret.forEach(function(l){if(num(l.qty)>0)newRows.push({size:sz,brand:l.brand,fullIn:0,emptyOut:num(l.qty),_side:'ret',_rid:_rid(),note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
     });
     if(newRows.length===0){toast('Nothing to commit',true);return;}
     store.received=(store.received||[]).concat(newRows);
@@ -3787,6 +3851,13 @@ function openCapAdjust(){
       syncPush('Adjustments',[{date:today,branch:capBranch,Kind:'SameDay'+sectionName+'Adjustment',Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:auth.name+' ('+auth.level+')'}]);
       saveWorkingStore();
       auditLog(c.title+' adjusted (same day)',capBranch+' '+sel.tag+': '+oldVal+' → '+newVal+' by '+auth.name+' - '+reason,{was:oldVal},{now:newVal});
+      // Also correct the ORIGINAL row on its actual sheet tab, not just the local copy +
+      // the Adjustments side-note - see adjustSheetRow(). Manifold pushes Scale too since
+      // corrLines' set() already back-computed it (scale=gasLeft+tare) before this runs.
+      if(sel.row){
+        var updates=(capType==='manifold')?{GasLeft:newVal,Scale:sel.row.scale}:{Pumped:newVal};
+        adjustSheetRow(sectionName,sel.row._rid,updates);
+      }
     },
     afterClose:function(){
       renderGrid();
@@ -4176,7 +4247,11 @@ function capReview(){
     Object.keys(bucket).forEach(function(item){
       if(item==='_type')return;
       (bucket[item]||[]).forEach(function(l){
-        var rec=Object.assign({},header,extra,l,{item:item,branch:(l._addedBranch||capBranch),_date:today,_operator:operator,_role:role,_time:l._ts||nowStamp()});
+        // _rid: a client-generated id stamped on every row at the moment it's built for
+        // commit - matched against a RowId column on the Refills/Private/Manifold sheet
+        // tabs (backend v13+) so a same-day Adjustment can update that EXACT row in place
+        // instead of only logging to the Adjustments tab. See adjustSheetRow().
+        var rec=Object.assign({},header,extra,l,{item:item,branch:(l._addedBranch||capBranch),_date:today,_operator:operator,_role:role,_time:l._ts||nowStamp(),_rid:_rid()});
         if(capType==='received'&&store._recvOverride)rec.overrideReason=store._recvOverride;
         if(capType==='manifold')rec.cyl=item; else rec.size=item;
         store[capType].push(rec);
@@ -4827,7 +4902,7 @@ function corrLines(st,section,br){
     // scanning the list rather than having to open each one to check.
     (st.refill||[]).filter(inBr).forEach(function(r,idx){
       var sealTxt=r.seal?(' \u00b7 Seal '+r.seal):'';
-      out.push({label:r.size+' \u00b7 '+r.brand+' \u00b7 '+r.gasType+' \u00b7 '+r.pumped+'kg'+sealTxt, get:function(){return r.pumped;}, set:function(v){r.pumped=v;}, tag:'Refill '+r.size+' '+r.brand+' #'+(idx+1)+sealTxt});
+      out.push({label:r.size+' \u00b7 '+r.brand+' \u00b7 '+r.gasType+' \u00b7 '+r.pumped+'kg'+sealTxt, get:function(){return r.pumped;}, set:function(v){r.pumped=v;}, tag:'Refill '+r.size+' '+r.brand+' #'+(idx+1)+sealTxt, row:r});
     });
   } else if(section==='Private'){
     // Supplier name + invoice # shown in the list itself, same reasoning - only present
@@ -4838,7 +4913,7 @@ function corrLines(st,section,br){
       var supplierName=(r.fillSupplier==='Other'&&r.fillSupplierOther)?r.fillSupplierOther:(r.fillSupplier||'');
       var ref=[supplierName?('Supplier '+supplierName):'',r.invoiceNo?('Inv '+r.invoiceNo):''].filter(Boolean).join(' \u00b7 ');
       var refTxt=ref?(' \u2014 '+ref):'';
-      out.push({label:cb+' \u00b7 '+(r.gasType||'')+' \u00b7 '+r.pumped+'kg'+(r.customer?(' \u00b7 '+r.customer):'')+refTxt, get:function(){return r.pumped;}, set:function(v){r.pumped=v;}, tag:'Private '+cb+' #'+(idx+1)+(ref?' ('+ref+')':'')});
+      out.push({label:cb+' \u00b7 '+(r.gasType||'')+' \u00b7 '+r.pumped+'kg'+(r.customer?(' \u00b7 '+r.customer):'')+refTxt, get:function(){return r.pumped;}, set:function(v){r.pumped=v;}, tag:'Private '+cb+' #'+(idx+1)+(ref?' ('+ref+')':''), row:r});
     });
   } else if(section==='Manifold'){
     // Correct gas left (kg) directly - it's the figure that actually matters downstream
@@ -4850,7 +4925,7 @@ function corrLines(st,section,br){
     // fixed anchor and scale is back-computed (scale=gasLeft+tare) so the three stay
     // arithmetically consistent, rather than leaving a stale scale reading sitting there.
     (st.manifold||[]).filter(inBr).forEach(function(r,idx){
-      out.push({label:(r.stage||'Opening')+' \u00b7 '+r.cyl+' \u00b7 gas left='+r.gasLeft+'kg (edit)', get:function(){return r.gasLeft;}, set:function(v){r.gasLeft=v;r.scale=num(v)+num(r.tare);}, tag:'Manifold '+(r.stage||'Opening')+' '+r.cyl+' gasLeft'});
+      out.push({label:(r.stage||'Opening')+' \u00b7 '+r.cyl+' \u00b7 gas left='+r.gasLeft+'kg (edit)', get:function(){return r.gasLeft;}, set:function(v){r.gasLeft=v;r.scale=num(v)+num(r.tare);}, tag:'Manifold '+(r.stage||'Opening')+' '+r.cyl+' gasLeft', row:r});
     });
   }
   return out;
@@ -4979,7 +5054,7 @@ function corrApplyReceivedGroup(){
     var line=corrCfg._lines[idx];
     var oldVal=num(el.getAttribute('data-orig')), newVal=num(el.value);
     line.set(newVal);
-    changes.push({brand:line.row.brand,field:line.field,oldVal:oldVal,newVal:newVal});
+    changes.push({brand:line.row.brand,field:line.field,oldVal:oldVal,newVal:newVal,rid:line.row._rid});
   });
   syncPush('Adjustments',changes.map(function(c){
     return {date:today,branch:corrCfg.branch,Kind:'SameDayReceivedAdjustment',
@@ -4987,6 +5062,12 @@ function corrApplyReceivedGroup(){
       From:c.oldVal,To:c.newVal,Reason:reason,By:corrAuth.name+' ('+corrAuth.level+')'};
   }));
   saveWorkingStore();
+  // Also correct each changed row's ORIGINAL Received sheet row in place - see
+  // adjustSheetRow(). One call per changed row (not batched) since Full-in/Empty-out
+  // corrections here can land on two DIFFERENT sheet rows (different brands/rids).
+  changes.forEach(function(c){
+    adjustSheetRow('Received',c.rid,c.field==='fullIn'?{FullIn:c.newVal}:{EmptyOut:c.newVal});
+  });
   var summary=changes.map(function(c){return c.brand+' '+(c.field==='fullIn'?'Full in':'Empty out')+' '+c.oldVal+'\u2192'+c.newVal;}).join(', ');
   auditLog('Stock Received adjusted (same day)',corrCfg.branch+' '+g.size+' \u2014 '+summary+' by '+corrAuth.name+' - '+reason);
   if(corrCfg.afterClose)corrCfg.afterClose();
