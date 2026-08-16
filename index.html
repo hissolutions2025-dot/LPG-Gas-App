@@ -4830,13 +4830,24 @@ function corrLines(st,section,br){
       out.push({label:r.size+' \u00b7 '+r.brand+' \u00b7 Empty out='+r.emptyOut+refTxt+' (edit)', get:function(){return r.emptyOut;}, set:function(v){r.emptyOut=v;}, tag:'Received '+r.size+' '+r.brand+' emptyOut'+(ref?' ('+ref+')':''), row:r, field:'emptyOut'});
     });
   } else if(section==='Refills'){
+    // Seal/serial number shown in the list itself (not just after opening a line) - same
+    // "let a manager tell entries apart before picking one" reasoning as Received's
+    // invoice/DN/supplier labels above, so a specific problem refill is easy to spot while
+    // scanning the list rather than having to open each one to check.
     (st.refill||[]).filter(inBr).forEach(function(r,idx){
-      out.push({label:r.size+' \u00b7 '+r.brand+' \u00b7 '+r.gasType+' \u00b7 '+r.pumped+'kg', get:function(){return r.pumped;}, set:function(v){r.pumped=v;}, tag:'Refill '+r.size+' '+r.brand+' #'+(idx+1)});
+      var sealTxt=r.seal?(' \u00b7 Seal '+r.seal):'';
+      out.push({label:r.size+' \u00b7 '+r.brand+' \u00b7 '+r.gasType+' \u00b7 '+r.pumped+'kg'+sealTxt, get:function(){return r.pumped;}, set:function(v){r.pumped=v;}, tag:'Refill '+r.size+' '+r.brand+' #'+(idx+1)+sealTxt});
     });
   } else if(section==='Private'){
+    // Supplier name + invoice # shown in the list itself, same reasoning - only present
+    // when filledBy==='Supplier' (a self-filled "Us" line has neither), so both are
+    // conditionally included rather than showing empty labels for the common case.
     (st.private||[]).filter(inBr).forEach(function(r,idx){
       var cb=(r.cylBrand==='Other'&&r.otherBrand)?('Other:'+r.otherBrand):(r.cylBrand||'');
-      out.push({label:cb+' \u00b7 '+(r.gasType||'')+' \u00b7 '+r.pumped+'kg'+(r.customer?(' \u00b7 '+r.customer):''), get:function(){return r.pumped;}, set:function(v){r.pumped=v;}, tag:'Private '+cb+' #'+(idx+1)});
+      var supplierName=(r.fillSupplier==='Other'&&r.fillSupplierOther)?r.fillSupplierOther:(r.fillSupplier||'');
+      var ref=[supplierName?('Supplier '+supplierName):'',r.invoiceNo?('Inv '+r.invoiceNo):''].filter(Boolean).join(' \u00b7 ');
+      var refTxt=ref?(' \u2014 '+ref):'';
+      out.push({label:cb+' \u00b7 '+(r.gasType||'')+' \u00b7 '+r.pumped+'kg'+(r.customer?(' \u00b7 '+r.customer):'')+refTxt, get:function(){return r.pumped;}, set:function(v){r.pumped=v;}, tag:'Private '+cb+' #'+(idx+1)+(ref?' ('+ref+')':'')});
     });
   } else if(section==='Manifold'){
     // Correct gas left (kg) directly - it's the figure that actually matters downstream
