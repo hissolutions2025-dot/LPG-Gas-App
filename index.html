@@ -241,7 +241,7 @@
       <label class="mLabel">Branch</label>
       <select class="mField" id="loginBranch"><option value="">Select name first…</option></select>
       <div class="mNote" id="branchNote" style="margin-top:4px;"></div>
-      <button class="saveBtn" onclick="doLogin()" style="margin-top:14px;">Sign in</button>
+      <button class="saveBtn" id="loginSubmitBtn" onclick="doLogin()" style="margin-top:14px;">Sign in</button>
       <button class="sigClear" onclick="forgotPw()" style="margin-top:10px;width:100%">Forgot password?</button>
       <div class="demoNote">Demo only — passwords stored on this device in plain text. Not real security.</div>
     </div>
@@ -856,6 +856,7 @@ var FEATURES={ share:false, driveUpload:false };
 var SUPABASE_URL = 'https://zyymnkychhglisqjvkqs.supabase.co';
 var SUPABASE_ANON_KEY = 'sb_publishable_Fl1QFiNogBHFQ7cBIpd8Qw_jgZR2EkD';
 var sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+function _fakeEmail(name){return name.toLowerCase().replace(/[^a-z0-9]/g,'')+'@gassales.local';}
 const BRANDS=['Afrox','Oryx','Easigas','Totalgas','Afrigas','Other'];
 const ALLSIZES=['5kg','9kg','12kg','14kg','19kg','48kg-SV','14kg-FLT','19kg-FLT','48kg-DV','8kg-Prop','18kg-Prop','45kg-Prop-SV','45kg-Prop-DV'];
 const FILLSIZES=['5kg','9kg','12kg','14kg','19kg','14kg-FLT','19kg-FLT','8kg-Prop','18kg-Prop'];
@@ -867,6 +868,7 @@ const SIZEKG={'5kg':5,'9kg':9,'12kg':12,'14kg':14,'19kg':19,'14kg-FLT':14,'19kg-
 
 let store={count:[],manifold:[],refill:[],private:[],received:[]};
 let operator=null, branch=null, role=null, today='';
+var currentProfile=null;
 // ===== TEST-ONLY date control (demo aid; remove for production) =====
 function getDateOffset(){try{return parseInt(localStorage.getItem('gs_test_offset')||'0',10)||0;}catch(e){return 0;}}
 function setDateOffset(n){try{localStorage.setItem('gs_test_offset',String(n));}catch(e){}}
@@ -1073,7 +1075,7 @@ function _adminTabShow(t){
   if(t==='counttimes')loadCountCutoffUI();
 }
 function adminSetBranch(b){
-  if(role==='Manager' && (findUser(operator).branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
+  if(role==='Manager' && (_curUser().branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
   adminBranch=b;applyBranchLock('asbr-',b);renderRolls();
 }
 function fillBrandPicker(){
@@ -1392,7 +1394,7 @@ function faultyCaptureInit(){
   faultyBrandChanged();faultyReasonChanged();faultySetState(faultyState);faultyCalcUpdate();
 }
 function faultySetBranch(b){
-  if(role==='Manager' && (findUser(operator).branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
+  if(role==='Manager' && (_curUser().branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
   if(b===faultyBranch)return; // already on this branch - don't wipe an in-progress entry for nothing
   faultyBranch=b;applyBranchLock('fcbr-',b);
   faultyResetForm(); // switching branches starts a fresh entry - never carry another branch's draft across
@@ -1461,7 +1463,7 @@ function faultyResetForm(){
 // ---- Open register ----
 // The register always shows exactly ONE branch at a time — see _faultyVisibleRows().
 function faultyRegisterBranches(){
-  return (role==='Owner') ? ['Helderberg','Kleinmond'] : (findUser(operator).branches||[]);
+  return (role==='Owner') ? ['Helderberg','Kleinmond'] : (_curUser().branches||[]);
 }
 function faultyRegisterInit(){
   var mine=faultyRegisterBranches();
@@ -1548,7 +1550,7 @@ function openResidual(){
   show('residualView');window.scrollTo(0,0);
 }
 function residualSetBranch(b){
-  if(role==='Manager' && (findUser(operator).branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
+  if(role==='Manager' && (_curUser().branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
   if(b===residualBranch)return; // already on this branch - don't wipe an in-progress entry for nothing
   residualBranch=b;applyBranchLock('rgbr-',b);
   residualResetForm(); // switching branches starts a fresh cylinder entry - same as Faulty capture
@@ -1869,7 +1871,7 @@ function saveCountCutoffUI(){
   toast('Count times saved ✓');
 }
 // default: everything ACTIVE (all on) unless explicitly turned off
-function _curUser(){return findUser(operator);}
+function _curUser(){return currentProfile;}
 // combined gate: branch has it active AND the logged-in user is allowed it
 function canUseSection(branch,sec){return sectionActive(branch,sec)&&userAccessAllows(_curUser(),sec,null);}
 function canUseItem(branch,sec,item){return itemActive(branch,sec,item)&&userAccessAllows(_curUser(),sec,item);}
@@ -2275,7 +2277,7 @@ function initLoginScreen(){
     if(res.error){toast('Could not load user list: '+res.error.message,true);sel.innerHTML='<option value="">Select your name…</option>';return;}
     _loginNamesCache=res.data||[];
     sel.innerHTML='<option value="">Select your name…</option>'+_loginNamesCache.map(function(u){return '<option>'+u.name+'</option>';}).join('');
-  });
+  }).catch(function(){toast('Network error loading user list — check your connection',true);sel.innerHTML='<option value="">Select your name…</option>';});
 }
 var _loginNamesCache=[];
 function _loginFindName(name){return _loginNamesCache.filter(function(u){return u.name===name;})[0]||null;}
@@ -2308,23 +2310,30 @@ function loginUserChanged(){
     note.innerHTML='<b>'+u.level+'</b> — locked to '+br[0]+'.';
   }
 }
+var loginBusy=false;
 function doLogin(){
+  if(loginBusy)return;
   var picked=_loginFindName(document.getElementById('loginUser').value);
   var p=document.getElementById('loginPin').value;
   if(!picked){toast('Pick your name',true);return;}
   var br=picked.branches||[];
   var b=(br.length>1)?document.getElementById('loginBranch').value:br[0];
   if(!b){toast('Pick a branch',true);return;}
-  var fakeEmail=picked.name.toLowerCase().replace(/[^a-z0-9]/g,'')+'@gassales.local';
+  loginBusy=true;
+  var btn=document.getElementById('loginSubmitBtn');
+  if(btn){btn.disabled=true;btn.style.opacity='.6';}
+  var fakeEmail=_fakeEmail(picked.name);
   sb.auth.signInWithPassword({email:fakeEmail,password:p}).then(function(res){
-    if(res.error){toast('Wrong password',true);return;}
+    if(res.error){loginBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}toast('Sign-in failed: '+res.error.message,true);return;}
     sb.from('profiles').select('*').eq('id',res.data.user.id).single().then(function(pres){
+      loginBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}
       if(pres.error||!pres.data){toast('Could not load your profile: '+(pres.error?pres.error.message:'not found'),true);return;}
       _finishLogin(pres.data,b);
-    });
-  });
+    }).catch(function(){loginBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}toast('Network error — check your connection',true);});
+  }).catch(function(){loginBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}toast('Network error — check your connection',true);});
 }
 function _finishLogin(u,b){
+  currentProfile=u;
   operator=u.name;role=u.level;branch=b;today=computeToday();currentPerms=userPerms(u);
   document.getElementById('dateVal').textContent=today+(getDateOffset()?'  (TEST +'+getDateOffset()+'d)':'  (today only)');
   document.getElementById('who').style.display='block';
