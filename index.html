@@ -2443,19 +2443,21 @@ document.addEventListener('click',function(ev){
   if(menu && menu.classList.contains('show') && !document.getElementById('who').contains(ev.target))closeUserMenu();
 });
 function changeMyPw(){
-  var me=findUser(operator);
-  if(!me){toast('No user in session',true);return;}
   var cur=prompt('Enter your CURRENT password:');
   if(cur===null)return;
-  if(cur!==me.pw){toast('Current password is wrong',true);return;}
   var nw=prompt('Enter your NEW password (min 3 characters):');
   if(nw===null)return;
   if(!nw||nw.length<3){toast('New password too short',true);return;}
   var nw2=prompt('Re-enter your NEW password:');
   if(nw2===null)return;
   if(nw!==nw2){toast('New passwords do not match',true);return;}
-  var users=loadUsers();var u=users.filter(function(x){return x.name===operator;})[0];
-  if(u){u.pw=nw;saveUsers(users);auditLog('Password change','Changed own password');toast('Your password was changed ✓');}
+  sb.auth.signInWithPassword({email:_fakeEmail(operator),password:cur}).then(function(chk){
+    if(chk.error){toast('Current password is wrong',true);return;}
+    sb.auth.updateUser({password:nw}).then(function(res){
+      if(res.error){toast('Could not change password: '+res.error.message,true);return;}
+      auditLog('Password change','Changed own password');toast('Your password was changed ✓');
+    });
+  });
 }
 function show(id){var vs=document.querySelectorAll('.view');for(var i=0;i<vs.length;i++)vs[i].classList.remove('active');document.getElementById(id).classList.add('active');
   syncHeader(id);}
@@ -2494,14 +2496,17 @@ function openUsers(){
   show('usersView');window.scrollTo(0,0);
 }
 function usersUnlock(){
-  var me=findUser(operator);
   var pw=document.getElementById('usersPw').value;
-  if(!me||pw!==me.pw){toast('Wrong password',true);return;}
-  auditLog('User management opened','Owner opened Manage Users');
-  document.getElementById('usersGate').style.display='none';
-  document.getElementById('usersPanel').style.display='block';
-  renderUserList();
-  loadSyncCfgUI();
+  var tmp=supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY,{auth:{persistSession:false,autoRefreshToken:false}});
+  tmp.auth.signInWithPassword({email:_fakeEmail(operator),password:pw}).then(function(res){
+    tmp.auth.signOut();
+    if(res.error){toast('Wrong password',true);return;}
+    auditLog('User management opened','Owner opened Manage Users');
+    document.getElementById('usersGate').style.display='none';
+    document.getElementById('usersPanel').style.display='block';
+    renderUserList();
+    loadSyncCfgUI();
+  });
 }
 function backToUserList(){
   document.getElementById('usersGate').style.display='none';
@@ -2509,15 +2514,20 @@ function backToUserList(){
   document.getElementById('hTitle').textContent='Manage Users';document.getElementById('backBtn').style.display='block';
   renderUserList();show('usersView');window.scrollTo(0,0);
 }
+var _userListCache=[];
 function renderUserList(){
-  var users=loadUsers();
-  document.getElementById('userList').innerHTML=users.map(function(u){
-    return '<div class="brandCard" style="cursor:pointer" onclick="userEdit(\''+u.name.replace(/'/g,"\\'")+'\')">'+
-      '<div style="display:flex;justify-content:space-between;align-items:center">'+
-      '<div><b style="color:var(--navy);font-size:15px">'+u.name+'</b><div style="font-size:12px;color:var(--muted)">'+u.level+' · '+(u.branches||[]).join(', ')+'</div></div>'+
-      '<span style="color:var(--steel);font-weight:800">edit ›</span></div></div>';
-  }).join('');
+  sb.from('profiles').select('*').order('name').then(function(res){
+    if(res.error){toast('Could not load users: '+res.error.message,true);return;}
+    _userListCache=res.data||[];
+    document.getElementById('userList').innerHTML=_userListCache.map(function(u){
+      return '<div class="brandCard" style="cursor:pointer" onclick="userEdit(\''+u.id+'\')">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center">'+
+        '<div><b style="color:var(--navy);font-size:15px">'+u.name+'</b><div style="font-size:12px;color:var(--muted)">'+u.level+' · '+(u.branches||[]).join(', ')+'</div></div>'+
+        '<span style="color:var(--steel);font-weight:800">edit ›</span></div></div>';
+    }).join('');
+  });
 }
+function _userListFind(id){return _userListCache.filter(function(u){return u.id===id;})[0]||null;}
 function ueLevelChanged(){
   var lvl=document.getElementById('ueLevel').value;
   var wrap=document.getElementById('ueBranchControl');var note=document.getElementById('ueBranchNote');
@@ -2531,9 +2541,9 @@ function ueLevelChanged(){
   }
   renderUePerms(null); // reset checkboxes to the new level's preset
 }
-function userEdit(name){
-  ueEditingName=name;
-  var u=name?findUser(name):null;
+function userEdit(id){
+  ueEditingName=id; // repurposed to hold the id now, not the name - see userSave/userDelete below
+  var u=id?_userListFind(id):null;
   document.getElementById('ueTitle').textContent=u?('Edit — '+u.name):'New user';
   document.getElementById('ueName').value=u?u.name:'';
   document.getElementById('uePhone').value=(u&&u.phone)?u.phone:'';
@@ -2618,32 +2628,36 @@ function userSave(){
   [].slice.call(document.querySelectorAll('.ueAccSec')).forEach(function(c){accessObj.sections[c.getAttribute('data-sec')]=c.checked?1:0;});
   [].slice.call(document.querySelectorAll('.ueAccItem')).forEach(function(c){var s=c.getAttribute('data-sec');accessObj.items[s]=accessObj.items[s]||{};accessObj.items[s][c.getAttribute('data-item')]=c.checked?1:0;});
   if(lvl==='Owner'){permsObj.users=1;permsObj.audit=1;} // safety
-  var users=loadUsers();
-  var existing=ueEditingName?users.filter(function(u){return u.name===ueEditingName;})[0]:null;
-  // name uniqueness (unless same record)
-  if(users.some(function(u){return u.name===name && u.name!==ueEditingName;})){toast('A user with that name exists',true);return;}
-  if(!existing){
-    if(!pw||pw.length<3){toast('Set a password (min 3 chars)',true);return;}
-    users.push({name:name,level:lvl,branches:branches,pw:pw,perms:permsObj,access:accessObj,phone:phone});
-    saveUsers(users);
-    auditLog('User created','Created '+lvl+' "'+name+'" ('+branches.join(', ')+')',null,{name:name,level:lvl,branches:branches,perms:permsObj});
-  } else {
-    var beforeSnap={name:existing.name,level:existing.level,branches:existing.branches.slice()};
-    var pwChanged=!!pw;
-    existing.name=name;existing.level=lvl;existing.branches=branches;existing.perms=permsObj;existing.access=accessObj;existing.phone=phone;if(pw)existing.pw=pw;
-    saveUsers(users);
-    auditLog('User edited','Edited user "'+name+'"'+(pwChanged?' (password reset by owner)':''),beforeSnap,{name:name,level:lvl,branches:branches,perms:permsObj});
-  }
-  toast('User saved ✓');backToUserList();
+  var existing=ueEditingName?_userListFind(ueEditingName):null;
+  if(_userListCache.some(function(u){return u.name===name && u.id!==ueEditingName;})){toast('A user with that name exists',true);return;}
+
+  sb.auth.getSession().then(function(sres){
+    var token=sres.data.session.access_token;
+    var payload=existing
+      ? {action:'update',id:existing.id,name:name,level:lvl,branches:branches,perms:permsObj,access:accessObj,phone:phone,password:pw||undefined}
+      : {action:'create',name:name,password:pw,level:lvl,branches:branches,perms:permsObj,access:accessObj,phone:phone};
+    if(!existing && (!pw || pw.length<3)){toast('Set a password (min 3 chars)',true);return;}
+    sb.functions.invoke('manage-user',{body:payload,headers:{Authorization:'Bearer '+token}}).then(function(res){
+      if(res.error || (res.data && res.data.error)){toast('Save failed: '+(res.error?res.error.message:res.data.error),true);return;}
+      var beforeSnap=existing?{name:existing.name,level:existing.level,branches:existing.branches.slice()}:null;
+      auditLog(existing?'User edited':'User created',(existing?'Edited user "':'Created '+lvl+' "')+name+'"'+(existing?'':' ('+branches.join(', ')+')'),beforeSnap,{name:name,level:lvl,branches:branches,perms:permsObj});
+      toast('User saved ✓');backToUserList();
+    });
+  });
 }
 function userDelete(){
   if(!ueEditingName)return;
-  var u=findUser(ueEditingName);
+  var u=_userListFind(ueEditingName);
   if(u&&u.level==='Owner'){toast('Cannot delete the Owner',true);return;}
-  if(!confirm('Delete user "'+ueEditingName+'"? This cannot be undone.'))return;
-  auditLog('User deleted','Deleted user "'+ueEditingName+'"',u?{name:u.name,level:u.level,branches:u.branches}:null,null);
-  saveUsers(loadUsers().filter(function(x){return x.name!==ueEditingName;}));
-  toast('User deleted');backToUserList();
+  if(!confirm('Delete user "'+(u?u.name:'')+'"? This cannot be undone.'))return;
+  sb.auth.getSession().then(function(sres){
+    var token=sres.data.session.access_token;
+    sb.functions.invoke('manage-user',{body:{action:'delete',id:ueEditingName},headers:{Authorization:'Bearer '+token}}).then(function(res){
+      if(res.error || (res.data && res.data.error)){toast('Delete failed: '+(res.error?res.error.message:res.data.error),true);return;}
+      auditLog('User deleted','Deleted user "'+(u?u.name:'')+'"',u?{name:u.name,level:u.level,branches:u.branches}:null,null);
+      toast('User deleted');backToUserList();
+    });
+  });
 }
 
 
