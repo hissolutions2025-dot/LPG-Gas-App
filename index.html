@@ -869,6 +869,9 @@ function _verifyPersonPassword(name, password, filterFn){
       if(filterFn && !filterFn(pres.data)) return null;
       return pres.data;
     });
+  }).catch(function(){
+    toast('Network error — check your connection',true);
+    return null;
   });
 }
 function _selfReauth(actionLabel){
@@ -1114,14 +1117,18 @@ function nrPreviewUpdate(){
   if(e>=s&&s>0)el.textContent='Roll of '+(e-s+1)+' seals ('+s+'\u2013'+e+').';
   else el.textContent='Enter a valid range (end \u2265 start).';
 }
+var createRollBusy=false;
 function createRoll(){
+  if(createRollBusy)return;
   var brand=document.getElementById('nrBrand').value;
   var s=num(document.getElementById('nrStart').value), e=num(document.getElementById('nrEnd').value);
   var warn=num(document.getElementById('nrWarn').value)||DEFAULT_SEAL_WARN;
   if(!(s>0)||!(e>=s)){toast('Enter a valid start/end range',true);return;}
   var willQueue=!!activeRoll(adminBranch);
   var summ='Create '+(willQueue?'and QUEUE':'and ACTIVATE')+' this roll?\n\n'+brand+' \u00b7 '+adminBranch+'\nSeals '+s+'\u2013'+e+' ('+(e-s+1)+' total)\nWarn at '+warn+' left'+(willQueue?'\n\n(A roll is already active \u2014 this one will queue behind it.)':'');
+  createRollBusy=true;
   authGate('seal_create', summ).then(function(auth){
+    createRollBusy=false;
     if(!auth)return;
     // overlap check against existing rolls for this branch+brand
     var rolls=sealsLoad();
@@ -1989,7 +1996,9 @@ function sealBoundaryOverride(msg){
 // VOID a wrongly-captured seal. mode: 'reuse' (number returns to pool) or 'burn' (number retired).
 // Open day (today, not closed) -> seal_void_open. Closed/prior day -> seal_edit_used.
 // dayIsClosed: caller passes whether the target refill's day is already closed.
+var voidSealBusy=false;
 function voidSeal(branch, seal, dayIsClosed){
+  if(voidSealBusy)return Promise.resolve(false);
   seal=num(seal);
   var key=dayIsClosed?'seal_edit_used':'seal_void_open';
   if(!perm(key)){toast(dayIsClosed?'Voiding a closed-day seal needs owner rights':'You lack seal-void rights',true);return Promise.resolve(false);}
@@ -1998,7 +2007,9 @@ function voidSeal(branch, seal, dayIsClosed){
   if(mode===null)return Promise.resolve(false);
   mode=(mode||'').trim().toUpperCase();
   if(mode!=='R'&&mode!=='B'){toast('Type R or B',true);return Promise.resolve(false);}
+  voidSealBusy=true;
   return authGate(key,'Void seal '+seal+' ('+(mode==='R'?'reusable':'destroyed')+')'+(dayIsClosed?' on a CLOSED day':'')+'?').then(function(auth){
+    voidSealBusy=false;
     if(!auth)return false;
     // update used-history: remove seal from its roll. If burn, add to a retired list so it can't be reused.
     var r=activeRoll(branch)||sealsLoad().filter(function(x){return x.branch===branch;}).sort(function(a,b){return b.start-a.start;})[0];
