@@ -198,6 +198,7 @@
   .calLegend{font-size:11px;color:var(--muted);margin-top:10px;display:flex;align-items:center;gap:6px;}
   .calLegend .dot{width:12px;height:12px;border-radius:3px;background:var(--sel);border:1.5px solid var(--steel);display:inline-block;}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
 <header>
@@ -852,6 +853,9 @@
 // ===== FEATURE FLAGS (dormant until switched on) =====
 // Flip to true to activate. Backend (Apps Script) handler is deployed but idle until then.
 var FEATURES={ share:false, driveUpload:false };
+var SUPABASE_URL = 'https://zyymnkychhglisqjvkqs.supabase.co';
+var SUPABASE_ANON_KEY = 'sb_publishable_Fl1QFiNogBHFQ7cBIpd8Qw_jgZR2EkD';
+var sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const BRANDS=['Afrox','Oryx','Easigas','Totalgas','Afrigas','Other'];
 const ALLSIZES=['5kg','9kg','12kg','14kg','19kg','48kg-SV','14kg-FLT','19kg-FLT','48kg-DV','8kg-Prop','18kg-Prop','45kg-Prop-SV','45kg-Prop-DV'];
 const FILLSIZES=['5kg','9kg','12kg','14kg','19kg','14kg-FLT','19kg-FLT','8kg-Prop','18kg-Prop'];
