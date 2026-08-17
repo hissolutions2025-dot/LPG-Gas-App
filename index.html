@@ -5571,15 +5571,19 @@ function exportData(){
 var tT;function toast(msg,err){var t=document.getElementById('toast');t.textContent=msg;t.className='show'+(err?' err':'');clearTimeout(tT);tT=setTimeout(function(){t.className=err?'err':'';},1800);}
 document.body.setAttribute('data-view','login');
 function _bootApp(){
+  initLoginScreen(); // always populate the login name dropdown, even when we're about to auto-resume straight past it - otherwise a later logout leaves the dropdown permanently empty
   sb.auth.getSession().then(function(res){
     var session=res.data && res.data.session;
-    if(!session){initLoginScreen();show('login');return;}
+    if(!session){show('login');return;}
     sb.from('profiles').select('*').eq('id',session.user.id).single().then(function(pres){
-      if(pres.error||!pres.data){initLoginScreen();show('login');return;}
-      var br=(pres.data.branches||[])[0]||'Helderberg';
+      if(pres.error||!pres.data){show('login');return;}
+      var todayNow=computeToday();
+      var saved=_loadCurrentSection();
+      var rememberedBranch=(saved && saved.operator===pres.data.name && saved.date===todayNow) ? saved.branch : null;
+      var br=rememberedBranch || (pres.data.branches||[])[0] || 'Helderberg';
       _finishLogin(pres.data,br);
-    });
-  });
+    }).catch(function(){show('login');});
+  }).catch(function(){show('login');});
 }
 _bootApp();
 
