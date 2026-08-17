@@ -857,6 +857,32 @@ var SUPABASE_URL = 'https://zyymnkychhglisqjvkqs.supabase.co';
 var SUPABASE_ANON_KEY = 'sb_publishable_Fl1QFiNogBHFQ7cBIpd8Qw_jgZR2EkD';
 var sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 function _fakeEmail(name){return name.toLowerCase().replace(/[^a-z0-9]/g,'')+'@gassales.local';}
+function _verifyPersonPassword(name, password, filterFn){
+  if(!name || !password) return Promise.resolve(null);
+  var tmp = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {auth:{persistSession:false, autoRefreshToken:false}});
+  var email = _fakeEmail(name);
+  return tmp.auth.signInWithPassword({email:email, password:password}).then(function(res){
+    if(res.error) return null;
+    return sb.from('profiles').select('*').eq('id',res.data.user.id).single().then(function(pres){
+      tmp.auth.signOut();
+      if(pres.error || !pres.data) return null;
+      if(filterFn && !filterFn(pres.data)) return null;
+      return pres.data;
+    });
+  });
+}
+function _selfReauth(actionLabel){
+  var pw=prompt(actionLabel+'\n\nEnter YOUR password to authorise:');
+  if(pw===null)return Promise.resolve(null);
+  return _verifyPersonPassword(operator, pw, null);
+}
+function _borrowAuth(roleHint, actionLabel, filterFn){
+  var name=prompt(actionLabel+'\n\nEnter the '+roleHint+"'s name:");
+  if(name===null)return Promise.resolve(null);
+  var pw=prompt('Enter '+name+"'s password:");
+  if(pw===null)return Promise.resolve(null);
+  return _verifyPersonPassword(name, pw, filterFn);
+}
 const BRANDS=['Afrox','Oryx','Easigas','Totalgas','Afrigas','Other'];
 const ALLSIZES=['5kg','9kg','12kg','14kg','19kg','48kg-SV','14kg-FLT','19kg-FLT','48kg-DV','8kg-Prop','18kg-Prop','45kg-Prop-SV','45kg-Prop-DV'];
 const FILLSIZES=['5kg','9kg','12kg','14kg','19kg','14kg-FLT','19kg-FLT','8kg-Prop','18kg-Prop'];
@@ -1095,23 +1121,24 @@ function createRoll(){
   if(!(s>0)||!(e>=s)){toast('Enter a valid start/end range',true);return;}
   var willQueue=!!activeRoll(adminBranch);
   var summ='Create '+(willQueue?'and QUEUE':'and ACTIVATE')+' this roll?\n\n'+brand+' \u00b7 '+adminBranch+'\nSeals '+s+'\u2013'+e+' ('+(e-s+1)+' total)\nWarn at '+warn+' left'+(willQueue?'\n\n(A roll is already active \u2014 this one will queue behind it.)':'');
-  var auth=authGate('seal_create', summ);
-  if(!auth)return;
-  // overlap check against existing rolls for this branch+brand
-  var rolls=sealsLoad();
-  var clash=rolls.some(function(r){return r.branch===adminBranch&&r.brand===brand&&r.status!=='Closed'&&r.status!=='Depleted'&&!(e<r.start||s>r.end);});
-  if(clash){toast('Range overlaps an existing active/queued roll for this brand',true);return;}
-  var hasActive=!!activeRoll(adminBranch);
-  var roll={id:newRollId(),branch:adminBranch,brand:brand,start:s,end:e,warnAt:warn,
-    status:hasActive?'Queued':'Active',createdBy:operator,createdAt:nowStamp()};
-  // only one queued roll per branch allowed
-  if(roll.status==='Queued' && queuedRoll(adminBranch)){toast('A roll is already queued for this branch. Close/deplete the active one first.',true);return;}
-  rolls.push(roll);sealsSave(rolls);
-  auditLog('Seal roll created',adminBranch+' '+brand+' '+s+'\u2013'+e+' ('+roll.status+') by '+auth.name);
-  syncPushRoll(roll, roll.status==='Active'?'ACTIVATED':'QUEUED');
-  toast('Roll '+s+'\u2013'+e+' '+(roll.status==='Active'?'activated':'queued')+' \u2713');
-  document.getElementById('nrStart').value='';document.getElementById('nrEnd').value='';document.getElementById('nrWarn').value='';
-  renderRolls();
+  authGate('seal_create', summ).then(function(auth){
+    if(!auth)return;
+    // overlap check against existing rolls for this branch+brand
+    var rolls=sealsLoad();
+    var clash=rolls.some(function(r){return r.branch===adminBranch&&r.brand===brand&&r.status!=='Closed'&&r.status!=='Depleted'&&!(e<r.start||s>r.end);});
+    if(clash){toast('Range overlaps an existing active/queued roll for this brand',true);return;}
+    var hasActive=!!activeRoll(adminBranch);
+    var roll={id:newRollId(),branch:adminBranch,brand:brand,start:s,end:e,warnAt:warn,
+      status:hasActive?'Queued':'Active',createdBy:operator,createdAt:nowStamp()};
+    // only one queued roll per branch allowed
+    if(roll.status==='Queued' && queuedRoll(adminBranch)){toast('A roll is already queued for this branch. Close/deplete the active one first.',true);return;}
+    rolls.push(roll);sealsSave(rolls);
+    auditLog('Seal roll created',adminBranch+' '+brand+' '+s+'\u2013'+e+' ('+roll.status+') by '+auth.name);
+    syncPushRoll(roll, roll.status==='Active'?'ACTIVATED':'QUEUED');
+    toast('Roll '+s+'\u2013'+e+' '+(roll.status==='Active'?'activated':'queued')+' \u2713');
+    document.getElementById('nrStart').value='';document.getElementById('nrEnd').value='';document.getElementById('nrWarn').value='';
+    renderRolls();
+  });
 }
 function renderRolls(){
   renderUsedSeals();
@@ -1137,26 +1164,28 @@ function renderRolls(){
   }).join('');
 }
 function closeRollEarly(id){
-  var auth=authGate('seal_create','Close this roll early?\nEnds it before all seals are used. A queued roll (if any) becomes active.');
-  if(!auth)return;
-  var reason=prompt('Reason for closing early (required):');
-  if(!reason||!reason.trim()){toast('A reason is required',true);return;}
-  var rolls=sealsLoad();var idx=rolls.findIndex(function(x){return x.id===id;});
-  if(idx<0)return;
-  rolls[idx].status='Closed';rolls[idx].closedBy=auth.name;rolls[idx].closedAt=nowStamp();rolls[idx].closeReason=reason.trim();
-  sealsSave(rolls);
-  auditLog('Seal roll closed early',rolls[idx].brand+' '+rolls[idx].start+'\u2013'+rolls[idx].end+' by '+auth.name+' \u2014 '+reason.trim());
-  syncPushRoll(rolls[idx],'CLOSED');
-  promoteQueued(rolls[idx].branch);
-  renderRolls();
+  authGate('seal_create','Close this roll early?\nEnds it before all seals are used. A queued roll (if any) becomes active.').then(function(auth){
+    if(!auth)return;
+    var reason=prompt('Reason for closing early (required):');
+    if(!reason||!reason.trim()){toast('A reason is required',true);return;}
+    var rolls=sealsLoad();var idx=rolls.findIndex(function(x){return x.id===id;});
+    if(idx<0)return;
+    rolls[idx].status='Closed';rolls[idx].closedBy=auth.name;rolls[idx].closedAt=nowStamp();rolls[idx].closeReason=reason.trim();
+    sealsSave(rolls);
+    auditLog('Seal roll closed early',rolls[idx].brand+' '+rolls[idx].start+'\u2013'+rolls[idx].end+' by '+auth.name+' \u2014 '+reason.trim());
+    syncPushRoll(rolls[idx],'CLOSED');
+    promoteQueued(rolls[idx].branch);
+    renderRolls();
+  });
 }
 function cancelQueued(id){
   var r=sealsLoad().find(function(x){return x.id===id;});
   if(r && rollUsedCount(id)>0){toast('This roll has recorded seals \u2014 close it, do not cancel',true);return;}
-  var auth=authGate('seal_create','Cancel this queued roll?');
-  if(!auth)return;
-  var rolls=sealsLoad().filter(function(x){return x.id!==id;});sealsSave(rolls);
-  auditLog('Queued roll cancelled',id+' by '+auth.name);renderRolls();
+  authGate('seal_create','Cancel this queued roll?').then(function(auth){
+    if(!auth)return;
+    var rolls=sealsLoad().filter(function(x){return x.id!==id;});sealsSave(rolls);
+    auditLog('Queued roll cancelled',id+' by '+auth.name);renderRolls();
+  });
 }
 // EDIT a roll's range/warn. Allowed only while ZERO seals used.
 // zero-used -> seal_create tier; any used -> seal_edit_used (destructive) tier.
@@ -1171,33 +1200,36 @@ function editRoll(id){
   if(ne===null)return; ne=num(ne);
   if(!(ns>0)||!(ne>=ns)){toast('Invalid range',true);return;}
   if(used>0 && (ns>r.start || ne<Math.max.apply(null,rollUsedList(id)))){toast('New range must still contain all '+used+' seals already used',true);return;}
-  var auth=authGate(key,'Edit roll range to '+ns+'\u2013'+ne+'?'+(used>0?'\n\nWARNING: '+used+' seals already recorded against this roll.':''));
-  if(!auth)return;
-  var oldr=r.start+'\u2013'+r.end;
-  r.start=ns;r.end=ne;sealsSave(rolls);
-  auditLog('Seal roll edited',oldr+' \u2192 '+ns+'\u2013'+ne+' ('+r.brand+' '+r.branch+') by '+auth.name);
-  syncPushRoll(r,'EDITED');
-  renderRolls();
+  authGate(key,'Edit roll range to '+ns+'\u2013'+ne+'?'+(used>0?'\n\nWARNING: '+used+' seals already recorded against this roll.':'')).then(function(auth){
+    if(!auth)return;
+    var oldr=r.start+'\u2013'+r.end;
+    r.start=ns;r.end=ne;sealsSave(rolls);
+    auditLog('Seal roll edited',oldr+' \u2192 '+ns+'\u2013'+ne+' ('+r.brand+' '+r.branch+') by '+auth.name);
+    syncPushRoll(r,'EDITED');
+    renderRolls();
+  });
 }
 // DELETE a roll. Zero-used only (else must close). Destructive if it somehow has seals -> seal_edit_used.
 function deleteRoll(id){
   var used=rollUsedCount(id);
+  var authPromise, forced=(used>0);
   if(used>0){
     if(!perm('seal_edit_used')){toast('This roll has '+used+' recorded seal(s) and cannot be deleted \u2014 close it instead (owner rights needed to force-delete).',true);return;}
-    var authD=authGate('seal_edit_used','FORCE-DELETE a roll with '+used+' recorded seals?\nThis ORPHANS those refills in the master recon. Prefer Close.');
-    if(!authD)return;
+    authPromise=authGate('seal_edit_used','FORCE-DELETE a roll with '+used+' recorded seals?\nThis ORPHANS those refills in the master recon. Prefer Close.');
   } else {
-    var authD=authGate('seal_create','Delete this unused roll?');
-    if(!authD)return;
+    authPromise=authGate('seal_create','Delete this unused roll?');
   }
-  var r=sealsLoad().find(function(x){return x.id===id;});
-  var wasActive=r&&r.status==='Active';
-  var rolls=sealsLoad().filter(function(x){return x.id!==id;});sealsSave(rolls);
-  // also drop its used-history if force-deleted
-  var uo=sealUsedLoad();if(uo[id]){delete uo[id];sealUsedSave(uo);}
-  auditLog('Seal roll deleted',id+(used>0?(' (FORCED, '+used+' seals orphaned)'):'')+' by '+authD.name);
-  if(wasActive)promoteQueued(r.branch);
-  renderRolls();
+  authPromise.then(function(authD){
+    if(!authD)return;
+    var r=sealsLoad().find(function(x){return x.id===id;});
+    var wasActive=r&&r.status==='Active';
+    var rolls=sealsLoad().filter(function(x){return x.id!==id;});sealsSave(rolls);
+    // also drop its used-history if force-deleted
+    var uo=sealUsedLoad();if(uo[id]){delete uo[id];sealUsedSave(uo);}
+    auditLog('Seal roll deleted',id+(forced?(' (FORCED, '+used+' seals orphaned)'):'')+' by '+authD.name);
+    if(wasActive)promoteQueued(r.branch);
+    renderRolls();
+  });
 }
 function renderSuppliers(){
   var box=document.getElementById('supplierList');if(!box)return;
@@ -1335,7 +1367,9 @@ function doVoidSeal(){
   var sn=num(document.getElementById('voidSealNo').value);
   if(!(sn>0)){toast('Enter a seal number',true);return;}
   var closed=document.getElementById('voidClosedDay').checked;
-  if(voidSeal(adminBranch, sn, closed)){document.getElementById('voidSealNo').value='';document.getElementById('voidClosedDay').checked=false;renderRolls();renderUsedSeals();}
+  voidSeal(adminBranch, sn, closed).then(function(ok){
+    if(ok){document.getElementById('voidSealNo').value='';document.getElementById('voidClosedDay').checked=false;renderRolls();renderUsedSeals();}
+  });
 }
 
 // ===== FAULTY CYLINDERS (Admin tab) =====
@@ -1922,19 +1956,16 @@ function normalizePhoneZA(raw){
 // Authority cannot be borrowed: another user's password will not pass.
 // Returns the authorising user object, or null if cancelled/failed.
 function authGate(key, actionLabel){
-  var me=findUser(operator);
-  if(!me){toast('No active user',true);return null;}
-  if(!perm(key)){toast('You do not have rights for this action ('+(PERM_LABELS[key]||key)+')',true);return null;}
-  var pw=prompt(actionLabel+'\n\nEnter YOUR password to authorise:');
-  if(pw===null)return null;
-  if(pw!==me.pw){toast('Password does not match your login',true);return null;}
-  return me;
+  if(!perm(key)){toast('You do not have rights for this action ('+(PERM_LABELS[key]||key)+')',true);return Promise.resolve(null);}
+  return _selfReauth(actionLabel).then(function(me){
+    if(!me)toast('Password does not match your login',true);
+    return me;
+  });
 }
 // Back-compat shim (old callers). Now verifies the CURRENT user only.
 function verifyElevatedPw(pw){
-  var me=findUser(operator);
-  if(me && pw===me.pw && (perm('seal_boundary')||perm('seal_edit_used')||perm('seal_create'))) return me;
-  return null;
+  if(!(perm('seal_boundary')||perm('seal_edit_used')||perm('seal_create')))return Promise.resolve(null);
+  return _verifyPersonPassword(operator, pw, null);
 }
 // Seal boundary override: current user's own password + seal_boundary right. Logs it.
 // Returns a Promise<boolean> (true if authorised). Uses the app's own custom password
@@ -1961,33 +1992,34 @@ function sealBoundaryOverride(msg){
 function voidSeal(branch, seal, dayIsClosed){
   seal=num(seal);
   var key=dayIsClosed?'seal_edit_used':'seal_void_open';
-  if(!perm(key)){toast(dayIsClosed?'Voiding a closed-day seal needs owner rights':'You lack seal-void rights',true);return false;}
+  if(!perm(key)){toast(dayIsClosed?'Voiding a closed-day seal needs owner rights':'You lack seal-void rights',true);return Promise.resolve(false);}
   // ask outcome
   var mode=prompt('Void seal '+seal+' on '+branch+'.\n\nType R = number REUSABLE (mis-entry, seal still good)\nType B = seal DESTROYED / lost (retire the number)\n\nR or B:');
-  if(mode===null)return false;
+  if(mode===null)return Promise.resolve(false);
   mode=(mode||'').trim().toUpperCase();
-  if(mode!=='R'&&mode!=='B'){toast('Type R or B',true);return false;}
-  var auth=authGate(key,'Void seal '+seal+' ('+(mode==='R'?'reusable':'destroyed')+')'+(dayIsClosed?' on a CLOSED day':'')+'?');
-  if(!auth)return false;
-  // update used-history: remove seal from its roll. If burn, add to a retired list so it can't be reused.
-  var r=activeRoll(branch)||sealsLoad().filter(function(x){return x.branch===branch;}).sort(function(a,b){return b.start-a.start;})[0];
-  var uo=sealUsedLoad();
-  if(r&&uo[r.id]){var i=uo[r.id].indexOf(seal);if(i>-1)uo[r.id].splice(i,1);sealUsedSave(uo);}
-  if(mode==='B'){
-    var retired=[];try{retired=JSON.parse(localStorage.getItem('gs_seal_retired')||'[]');}catch(e){}
-    retired.push({branch:branch,seal:seal});try{localStorage.setItem('gs_seal_retired',JSON.stringify(retired));}catch(e){}
-  }
-  auditLog('Seal voided',seal+' on '+branch+' \u2014 '+(mode==='R'?'REUSABLE':'DESTROYED')+(dayIsClosed?' (closed day)':'')+' by '+auth.name);
-  // enrich: find the original refill row this seal belongs to (open store first, else saved day)
-  var origSize='',origDate=(dayIsClosed?'(closed day)':today),origBrand='';
-  var _rf=(store.refill||[]).filter(function(x){return num(x.seal)===seal && (!x.branch||x.branch===branch);})[0];
-  if(_rf){origSize=_rf.size||'';origBrand=_rf.brand||'';}
-  syncPush('Adjustments',[{date:today||'',branch:branch,Kind:'SEAL_VOID',
-    Line:'seal '+seal+(origSize?(' ('+origSize+(origBrand?' '+origBrand:'')+')'):''),
-    From:String(seal),To:(mode==='R'?'reusable':'retired'),
-    Reason:'void'+(dayIsClosed?' [closed-day, orig '+origDate+']':''),By:auth.name}]);
-  toast('Seal '+seal+' voided ('+(mode==='R'?'reusable':'retired')+')');
-  return true;
+  if(mode!=='R'&&mode!=='B'){toast('Type R or B',true);return Promise.resolve(false);}
+  return authGate(key,'Void seal '+seal+' ('+(mode==='R'?'reusable':'destroyed')+')'+(dayIsClosed?' on a CLOSED day':'')+'?').then(function(auth){
+    if(!auth)return false;
+    // update used-history: remove seal from its roll. If burn, add to a retired list so it can't be reused.
+    var r=activeRoll(branch)||sealsLoad().filter(function(x){return x.branch===branch;}).sort(function(a,b){return b.start-a.start;})[0];
+    var uo=sealUsedLoad();
+    if(r&&uo[r.id]){var i=uo[r.id].indexOf(seal);if(i>-1)uo[r.id].splice(i,1);sealUsedSave(uo);}
+    if(mode==='B'){
+      var retired=[];try{retired=JSON.parse(localStorage.getItem('gs_seal_retired')||'[]');}catch(e){}
+      retired.push({branch:branch,seal:seal});try{localStorage.setItem('gs_seal_retired',JSON.stringify(retired));}catch(e){}
+    }
+    auditLog('Seal voided',seal+' on '+branch+' \u2014 '+(mode==='R'?'REUSABLE':'DESTROYED')+(dayIsClosed?' (closed day)':'')+' by '+auth.name);
+    // enrich: find the original refill row this seal belongs to (open store first, else saved day)
+    var origSize='',origDate=(dayIsClosed?'(closed day)':today),origBrand='';
+    var _rf=(store.refill||[]).filter(function(x){return num(x.seal)===seal && (!x.branch||x.branch===branch);})[0];
+    if(_rf){origSize=_rf.size||'';origBrand=_rf.brand||'';}
+    syncPush('Adjustments',[{date:today||'',branch:branch,Kind:'SEAL_VOID',
+      Line:'seal '+seal+(origSize?(' ('+origSize+(origBrand?' '+origBrand:'')+')'):''),
+      From:String(seal),To:(mode==='R'?'reusable':'retired'),
+      Reason:'void'+(dayIsClosed?' [closed-day, orig '+origDate+']':''),By:auth.name}]);
+    toast('Seal '+seal+' voided ('+(mode==='R'?'reusable':'retired')+')');
+    return true;
+  });
 }
 // ===== HIGH-RISK SECOND PASSWORD (Owner-set; required for Close Day + Factory Reset) =====
 function getHighRiskPw(){try{return localStorage.getItem('gs_highrisk_pw')||'';}catch(e){return '';}}
