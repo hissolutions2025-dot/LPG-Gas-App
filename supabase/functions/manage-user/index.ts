@@ -19,7 +19,7 @@ Deno.serve(async (req) => {
 
     const { data: callerProfile } = await callerClient.from('profiles').select('level,perms').eq('id', user.id).single()
     const callerIsOwner = !!callerProfile && callerProfile.level === 'Owner'
-    const canManageUsers = callerIsOwner || (!!callerProfile && !!callerProfile.perms && callerProfile.perms.users === true)
+    const canManageUsers = callerIsOwner || (!!callerProfile && !!callerProfile.perms && !!callerProfile.perms.users)
     if (!canManageUsers) return new Response(JSON.stringify({ error: 'Not allowed' }), { status: 403, headers: cors })
 
     // Full power - service role key, only ever used here, never sent to the browser.
@@ -33,7 +33,7 @@ Deno.serve(async (req) => {
     // Owner-equivalent permissions (users/audit) to anyone including themselves, or touch an
     // existing Owner account at all. Only a real Owner caller may do any of those. This is the one
     // security boundary this whole function exists to enforce - every write path below respects it.
-    function ownerEquivalentPerms(p: any) { return !!p && (p.users === true || p.audit === true) }
+    function ownerEquivalentPerms(p: any) { return !!p && (!!p.users || !!p.audit) }
 
     if (action === 'create') {
       const { name, password, level, branches, perms, access, phone } = body
