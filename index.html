@@ -503,7 +503,7 @@
     <div class="detBanner full" style="margin-bottom:14px"><div class="big">Manage Users</div><div class="small">Owner access only</div></div>
     <label class="mLabel">Enter your Owner password to open</label>
     <input type="password" class="mField" id="usersPw" placeholder="Owner password">
-    <button class="saveBtn" onclick="usersUnlock()" style="margin-top:12px">Unlock user management</button>
+    <button class="saveBtn" id="usersUnlockBtn" onclick="usersUnlock()" style="margin-top:12px">Unlock user management</button>
   </div>
   <!-- user list (after unlock) -->
   <div id="usersPanel" style="display:none">
@@ -551,7 +551,7 @@
   <div id="ueAccess" style="margin-top:4px"></div>
   <div class="cFooter" style="position:static;box-shadow:none;border:none;padding:16px 0 0;margin-top:10px">
     <button class="cbGhost" onclick="backToUserList()">Cancel</button>
-    <button class="cbPrimary" onclick="userSave()">Save user</button>
+    <button class="cbPrimary" id="ueSaveBtn" onclick="userSave()">Save user</button>
   </div>
   <button class="sigClear" id="ueDeleteBtn" onclick="userDelete()" style="width:100%;margin-top:8px;background:#FBE9E7;color:var(--bad);border-color:var(--bad);display:none">Delete this user</button>
 </div></div>
@@ -2456,8 +2456,8 @@ function changeMyPw(){
     sb.auth.updateUser({password:nw}).then(function(res){
       if(res.error){toast('Could not change password: '+res.error.message,true);return;}
       auditLog('Password change','Changed own password');toast('Your password was changed ✓');
-    });
-  });
+    }).catch(function(){toast('Network error — check your connection',true);});
+  }).catch(function(){toast('Network error — check your connection',true);});
 }
 function show(id){var vs=document.querySelectorAll('.view');for(var i=0;i<vs.length;i++)vs[i].classList.remove('active');document.getElementById(id).classList.add('active');
   syncHeader(id);}
@@ -2495,18 +2495,23 @@ function openUsers(){
   document.getElementById('usersPw').value='';
   show('usersView');window.scrollTo(0,0);
 }
+var usersUnlockBusy=false;
 function usersUnlock(){
+  if(usersUnlockBusy)return;
   var pw=document.getElementById('usersPw').value;
+  var btn=document.getElementById('usersUnlockBtn');
+  usersUnlockBusy=true;if(btn){btn.disabled=true;btn.style.opacity='.6';}
   var tmp=supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY,{auth:{persistSession:false,autoRefreshToken:false}});
   tmp.auth.signInWithPassword({email:_fakeEmail(operator),password:pw}).then(function(res){
     tmp.auth.signOut();
+    usersUnlockBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}
     if(res.error){toast('Wrong password',true);return;}
     auditLog('User management opened','Owner opened Manage Users');
     document.getElementById('usersGate').style.display='none';
     document.getElementById('usersPanel').style.display='block';
     renderUserList();
     loadSyncCfgUI();
-  });
+  }).catch(function(){usersUnlockBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}toast('Network error — check your connection',true);});
 }
 function backToUserList(){
   document.getElementById('usersGate').style.display='none';
@@ -2525,7 +2530,7 @@ function renderUserList(){
         '<div><b style="color:var(--navy);font-size:15px">'+u.name+'</b><div style="font-size:12px;color:var(--muted)">'+u.level+' · '+(u.branches||[]).join(', ')+'</div></div>'+
         '<span style="color:var(--steel);font-weight:800">edit ›</span></div></div>';
     }).join('');
-  });
+  }).catch(function(){toast('Network error loading users — check your connection',true);});
 }
 function _userListFind(id){return _userListCache.filter(function(u){return u.id===id;})[0]||null;}
 function ueLevelChanged(){
@@ -2609,7 +2614,9 @@ function renderUePerms(u){
       '<input type="checkbox" class="uePerm" data-k="'+k+'"'+(eff[k]?' checked':'')+(locked?' disabled':'')+'> '+PERM_LABELS[k]+'</label>';
   }).join('');
 }
+var userSaveBusy=false;
 function userSave(){
+  if(userSaveBusy)return;
   var name=(document.getElementById('ueName').value||'').trim();
   var lvl=document.getElementById('ueLevel').value;
   var pw=document.getElementById('uePw').value;
@@ -2630,34 +2637,51 @@ function userSave(){
   if(lvl==='Owner'){permsObj.users=1;permsObj.audit=1;} // safety
   var existing=ueEditingName?_userListFind(ueEditingName):null;
   if(_userListCache.some(function(u){return u.name===name && u.id!==ueEditingName;})){toast('A user with that name exists',true);return;}
+  if(!existing && (!pw || pw.length<3)){toast('Set a password (min 3 chars)',true);return;}
+
+  var btn=document.getElementById('ueSaveBtn');
+  userSaveBusy=true;if(btn){btn.disabled=true;btn.style.opacity='.6';}
+  function _resetBusy(){userSaveBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}}
 
   sb.auth.getSession().then(function(sres){
-    var token=sres.data.session.access_token;
+    var session=sres.data && sres.data.session;
+    if(!session){_resetBusy();toast('Session expired — please sign in again',true);return;}
+    var token=session.access_token;
     var payload=existing
       ? {action:'update',id:existing.id,name:name,level:lvl,branches:branches,perms:permsObj,access:accessObj,phone:phone,password:pw||undefined}
       : {action:'create',name:name,password:pw,level:lvl,branches:branches,perms:permsObj,access:accessObj,phone:phone};
-    if(!existing && (!pw || pw.length<3)){toast('Set a password (min 3 chars)',true);return;}
     sb.functions.invoke('manage-user',{body:payload,headers:{Authorization:'Bearer '+token}}).then(function(res){
+      _resetBusy();
       if(res.error || (res.data && res.data.error)){toast('Save failed: '+(res.error?res.error.message:res.data.error),true);return;}
       var beforeSnap=existing?{name:existing.name,level:existing.level,branches:existing.branches.slice()}:null;
       auditLog(existing?'User edited':'User created',(existing?'Edited user "':'Created '+lvl+' "')+name+'"'+(existing?'':' ('+branches.join(', ')+')'),beforeSnap,{name:name,level:lvl,branches:branches,perms:permsObj});
       toast('User saved ✓');backToUserList();
-    });
-  });
+    }).catch(function(){_resetBusy();toast('Network error — check your connection',true);});
+  }).catch(function(){_resetBusy();toast('Network error — check your connection',true);});
 }
+var userDeleteBusy=false;
 function userDelete(){
+  if(userDeleteBusy)return;
   if(!ueEditingName)return;
   var u=_userListFind(ueEditingName);
   if(u&&u.level==='Owner'){toast('Cannot delete the Owner',true);return;}
   if(!confirm('Delete user "'+(u?u.name:'')+'"? This cannot be undone.'))return;
+
+  var btn=document.getElementById('ueDeleteBtn');
+  userDeleteBusy=true;if(btn){btn.disabled=true;btn.style.opacity='.6';}
+  function _resetBusy(){userDeleteBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}}
+
   sb.auth.getSession().then(function(sres){
-    var token=sres.data.session.access_token;
+    var session=sres.data && sres.data.session;
+    if(!session){_resetBusy();toast('Session expired — please sign in again',true);return;}
+    var token=session.access_token;
     sb.functions.invoke('manage-user',{body:{action:'delete',id:ueEditingName},headers:{Authorization:'Bearer '+token}}).then(function(res){
+      _resetBusy();
       if(res.error || (res.data && res.data.error)){toast('Delete failed: '+(res.error?res.error.message:res.data.error),true);return;}
       auditLog('User deleted','Deleted user "'+(u?u.name:'')+'"',u?{name:u.name,level:u.level,branches:u.branches}:null,null);
       toast('User deleted');backToUserList();
-    });
-  });
+    }).catch(function(){_resetBusy();toast('Network error — check your connection',true);});
+  }).catch(function(){_resetBusy();toast('Network error — check your connection',true);});
 }
 
 
