@@ -2267,17 +2267,18 @@ function auditCSV(){
 
 // ---------- first-run / login screen wiring ----------
 function initLoginScreen(){
-  var users=loadUsers();
-  if(users.length===0){
-    document.getElementById('setupCard').style.display='block';
-    document.getElementById('loginCard').style.display='none';
-  } else {
-    document.getElementById('setupCard').style.display='none';
-    document.getElementById('loginCard').style.display='block';
-    var sel=document.getElementById('loginUser');
-    sel.innerHTML='<option value="">Select your name…</option>'+users.map(function(u){return '<option>'+u.name+'</option>';}).join('');
-  }
+  document.getElementById('setupCard').style.display='none';
+  document.getElementById('loginCard').style.display='block';
+  var sel=document.getElementById('loginUser');
+  sel.innerHTML='<option value="">Loading names…</option>';
+  sb.from('login_names').select('id,name,level,branches').order('name').then(function(res){
+    if(res.error){toast('Could not load user list: '+res.error.message,true);sel.innerHTML='<option value="">Select your name…</option>';return;}
+    _loginNamesCache=res.data||[];
+    sel.innerHTML='<option value="">Select your name…</option>'+_loginNamesCache.map(function(u){return '<option>'+u.name+'</option>';}).join('');
+  });
 }
+var _loginNamesCache=[];
+function _loginFindName(name){return _loginNamesCache.filter(function(u){return u.name===name;})[0]||null;}
 function createOwner(){
   var n=(document.getElementById('setupName').value||'').trim();
   var p=document.getElementById('setupPw').value,p2=document.getElementById('setupPw2').value;
@@ -2293,7 +2294,7 @@ function forgotPw(){
   alert('Password reset by SMS OTP is not available in this demo — it needs a secure backend and an SMS service.\n\nWhen the app is linked to real online storage, the Owner will be able to reset a forgotten password via a one-time PIN sent to their phone. For now, the Owner can reset any user password from Manage Users.');
 }
 function loginUserChanged(){
-  var u=findUser(document.getElementById('loginUser').value);
+  var u=_loginFindName(document.getElementById('loginUser').value);
   var bsel=document.getElementById('loginBranch');
   var note=document.getElementById('branchNote');
   if(!u){bsel.innerHTML='<option value="">Select name first…</option>';bsel.disabled=false;bsel.style.opacity='1';note.textContent='';return;}
@@ -2308,13 +2309,22 @@ function loginUserChanged(){
   }
 }
 function doLogin(){
-  var u=findUser(document.getElementById('loginUser').value);
+  var picked=_loginFindName(document.getElementById('loginUser').value);
   var p=document.getElementById('loginPin').value;
-  if(!u){toast('Pick your name',true);return;}
-  if(p!==u.pw){toast('Wrong password',true);return;}
-  var br=u.branches||[];
+  if(!picked){toast('Pick your name',true);return;}
+  var br=picked.branches||[];
   var b=(br.length>1)?document.getElementById('loginBranch').value:br[0];
   if(!b){toast('Pick a branch',true);return;}
+  var fakeEmail=picked.name.toLowerCase().replace(/[^a-z0-9]/g,'')+'@gassales.local';
+  sb.auth.signInWithPassword({email:fakeEmail,password:p}).then(function(res){
+    if(res.error){toast('Wrong password',true);return;}
+    sb.from('profiles').select('*').eq('id',res.data.user.id).single().then(function(pres){
+      if(pres.error||!pres.data){toast('Could not load your profile: '+(pres.error?pres.error.message:'not found'),true);return;}
+      _finishLogin(pres.data,b);
+    });
+  });
+}
+function _finishLogin(u,b){
   operator=u.name;role=u.level;branch=b;today=computeToday();currentPerms=userPerms(u);
   document.getElementById('dateVal').textContent=today+(getDateOffset()?'  (TEST +'+getDateOffset()+'d)':'  (today only)');
   document.getElementById('who').style.display='block';
