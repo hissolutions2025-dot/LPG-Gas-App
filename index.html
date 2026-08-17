@@ -2769,40 +2769,36 @@ function applyBranchLock(prefix,current){
 }
 function openCount(){
   if(!canUseSection(branch||'Helderberg','count')){toast(sectionActive(branch||'Helderberg','count')?'Stock Count is not enabled for your user':'Stock Count is deactivated for '+(branch||'this branch'),true);return;}
-  if(!requireEdit())return;
-  // #2 A day already closed for today+branch requires Owner override to count again
-  if(loadSavedDay(today,branch) && !store._extraCountAuth){
-    askPassword('Owner authorisation','A stock count was already closed for '+branch+' today.\n\nEnter the OWNER password to start an additional count:').then(function(pw){
-      if(pw===null)return;
-      var owner=loadUsers().filter(function(u){return u.level==='Owner';})[0];
-      if(!owner || pw!==owner.pw){toast('Owner password required for an additional count',true);return;}
-      store._extraCountAuth=true;
-      auditLog('Additional count authorised','Owner authorised a second same-day count for '+branch);
-      toast('Additional count unlocked \u2713');
-      openCount(); // re-enter now that auth flag is set
-    });
-    return;
-  }
-  cBranch=branch||'Helderberg';
-  // #1/#3 If no previous close exists to compare an Opening count against, a Manager/Owner must authorise
-  if(!cHasPrevClose(cBranch) && !store._noPrevAuth){
-    askPassword('Manager/Owner authorisation','No previous day close exists for '+cBranch+' to check the opening count against.\n\nA Manager or Owner password is required to proceed with this count:').then(function(pw2){
-      if(pw2===null)return;
-      var auth=loadUsers().filter(function(u){return (u.level==='Manager'||u.level==='Owner') && u.pw===pw2;})[0];
-      if(!auth){toast('Manager or Owner password required to proceed',true);return;}
-      store._noPrevAuth=true;
-      auditLog('Count authorised (no prev close)',auth.name+' authorised counting with no previous close for '+cBranch);
-      toast('Count authorised \u2713');
-      openCount(); // re-enter now that auth flag is set
-    });
-    return;
-  }
-  applyBranchLock('cbr-',cBranch);
-  document.getElementById('hTitle').textContent='Stock Count';
-  document.getElementById('hSub').textContent='Tap Full or Empty on a size';
-  document.getElementById('backBtn').style.display='block';
-  cShow('countGridView');cRenderGrid();window.scrollTo(0,0);
-  _saveCurrentSection('count');
+  requireEdit().then(function(ok){
+    if(!ok)return;
+    if(loadSavedDay(today,branch) && !store._extraCountAuth){
+      _borrowAuth('Owner','A stock count was already closed for '+branch+' today.',function(p){return p.level==='Owner';}).then(function(owner){
+        if(!owner){toast('Owner password required for an additional count',true);return;}
+        store._extraCountAuth=true;
+        auditLog('Additional count authorised','Owner authorised a second same-day count for '+branch);
+        toast('Additional count unlocked \u2713');
+        openCount();
+      });
+      return;
+    }
+    cBranch=branch||'Helderberg';
+    if(!cHasPrevClose(cBranch) && !store._noPrevAuth){
+      _borrowAuth('Manager or Owner','No previous day close exists for '+cBranch+' to check the opening count against.',function(p){return p.level==='Manager'||p.level==='Owner';}).then(function(auth){
+        if(!auth){toast('Manager or Owner password required to proceed',true);return;}
+        store._noPrevAuth=true;
+        auditLog('Count authorised (no prev close)',auth.name+' authorised counting with no previous close for '+cBranch);
+        toast('Count authorised \u2713');
+        openCount();
+      });
+      return;
+    }
+    applyBranchLock('cbr-',cBranch);
+    document.getElementById('hTitle').textContent='Stock Count';
+    document.getElementById('hSub').textContent='Tap Full or Empty on a size';
+    document.getElementById('backBtn').style.display='block';
+    cShow('countGridView');cRenderGrid();window.scrollTo(0,0);
+    _saveCurrentSection('count');
+  });
 }
 function cSetBranch(x){
   if(role==='Operator' && x!==branch){toast('Locked to '+branch,true);return;}
@@ -3400,14 +3396,16 @@ function rRemovePhoto(i){var st=rSupplierFor(rBranch);if(st.photos){st.photos.sp
 
 function openReceived(){
   if(!canUseSection(branch||'Helderberg','received')){toast(sectionActive(branch||'Helderberg','received')?'Stock Received is not enabled for your user':'Stock Received is deactivated for '+(branch||'this branch'),true);return;}
-  if(!requireEdit())return;
-  rBranch=branch||'Helderberg';
-  applyBranchLock('rbr-',rBranch);
-  document.getElementById('hTitle').textContent='Stock Received';
-  document.getElementById('hSub').textContent='Full received vs empty returned';
-  document.getElementById('backBtn').style.display='block';
-  rShow('recvGridView');rRenderGrid();rLoadSuppliers();window.scrollTo(0,0);
-  _saveCurrentSection('received');
+  requireEdit().then(function(ok){
+    if(!ok)return;
+    rBranch=branch||'Helderberg';
+    applyBranchLock('rbr-',rBranch);
+    document.getElementById('hTitle').textContent='Stock Received';
+    document.getElementById('hSub').textContent='Full received vs empty returned';
+    document.getElementById('backBtn').style.display='block';
+    rShow('recvGridView');rRenderGrid();rLoadSuppliers();window.scrollTo(0,0);
+    _saveCurrentSection('received');
+  });
 }
 function rSetBranch(x){
   if(role==='Operator' && x!==branch){toast('Locked to '+branch,true);return;}
@@ -3787,7 +3785,8 @@ function _draftHasContent(data){
 }
 function openCap(type,opts){
   if(!canUseSection(branch||'Helderberg',type)){toast(sectionActive(branch||'Helderberg',type)?(type+' is not enabled for your user'):(type+' is deactivated for '+(branch||'this branch')),true);return;}
-  if(!requireEdit())return;
+  requireEdit().then(function(ok){
+  if(!ok)return;
   capType=type; var c=CAP[type];
   if(!capData||capData._type!==type){capData={_type:type};}
   toggleSel={};
@@ -3817,6 +3816,7 @@ function openCap(type,opts){
   if(type==='private')loadPrivateSuppliers(); // populate the Supplier/redistributor dropdown
   show('capView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);
   _saveCurrentSection(type);
+  });
 }
 // Same backend-synced list Manage Suppliers/Stock Received use - kept as its own module var
 // (not shared state with rSuppliersList) so this feature stays self-contained.
@@ -4659,22 +4659,17 @@ var sigUnlocked={sigOp:false,sigMgr:false};
 var sigSignedBy={sigOp:'',sigMgr:''};
 function unlockSig(id){
   var boxLabel=(id==='sigOp')?'Operator':'Manager';
-  askPassword('Sign '+boxLabel+' box','Enter the '+boxLabel+' password to sign this box (Owner password also works):').then(function(pw){
-  if(pw===null)return;
-  var users=loadUsers();
-  var owner=users.filter(function(u){return u.level==='Owner';})[0];
-  var ok=false, signer='';
-  // owner password unlocks either
-  if(owner && pw===owner.pw){ok=true;signer=owner.name+' (Owner override)';}
-  else {
-    // match against a user of the right level with that password
-    var wantLevel=(id==='sigOp')?'Operator':'Manager';
-    var match=users.filter(function(u){return u.level===wantLevel && u.pw===pw;})[0];
-    if(match){ok=true;signer=match.name;}
-  }
-  if(!ok){toast('Wrong password for '+boxLabel+' box',true);return;}
-  sigUnlocked[id]=true;sigSignedBy[id]=signer;
-  __unlockSigApply(id,signer);
+  var wantLevel=(id==='sigOp')?'Operator':'Manager';
+  var name=prompt('Sign '+boxLabel+' box\n\nEnter the name of the person signing (an Owner may also sign either box):');
+  if(name===null)return;
+  askPassword('Sign '+boxLabel+' box','Enter '+name+"'s password:").then(function(pw){
+    if(pw===null)return;
+    _verifyPersonPassword(name, pw, function(p){return p.level==='Owner'||p.level===wantLevel;}).then(function(u){
+      if(!u){toast('Wrong password for '+boxLabel+' box',true);return;}
+      var signer=(u.level==='Owner')?(u.name+' (Owner override)'):u.name;
+      sigUnlocked[id]=true;sigSignedBy[id]=signer;
+      __unlockSigApply(id,signer);
+    });
   });
 }
 function __unlockSigApply(id,signer){
@@ -4919,12 +4914,11 @@ function clearWorkingStore(){try{if(today&&branch)localStorage.removeItem(workKe
 var editUnlocked=false;
 function canEdit(){return perm('capture') || perm('edit') || editUnlocked;}
 function requireEdit(){
-  if(canEdit())return true;
-  var pw=prompt('You do not have capture/edit rights.\n\nAn Owner can unlock editing by entering the Owner password:');
-  if(pw===null)return false;
-  var owner=loadUsers().filter(function(u){return u.level==='Owner';})[0];
-  if(owner && pw===owner.pw){editUnlocked=true;auditLog('Edit unlocked','Owner unlocked editing on '+branch+' (via '+operator+')');toast('Editing unlocked ✓');return true;}
-  toast('Wrong Owner password',true);return false;
+  if(canEdit())return Promise.resolve(true);
+  return _borrowAuth('Owner','You do not have capture/edit rights.', function(p){return p.level==='Owner';}).then(function(owner){
+    if(owner){editUnlocked=true;auditLog('Edit unlocked','Owner unlocked editing on '+branch+' (via '+operator+')');toast('Editing unlocked ✓');return true;}
+    toast('Wrong Owner password',true);return false;
+  });
 }
 function saveDayToHistory(){
   try{
