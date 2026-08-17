@@ -263,6 +263,12 @@ function _finishLogin(u,b){
 
 `userPerms(u)` (existing function, `index.html:1806`) already merges a profile's stored `perms` over its level's preset — no change needed there, since the Supabase `profiles` row has the exact same shape (`level`, `perms`) as the old `localStorage` user object did.
 
+**Implementation note (added after code review, before this task was marked done):** the built version differs from the snippet above in ways the review caught and fixed, all committed as part of Task 6:
+- A shared `_fakeEmail(name)` helper replaced the inline formula (reused by later tasks instead of repeating the formula each time).
+- `doLogin()` gained a busy/disable guard on the Sign-in button (`loginSubmitBtn`, added since none existed), and the sign-in failure path now shows the real `res.error.message` instead of a hardcoded "Wrong password" (so a network/config problem doesn't look identical to a typo'd password).
+- `initLoginScreen()`'s Supabase call gained a `.catch()`.
+- **Most importantly:** a new top-level `var currentProfile=null;` is set as the first line of `_finishLogin(u,b)` (`currentProfile=u;`), and `_curUser(){return findUser(operator);}` was changed to `_curUser(){return currentProfile;}`. This was needed immediately, not deferred to Task 12: `findUser()` reads `localStorage`, which the new login never populates, so `findUser(operator)` returns `null` for anyone logged in via Supabase — and four call sites (`adminSetBranch`, `faultySetBranch`, `residualSetBranch`, `faultyRegisterBranches`) called `findUser(operator).branches` directly, which is a live crash (`TypeError` on `null.branches`) the moment a Manager taps a branch-switch button. All four were switched to `_curUser()`. Every *other* `findUser(...)` call site in the file (there are several more, all password-reauth related) is deliberately untouched here — see Task 11, which was expanded after this same review to cover the ones Task 11's original scope had missed.
+
 - [ ] **Step 4: Verify**
 
 `node -e "new Function(...)"` syntax check (same command as Task 5, Step 2) — expect no output. Then in the Browser preview: reload, confirm the login dropdown shows "Freddie" (from Task 4), pick it, confirm branch shows "All branches"-style note for Owner, enter the real password from Task 4 — confirm it lands on the home screen exactly as today's app does, with the Manage Users tile visible.
@@ -287,13 +293,17 @@ git commit -m "Wire login screen to Supabase Auth"
 function logout(){
   if(operator)auditLog('Logout','Signed out');
   sb.auth.signOut();
-  operator=null;branch=null;role=null;
+  operator=null;branch=null;role=null;currentProfile=null;
   if(idleTimer){clearTimeout(idleTimer);idleTimer=null;}
   idleLockActive=false;
   var _ilo=document.getElementById('idleLockOverlay');if(_ilo)_ilo.style.display='none';
   document.getElementById('who').style.display='none';document.getElementById('loginPin').value='';document.getElementById('loginUser').value='';loginUserChanged();show('login');
 }
 ```
+
+(`currentProfile=null;` is new — added alongside the other session-state globals being cleared, since Task 6's review fix introduced `currentProfile` as the backing store for `_curUser()`. Leaving it set after logout would mean the next person to sign in on this device briefly sees the previous person's `_curUser()`-gated section access until `_finishLogin()` overwrites it — clearing it here removes that window entirely.)
+
+`_bootApp()`'s session-resume path (Step 2 below) does not need a separate fix — it already calls `_finishLogin(pres.data,br)`, which sets `currentProfile` as its first line.
 
 - [ ] **Step 2: Add auto-resume on page load** — this is the "side benefit" from the design spec: Supabase keeps a session alive across app restarts, so a reload (or a backgrounded-then-reopened PWA) can skip straight back to a signed-in state instead of showing the login screen. Find the app's page-load entry point (search for where `initLoginScreen()` is currently called on startup) and wrap it:
 
@@ -440,9 +450,31 @@ Dashboard → **Edge Functions** → confirm `manage-user` shows as deployed. It
 ### Task 10: Rewrite Manage Users to call the Edge Function
 
 **Files:**
-- Modify: `index.html:2488` (`renderUserList`), `:2578` (`userSave`), `:2615` (`userDelete`), `:2421` (`changeMyPw`)
+- Modify: `index.html` — `usersUnlock()`, `renderUserList()`, `userEdit()`, `userSave()`, `userDelete()`, `changeMyPw()` (exact line numbers have shifted from Task 6's edits — locate each by function name)
 
-- [ ] **Step 1: Replace `renderUserList()`** — reads from `profiles` (full row, including perms — this is fine since only a signed-in `users`-permission holder ever reaches this screen, per the existing `usersUnlock()` gate):
+**Scope addition (found during Task 6's review, not in the original spec):** `usersUnlock()` — the gate that asks the Owner to re-enter their password before the Manage Users panel even opens — also depends on `findUser()`/`loadUsers()` and was missed in earlier planning. It's included here since it's part of the same screen this task already rewrites.
+
+- [ ] **Step 1: Replace `usersUnlock()`.** Current version re-checks the current operator's own password via `findUser(operator)`/`me.pw`. New version uses the shared `_selfReauth()` helper — **but `_selfReauth()` is defined in Task 11, not yet done at this point in the plan.** If Task 11 has not been executed yet when this task runs, implement this step's own minimal inline version instead (do not block on Task 11 - the two tasks are independent in the dependency graph, but this one function happens to want the same helper):
+
+```javascript
+function usersUnlock(){
+  var pw=document.getElementById('usersPw').value;
+  var tmp=supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY,{auth:{persistSession:false,autoRefreshToken:false}});
+  tmp.auth.signInWithPassword({email:_fakeEmail(operator),password:pw}).then(function(res){
+    tmp.auth.signOut();
+    if(res.error){toast('Wrong password',true);return;}
+    auditLog('User management opened','Owner opened Manage Users');
+    document.getElementById('usersGate').style.display='none';
+    document.getElementById('usersPanel').style.display='block';
+    renderUserList();
+    loadSyncCfgUI();
+  });
+}
+```
+
+(If Task 11 already landed by the time this runs, it's fine — and preferable — to instead write `_selfReauth('Open Manage Users?').then(function(me){ if(!me){toast('Wrong password',true);return;} ...same body... });`, reusing the shared helper instead of this inline disposable-client duplicate. Either is acceptable; don't block one task on the other.)
+
+- [ ] **Step 2: Replace `renderUserList()`** — reads from `profiles` (full row, including perms — this is fine since only a signed-in `users`-permission holder ever reaches this screen, per the existing `usersUnlock()` gate):
 
 ```javascript
 var _userListCache=[];
@@ -461,7 +493,7 @@ function renderUserList(){
 function _userListFind(id){return _userListCache.filter(function(u){return u.id===id;})[0]||null;}
 ```
 
-- [ ] **Step 2: Update `userEdit(id)`** — was `userEdit(name)`, now keyed by id (matches the `onclick` above) since names are no longer guaranteed to be the identity key going forward:
+- [ ] **Step 3: Update `userEdit(id)`** — was `userEdit(name)`, now keyed by id (matches the `onclick` above) since names are no longer guaranteed to be the identity key going forward:
 
 Find `function userEdit(name){` (currently `index.html:2510`) and change its first two lines:
 
@@ -473,7 +505,7 @@ function userEdit(id){
 
 Everything else in the existing `userEdit()` body stays the same (it already just reads fields off `u`).
 
-- [ ] **Step 3: Replace `userSave()`** — same field-collection logic as before, but the final save goes through the Edge Function instead of `saveUsers()`:
+- [ ] **Step 4: Replace `userSave()`** — same field-collection logic as before, but the final save goes through the Edge Function instead of `saveUsers()`:
 
 ```javascript
 function userSave(){
@@ -512,7 +544,7 @@ function userSave(){
 }
 ```
 
-- [ ] **Step 4: Replace `userDelete()`**:
+- [ ] **Step 5: Replace `userDelete()`**:
 
 ```javascript
 function userDelete(){
@@ -531,7 +563,7 @@ function userDelete(){
 }
 ```
 
-- [ ] **Step 5: Update `changeMyPw()`** — this one changes the *caller's own* password, which Supabase Auth supports directly without going through the Edge Function at all:
+- [ ] **Step 6: Update `changeMyPw()`** — this one changes the *caller's own* password, which Supabase Auth supports directly without going through the Edge Function at all. Uses the shared `_fakeEmail()` helper (added in Task 6):
 
 ```javascript
 function changeMyPw(){
@@ -543,8 +575,7 @@ function changeMyPw(){
   var nw2=prompt('Re-enter your NEW password:');
   if(nw2===null)return;
   if(nw!==nw2){toast('New passwords do not match',true);return;}
-  var fakeEmail=operator.toLowerCase().replace(/[^a-z0-9]/g,'')+'@gassales.local';
-  sb.auth.signInWithPassword({email:fakeEmail,password:cur}).then(function(chk){
+  sb.auth.signInWithPassword({email:_fakeEmail(operator),password:cur}).then(function(chk){
     if(chk.error){toast('Current password is wrong',true);return;}
     sb.auth.updateUser({password:nw}).then(function(res){
       if(res.error){toast('Could not change password: '+res.error.message,true);return;}
@@ -554,11 +585,11 @@ function changeMyPw(){
 }
 ```
 
-- [ ] **Step 6: Verify**
+- [ ] **Step 7: Verify**
 
-Full round trip in the Browser preview: Manage Users → New user → fill in a test Operator, save → confirm it appears in the list. Edit that same user → change their level to Manager, save → confirm the change stuck. Log out, log back in as that user with their password → confirm it works. Back as Owner: delete the test user → confirm it disappears from the list AND from the login dropdown. Try `changeMyPw()` on the real Owner account with a deliberately wrong "current password" → confirm it's rejected before anything changes.
+First, confirm `usersUnlock()` itself: from the landing screen, tap Manage Users, enter the Owner's real password — confirm it opens the panel (and that a wrong password is rejected before it opens). Then, full round trip in the Browser preview: Manage Users → New user → fill in a test Operator, save → confirm it appears in the list. Edit that same user → change their level to Manager, save → confirm the change stuck. Log out, log back in as that user with their password → confirm it works. Back as Owner: delete the test user → confirm it disappears from the list AND from the login dropdown. Try `changeMyPw()` on the real Owner account with a deliberately wrong "current password" → confirm it's rejected before anything changes.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add index.html supabase/functions/manage-user/index.ts
@@ -971,13 +1002,117 @@ function viewSavedDay(ds){
   // ...everything below this line in the original function is unchanged...
 ```
 
-- [ ] **Step 8: Verify**
+- [ ] **Step 8: Fix 6 more self-reauth call sites, found during Task 6's code review (not in the original scoping pass).** These all follow the SELF-reauth pattern (the current operator confirms their own password, no name step needed - `_selfReauth()` or `_verifyPersonPassword(operator, pw, ...)` directly) rather than the borrow-authority pattern used above. Each one already uses the app's own `askPassword()` modal (not a plain `prompt()`), which is preserved unchanged - only the verification mechanism underneath changes.
+
+`adminTab(t)` (search `function adminTab(t){`) - unlocking any Admin sub-tab (Seals, Suppliers, Clear Stock Take, Branch Setup, Manage Suppliers, Count Times):
+
+```javascript
+function adminTab(t){
+  if(t==='faulty'){
+    if(!(perm('faultyCapture')||perm('faultyRegister'))){toast('You do not have rights for Faulty Cylinders',true);return;}
+    _adminTabShow(t);
+    return;
+  }
+  var permKey=ADMIN_TAB_PERM[t];
+  if(permKey && !(role==='Owner'||perm(permKey))){toast('You do not have rights for '+ADMIN_TAB_NAME[t],true);return;}
+  askPassword('Unlock '+ADMIN_TAB_NAME[t], 'Enter your password to open '+ADMIN_TAB_NAME[t]+':').then(function(pw){
+    if(pw===null)return;
+    _verifyPersonPassword(operator, pw, null).then(function(me){
+      if(!me){toast('Wrong password',true);return;}
+      _adminTabShow(t);
+    });
+  });
+}
+```
+
+`doClearStockTake()` (search `function doClearStockTake(){`) - only the auth block changes, everything before and after (date/area/branch collection, the `confirm()`, the call to `_clearStockTakeDo`) is unchanged:
+
+```javascript
+  if(!confirm('Clear '+areas.join(', ')+'\nfor '+branches.join(' & ')+'\non '+date+'?\n\nThis deletes the data on this device AND in the Google Sheet. Cannot be undone.'))return;
+  askPassword('Owner authorisation','Owner password to authorise this deletion:').then(function(pw){
+   if(pw===null)return;
+   _verifyPersonPassword(operator, pw, null).then(function(me){
+     if(!me || !(role==='Owner'||perm('seal_edit_used'))){toast('Not authorised',true);return;}
+     _clearStockTakeDo(date,brSel,areas,branches);
+   });
+  });
+```
+
+`faultyShowSub(sub)` (search `function faultyShowSub(sub){`) - only the `sub==='register'` branch's auth block changes:
+
+```javascript
+  if(sub==='register'){
+    if(!perm('faultyRegister')){toast('You do not have Faulty Register rights',true);return;}
+    askPassword('Open Faulty Register','Enter your password to open the Open Register:').then(function(pw){
+      if(pw===null)return;
+      _verifyPersonPassword(operator, pw, null).then(function(me){
+        if(!me){toast('Wrong password',true);return;}
+        _faultyShowSub('register');
+      });
+    });
+    return;
+  }
+```
+
+`sealBoundaryOverride(msg)` (search `function sealBoundaryOverride(msg){`) - already returns a Promise, so none of ITS callers need any change, only its own body:
+
+```javascript
+function sealBoundaryOverride(msg){
+  if(!perm('seal_boundary')){toast('You do not have rights for this action ('+(PERM_LABELS.seal_boundary||'seal_boundary')+')',true);return Promise.resolve(false);}
+  return askPassword('Authorise override', msg+'\n\nThis records an out-of-roll seal. Enter YOUR password to authorise:').then(function(pw){
+    if(pw===null)return false;
+    return _verifyPersonPassword(operator, pw, null).then(function(me){
+      if(!me){toast('Password does not match your login',true);return false;}
+      auditLog('Seal boundary override','By '+me.name+' ('+me.level+') — '+capBranch+' — '+msg);
+      syncPush('Adjustments',[{date:today||'',branch:capBranch,Kind:'SEAL_OVERRIDE',Line:msg,From:'',To:'',Reason:'boundary override',By:me.name}]);
+      toast('Override authorised by '+me.name);
+      return true;
+    });
+  });
+}
+```
+
+`auditUnlock()` (search `function auditUnlock(){`), complete function:
+
+```javascript
+function auditUnlock(){
+  var pw=document.getElementById('auditPw').value;
+  _verifyPersonPassword(operator, pw, null).then(function(me){
+    if(!me){toast('Wrong password',true);return;}
+    auditLog('Audit opened','Owner opened the audit report');
+    document.getElementById('auditGate').style.display='none';
+    document.getElementById('auditDateList').style.display='block';
+    renderAuditDates();
+  });
+}
+```
+
+`idleUnlock()` (search `function idleUnlock(){`), complete function:
+
+```javascript
+function idleUnlock(){
+  if(!idleLockActive)return;
+  var pw=document.getElementById('idleLockPw').value;
+  _verifyPersonPassword(operator, pw, null).then(function(u){
+    if(!u){toast('Wrong password',true);return;}
+    idleLockActive=false;
+    document.getElementById('idleLockOverlay').style.display='none';
+    document.getElementById('idleLockPw').value='';
+    auditLog('Idle unlock','Resumed after idle lock');
+    _armIdleTimer();
+  });
+}
+```
+
+**Known tradeoff worth being aware of (not a bug):** unlocking after the idle lock now requires a live network round-trip to Supabase, where before it was purely local/instant. On a normal connection this is not noticeable; on a genuinely dead connection, the idle-lock screen would not be unlockable until connectivity returns. This is an inherent consequence of moving real authentication off the device, not something to fix here - flag it if it becomes a real problem in practice.
+
+- [ ] **Step 9: Verify**
 
 `node -e "new Function(...)"` syntax check (same command as earlier tasks) - expect no output; if it fails, the most likely cause is a brace mismatch from the `openCap()` wrap in Step 6 or the `closeDay()`/`viewSavedDay()` partial edits in Step 7 - re-check those first.
 
-Then, in the Browser preview, exercise every path end-to-end (use the Owner account from Task 4, and if possible a second test Manager/Operator account created via Task 10's now-working Manage Users screen, to test the "borrow someone else's authority" prompts for real): Seal Roll admin - create a roll, edit it, close it early, void a seal, delete an unused roll (all should now ask for a name then a password, and reject a wrong password without granting access); Stock Count - trigger the "no previous close" and "additional count after close" prompts; Close Day - confirm the Close-Day-permission name+password prompt works and still runs `checkHighRisk()` after; the same-day Correction tool and the opening-mismatch Adjustment tool - confirm both ask for a Manager/Owner name+password; History - open a past saved day as a Manager/Owner (self password) and confirm the Owner-override path also still works.
+Then, in the Browser preview, exercise every path end-to-end (use the Owner account from Task 4, and if possible a second test Manager/Operator account created via Task 10's now-working Manage Users screen, to test the "borrow someone else's authority" prompts for real): Seal Roll admin - create a roll, edit it, close it early, void a seal, delete an unused roll (all should now ask for a name then a password, and reject a wrong password without granting access); Stock Count - trigger the "no previous close" and "additional count after close" prompts; Close Day - confirm the Close-Day-permission name+password prompt works and still runs `checkHighRisk()` after; the same-day Correction tool and the opening-mismatch Adjustment tool - confirm both ask for a Manager/Owner name+password; History - open a past saved day as a Manager/Owner (self password) and confirm the Owner-override path also still works; **and, from Step 8:** each Admin sub-tab unlock, Clear Stock Take, opening the Faulty Register, a Seal boundary override (if reachable in test data), the Audit Log unlock, and the idle-lock screen (wait for the 3-minute idle timeout or trigger it directly) - each should now accept only the current operator's own real password.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add index.html
