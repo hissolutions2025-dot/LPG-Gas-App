@@ -843,6 +843,17 @@ var FEATURES={ share:false, driveUpload:false };
 var SUPABASE_URL = 'https://zyymnkychhglisqjvkqs.supabase.co';
 var SUPABASE_ANON_KEY = 'sb_publishable_Fl1QFiNogBHFQ7cBIpd8Qw_jgZR2EkD';
 var sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+function _callManageUser(payload, token){
+  return fetch(SUPABASE_URL+'/functions/v1/manage-user', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer '+token},
+    body: JSON.stringify(payload)
+  }).then(function(res){
+    return res.json().then(function(data){
+      return {data: data, error: res.ok ? null : {message: (data && data.error) || ('Request failed with status '+res.status)}};
+    });
+  });
+}
 function _fakeEmail(name){return name.toLowerCase().replace(/[^a-z0-9]/g,'')+'@gassales.local';}
 function _verifyPersonPassword(name, password, filterFn){
   if(!name || !password) return Promise.resolve(null);
@@ -2672,7 +2683,7 @@ function userSave(){
     var payload=existing
       ? {action:'update',id:existing.id,name:name,level:lvl,branches:branches,perms:permsObj,access:accessObj,phone:phone,password:pw||undefined}
       : {action:'create',name:name,password:pw,level:lvl,branches:branches,perms:permsObj,access:accessObj,phone:phone};
-    sb.functions.invoke('manage-user',{body:payload,headers:{Authorization:'Bearer '+token}}).then(function(res){
+    _callManageUser(payload, token).then(function(res){
       _resetBusy();
       if(res.error || (res.data && res.data.error)){toast('Save failed: '+(res.error?res.error.message:res.data.error),true);return;}
       var beforeSnap=existing?{name:existing.name,level:existing.level,branches:existing.branches.slice()}:null;
@@ -2701,7 +2712,7 @@ function userDelete(){
     var session=sres.data && sres.data.session;
     if(!session){_resetBusy();toast('Session expired — please sign in again',true);return;}
     var token=session.access_token;
-    sb.functions.invoke('manage-user',{body:{action:'delete',id:ueEditingName},headers:{Authorization:'Bearer '+token}}).then(function(res){
+    _callManageUser({action:'delete',id:ueEditingName}, token).then(function(res){
       _resetBusy();
       if(res.error || (res.data && res.data.error)){toast('Delete failed: '+(res.error?res.error.message:res.data.error),true);return;}
       auditLog('User deleted','Deleted user "'+(u?u.name:'')+'"',u?{name:u.name,level:u.level,branches:u.branches}:null,null);
