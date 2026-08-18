@@ -844,10 +844,15 @@ var SUPABASE_URL = 'https://zyymnkychhglisqjvkqs.supabase.co';
 var SUPABASE_ANON_KEY = 'sb_publishable_Fl1QFiNogBHFQ7cBIpd8Qw_jgZR2EkD';
 var sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 function _callManageUser(payload, token){
+  // Token travels in the JSON body (callerToken), not as an Authorization/apikey header - some
+  // networks/security software silently block requests carrying an "apikey"-named header to
+  // unfamiliar API domains, which broke this for at least one real user. The Edge Function verifies
+  // this same token just as strictly, only carried differently.
+  var body=Object.assign({}, payload, {callerToken: token});
   return fetch(SUPABASE_URL+'/functions/v1/manage-user', {
     method: 'POST',
-    headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer '+token, 'apikey': SUPABASE_ANON_KEY},
-    body: JSON.stringify(payload)
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
   }).then(function(res){
     return res.json().then(function(data){
       return {data: data, error: res.ok ? null : {message: (data && data.error) || ('Request failed with status '+res.status)}};

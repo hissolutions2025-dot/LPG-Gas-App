@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "lpg-gas-app",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8123"],
+      "port": 8123
+    },
+    {
+      "name": "lpg-gas-app-phase1-test",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8124", "--directory", "C:\\Users\\Freddie Du Plessis\\OneDrive\\Desktop\\LPG-Gas-App\\.worktrees\\supabase-phase1-accounts"],
+      "port": 8124
+    }
+  ]
+}

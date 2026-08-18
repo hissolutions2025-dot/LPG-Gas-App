@@ -5,27 +5,29 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
 
   try {
-    const authHeader = req.headers.get('Authorization')
-    if (!authHeader) return new Response(JSON.stringify({ error: 'Missing auth' }), { status: 401, headers: cors })
-
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!
-    const anonKey = Deno.env.get('SUPABASE_ANON_KEY')!
     const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-
-    // Scoped to the CALLER's own token - used only to find out who is calling and check their permission.
-    const callerClient = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: authHeader } } })
-    const { data: { user } } = await callerClient.auth.getUser()
-    if (!user) return new Response(JSON.stringify({ error: 'Not signed in' }), { status: 401, headers: cors })
-
-    const { data: callerProfile } = await callerClient.from('profiles').select('level,perms').eq('id', user.id).single()
-    const callerIsOwner = !!callerProfile && callerProfile.level === 'Owner'
-    const canManageUsers = callerIsOwner || (!!callerProfile && !!callerProfile.perms && !!callerProfile.perms.users)
-    if (!canManageUsers) return new Response(JSON.stringify({ error: 'Not allowed' }), { status: 403, headers: cors })
 
     // Full power - service role key, only ever used here, never sent to the browser.
     const admin = createClient(supabaseUrl, serviceKey)
     const body = await req.json()
     const action = body.action
+
+    // The caller's own session token, sent in the JSON body rather than an Authorization/apikey
+    // header - some networks/security software silently block requests carrying an "apikey"-named
+    // header to unfamiliar API domains, which broke the header-based version of this check for at
+    // least one real user. admin.auth.getUser(jwt) verifies an arbitrary token string directly
+    // against Supabase Auth (no header involved at all), so this sidesteps that entirely without
+    // weakening the check - it's the same verification, just carried differently.
+    const callerToken = body.callerToken
+    if (!callerToken) return new Response(JSON.stringify({ error: 'Missing auth' }), { status: 401, headers: cors })
+    const { data: { user } } = await admin.auth.getUser(callerToken)
+    if (!user) return new Response(JSON.stringify({ error: 'Not signed in' }), { status: 401, headers: cors })
+
+    const { data: callerProfile } = await admin.from('profiles').select('level,perms').eq('id', user.id).single()
+    const callerIsOwner = !!callerProfile && callerProfile.level === 'Owner'
+    const canManageUsers = callerIsOwner || (!!callerProfile && !!callerProfile.perms && !!callerProfile.perms.users)
+    if (!canManageUsers) return new Response(JSON.stringify({ error: 'Not allowed' }), { status: 403, headers: cors })
 
     function fakeEmail(name: string) { return name.toLowerCase().replace(/[^a-z0-9]/g, '') + '@gassales.local' }
     // A caller who only has the delegated 'manage users' permission (not full Owner) may manage
