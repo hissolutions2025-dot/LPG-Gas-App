@@ -16,27 +16,22 @@ Deno.serve(async (req) => {
     // The caller's own session token, sent in the JSON body rather than an Authorization/apikey
     // header - some networks/security software silently block requests carrying an "apikey"-named
     // header to unfamiliar API domains, which broke the header-based version of this check for at
-    // least one real user. admin.auth.getUser(jwt) verifies an arbitrary token string directly
-    // against Supabase Auth (no header involved at all), so this sidesteps that entirely without
-    // weakening the check - it's the same verification, just carried differently.
+    // least one real user.
     const callerToken = body.callerToken
     if (!callerToken) return new Response(JSON.stringify({ error: 'Missing auth' }), { status: 401, headers: cors })
-    console.log('DEBUG callerToken length:', callerToken.length, 'prefix:', callerToken.slice(0, 20))
 
-    const anonKey = Deno.env.get('SUPABASE_ANON_KEY')!
-    console.log('DEBUG anonKey present:', !!anonKey, 'length:', anonKey ? anonKey.length : 0)
+    // Legacy-format anon key, hardcoded deliberately (this key is DESIGNED to be public - it's
+    // already visible in index.html's own source). The auto-injected SUPABASE_ANON_KEY env var for
+    // this project is the newer short "publishable" key format (sb_publishable_...), which the Auth
+    // verification path below does not currently accept correctly - confirmed via live diagnostic
+    // logging (identical "Auth session missing!" failure from two different verification methods,
+    // both traced back to this one key). Regular database queries (profiles/login_names) work fine
+    // with the new key format; only this specific Auth check needs the legacy one. If Supabase later
+    // fixes Auth verification for the new key format, this can be reverted to the env var.
+    const legacyAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp5eW1ua3ljaGhnbGlzcWp2a3FzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY5OTI2ODcsImV4cCI6MjEwMjU2ODY4N30.bkmpU3v4aRw_9rR4CWNAYYoUq-IOD8IAC0BZnwga-ko'
 
-    // Method A: pass the JWT as an explicit argument to the admin (service-role) client.
-    const methodAResult = await admin.auth.getUser(callerToken)
-    console.log('DEBUG method A (admin.auth.getUser(jwt)) result:', JSON.stringify({ hasUser: !!methodAResult.data?.user, error: methodAResult.error ? methodAResult.error.message : null }))
-
-    // Method B: a client scoped to the caller's token via a forwarded Authorization header,
-    // verified via a getUser() call with no argument (this is the original, pre-redesign approach).
-    const callerClient = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: 'Bearer ' + callerToken } } })
-    const methodBResult = await callerClient.auth.getUser()
-    console.log('DEBUG method B (callerClient.auth.getUser()) result:', JSON.stringify({ hasUser: !!methodBResult.data?.user, error: methodBResult.error ? methodBResult.error.message : null }))
-
-    const user = methodAResult.data?.user || methodBResult.data?.user
+    const callerClient = createClient(supabaseUrl, legacyAnonKey, { global: { headers: { Authorization: 'Bearer ' + callerToken } } })
+    const { data: { user } } = await callerClient.auth.getUser()
     if (!user) return new Response(JSON.stringify({ error: 'Not signed in' }), { status: 401, headers: cors })
 
     const { data: callerProfile } = await admin.from('profiles').select('level,perms').eq('id', user.id).single()
