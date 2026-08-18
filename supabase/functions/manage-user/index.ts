@@ -30,8 +30,41 @@ Deno.serve(async (req) => {
     // fixes Auth verification for the new key format, this can be reverted to the env var.
     const legacyAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp5eW1ua3ljaGhnbGlzcWp2a3FzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY5OTI2ODcsImV4cCI6MjEwMjU2ODY4N30.bkmpU3v4aRw_9rR4CWNAYYoUq-IOD8IAC0BZnwga-ko'
 
+    // ===== TEMPORARY comprehensive diagnostics - decode the token's own claims without verifying
+    // it (just to see what's actually inside it), then try three independent ways of checking it,
+    // logging the FULL raw result (not just .message) for each. =====
+    try {
+      const parts = callerToken.split('.')
+      const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))
+      console.log('DEBUG token claims:', JSON.stringify({ iss: payload.iss, aud: payload.aud, exp: payload.exp, now: Math.floor(Date.now()/1000), sub: payload.sub, role: payload.role }))
+    } catch (decodeErr) {
+      console.log('DEBUG token decode failed:', String(decodeErr))
+    }
+
     const callerClient = createClient(supabaseUrl, legacyAnonKey)
-    const { data: { user } } = await callerClient.auth.getUser(callerToken)
+    let getUserResult
+    try {
+      getUserResult = await callerClient.auth.getUser(callerToken)
+      console.log('DEBUG getUser raw result:', JSON.stringify(getUserResult))
+    } catch (getUserErr) {
+      console.log('DEBUG getUser THREW:', String(getUserErr), getUserErr instanceof Error ? getUserErr.stack : '')
+      getUserResult = { data: { user: null }, error: { message: String(getUserErr) } }
+    }
+
+    // Also try a completely raw fetch to the Auth API, bypassing the SDK entirely, to rule out an
+    // SDK-specific bug.
+    try {
+      const rawRes = await fetch(supabaseUrl + '/auth/v1/user', {
+        headers: { 'Authorization': 'Bearer ' + callerToken, 'apikey': legacyAnonKey }
+      })
+      const rawBody = await rawRes.text()
+      console.log('DEBUG raw fetch to /auth/v1/user status:', rawRes.status, 'body:', rawBody.slice(0, 300))
+    } catch (rawErr) {
+      console.log('DEBUG raw fetch THREW:', String(rawErr))
+    }
+    // ===== end temporary diagnostics =====
+
+    const user = getUserResult.data?.user
     if (!user) return new Response(JSON.stringify({ error: 'Not signed in' }), { status: 401, headers: cors })
 
     const { data: callerProfile } = await admin.from('profiles').select('level,perms').eq('id', user.id).single()
