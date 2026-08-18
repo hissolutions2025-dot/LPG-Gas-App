@@ -22,9 +22,21 @@ Deno.serve(async (req) => {
     const callerToken = body.callerToken
     if (!callerToken) return new Response(JSON.stringify({ error: 'Missing auth' }), { status: 401, headers: cors })
     console.log('DEBUG callerToken length:', callerToken.length, 'prefix:', callerToken.slice(0, 20))
-    const getUserResult = await admin.auth.getUser(callerToken)
-    console.log('DEBUG getUser result:', JSON.stringify({ hasUser: !!getUserResult.data?.user, error: getUserResult.error ? getUserResult.error.message : null }))
-    const user = getUserResult.data?.user
+
+    const anonKey = Deno.env.get('SUPABASE_ANON_KEY')!
+    console.log('DEBUG anonKey present:', !!anonKey, 'length:', anonKey ? anonKey.length : 0)
+
+    // Method A: pass the JWT as an explicit argument to the admin (service-role) client.
+    const methodAResult = await admin.auth.getUser(callerToken)
+    console.log('DEBUG method A (admin.auth.getUser(jwt)) result:', JSON.stringify({ hasUser: !!methodAResult.data?.user, error: methodAResult.error ? methodAResult.error.message : null }))
+
+    // Method B: a client scoped to the caller's token via a forwarded Authorization header,
+    // verified via a getUser() call with no argument (this is the original, pre-redesign approach).
+    const callerClient = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: 'Bearer ' + callerToken } } })
+    const methodBResult = await callerClient.auth.getUser()
+    console.log('DEBUG method B (callerClient.auth.getUser()) result:', JSON.stringify({ hasUser: !!methodBResult.data?.user, error: methodBResult.error ? methodBResult.error.message : null }))
+
+    const user = methodAResult.data?.user || methodBResult.data?.user
     if (!user) return new Response(JSON.stringify({ error: 'Not signed in' }), { status: 401, headers: cors })
 
     const { data: callerProfile } = await admin.from('profiles').select('level,perms').eq('id', user.id).single()
