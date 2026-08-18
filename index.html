@@ -218,19 +218,6 @@
 <!-- LOGIN -->
 <div id="login" class="view active">
   <div class="wrap" style="width:100%">
-    <!-- FIRST-RUN OWNER SETUP -->
-    <div class="loginCard" id="setupCard" style="display:none">
-      <span class="demoTag">FIRST-TIME SETUP</span><h2>Create Owner account</h2>
-      <div class="demoNote" style="text-align:left;margin:0 0 14px">No users exist yet. Set up the Owner — the top-level account that manages all users and branches.</div>
-      <label class="mLabel">Owner name</label>
-      <input type="text" class="mField" id="setupName" placeholder="e.g. Fred">
-      <label class="mLabel">Password</label>
-      <input type="password" class="mField" id="setupPw" placeholder="Choose a password">
-      <label class="mLabel">Confirm password</label>
-      <input type="password" class="mField" id="setupPw2" placeholder="Re-enter password">
-      <button class="saveBtn" onclick="createOwner()" style="margin-top:14px;">Create Owner &amp; continue</button>
-      <div class="demoNote">Demo only — passwords are stored on this device in plain text, not encrypted. Real accounts need a secure backend.</div>
-    </div>
     <!-- NORMAL LOGIN -->
     <div class="loginCard" id="loginCard">
       <span class="demoTag">DEMO LOGIN · v53/span><h2>Sign in</h2>
@@ -1940,9 +1927,6 @@ function bcfgSet(branch,sec,item,val){
 }
 function perm(k){return !!currentPerms[k];}
 // user = {name, level:'Owner|Manager|Operator', branches:['Helderberg',...], pw}
-function loadUsers(){try{return JSON.parse(localStorage.getItem('gs_users')||'[]');}catch(e){return [];}}
-function saveUsers(arr){try{localStorage.setItem('gs_users',JSON.stringify(arr));}catch(e){toast('Storage unavailable in this viewer',true);}}
-function findUser(name){return loadUsers().filter(function(u){return u.name===name;})[0]||null;}
 // Normalise a SA mobile to E.164 (+27XXXXXXXXX). Returns {ok, value, msg}. Empty input is allowed (optional field).
 function normalizePhoneZA(raw){
   if(raw===undefined||raw===null)return {ok:true,value:''};
@@ -2315,7 +2299,6 @@ function auditCSV(){
 
 // ---------- first-run / login screen wiring ----------
 function initLoginScreen(){
-  document.getElementById('setupCard').style.display='none';
   document.getElementById('loginCard').style.display='block';
   var sel=document.getElementById('loginUser');
   sel.innerHTML='<option value="">Loading names…</option>';
@@ -2327,17 +2310,6 @@ function initLoginScreen(){
 }
 var _loginNamesCache=[];
 function _loginFindName(name){return _loginNamesCache.filter(function(u){return u.name===name;})[0]||null;}
-function createOwner(){
-  var n=(document.getElementById('setupName').value||'').trim();
-  var p=document.getElementById('setupPw').value,p2=document.getElementById('setupPw2').value;
-  if(!n){toast('Enter the owner name',true);return;}
-  if(!p||p.length<3){toast('Password must be at least 3 characters',true);return;}
-  if(p!==p2){toast('Passwords do not match',true);return;}
-  saveUsers([{name:n,level:'Owner',branches:['Helderberg','Kleinmond'],pw:p}]);
-  operator=n;role='Owner';branch='';auditLog('Owner created','First-run: Owner account "'+n+'" created');operator=null;role=null;
-  toast('Owner account created ✓');
-  initLoginScreen();
-}
 function forgotPw(){
   alert('Password reset by SMS OTP is not available in this demo — it needs a secure backend and an SMS service.\n\nWhen the app is linked to real online storage, the Owner will be able to reset a forgotten password via a one-time PIN sent to their phone. For now, the Owner can reset any user password from Manage Users.');
 }
