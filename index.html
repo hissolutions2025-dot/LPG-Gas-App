@@ -536,9 +536,9 @@
   <label class="mLabel">Password</label>
   <input type="password" class="mField" id="uePw" placeholder="Set / change password">
   <div class="mNote" id="uePwNote" style="margin-top:4px;">Owner override: setting a password here replaces the user's password without needing their old one.</div>
-  <label style="display:flex;align-items:center;gap:8px;margin-top:14px;padding:10px;border:1.5px solid var(--line);border-radius:10px;background:#FFFBF2">
+  <label id="ueLockoutWrap" style="display:flex;align-items:center;gap:8px;margin-top:14px;padding:10px;border:1.5px solid var(--line);border-radius:10px;background:#FFFBF2">
     <input type="checkbox" id="ueLockout" style="width:18px;height:18px;flex:none">
-    <span style="font-size:13px"><b style="color:var(--navy)">Lock out this user</b><br><span style="font-weight:400;color:var(--muted)">Temporarily disable their login — keeps the account, history and permissions intact so they can be reactivated anytime. Not the same as deleting.</span></span>
+    <span style="font-size:13px"><b style="color:var(--navy)">Lock out this user</b><br><span style="font-weight:400;color:var(--muted)" id="ueLockoutNote">Temporarily disable their login — keeps the account, history and permissions intact so they can be reactivated anytime. Not the same as deleting.</span></span>
   </label>
   <label class="mLabel" style="margin-top:14px">Permissions <span style="font-weight:400;color:var(--muted)">(level sets defaults — tick to override)</span></label>
   <div id="uePerms" style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px"></div>
@@ -2651,6 +2651,16 @@ function renderUserList(){
 function _userListFind(id){return _userListCache.filter(function(u){return u.id===id;})[0]||null;}
 function ueLevelChanged(){
   var lvl=document.getElementById('ueLevel').value;
+  var lockoutBox=document.getElementById('ueLockout');
+  var lockoutWrap=document.getElementById('ueLockoutWrap');
+  var lockoutNote=document.getElementById('ueLockoutNote');
+  // Owner accounts can never be locked out (the Edge Function enforces this too - this just
+  // keeps the checkbox from being clickable in a way that would only fail on Save).
+  if(lockoutBox){lockoutBox.disabled=(lvl==='Owner');if(lvl==='Owner')lockoutBox.checked=false;}
+  if(lockoutWrap)lockoutWrap.style.opacity=(lvl==='Owner')?'.5':'1';
+  if(lockoutNote)lockoutNote.textContent=(lvl==='Owner')
+    ?'Owner accounts cannot be locked out — this would risk nobody being able to sign in to undo it.'
+    :'Temporarily disable their login — keeps the account, history and permissions intact so they can be reactivated anytime. Not the same as deleting.';
   var wrap=document.getElementById('ueBranchControl');var note=document.getElementById('ueBranchNote');
   if(lvl==='Owner'){wrap.innerHTML='<div style="padding:12px;background:#EEF3F8;border-radius:10px;font-weight:700;color:var(--navy)">All branches</div>';note.textContent='Owners have access to all branches.';return;}
   if(lvl==='Manager'){
