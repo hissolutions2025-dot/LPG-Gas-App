@@ -69,7 +69,7 @@ Deno.serve(async (req) => {
       // renamed account can still log in. Idempotent: if the name didn't change, this recomputes the
       // same email and is a harmless no-op.
       if (name) {
-        const { error: emailErr } = await admin.auth.admin.updateUserById(id, { email: fakeEmail(name) })
+        const { error: emailErr } = await admin.auth.admin.updateUserById(id, { email: fakeEmail(name), email_confirm: true })
         if (emailErr) return new Response(JSON.stringify({ error: 'Profile saved, but the login email could not be updated to match the new name: ' + emailErr.message + ' - this account may not be able to log in until this is fixed' }), { status: 500, headers: cors })
       }
       if (password) {
