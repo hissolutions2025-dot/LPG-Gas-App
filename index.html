@@ -4673,6 +4673,7 @@ function unlockSig(id){
   });
 }
 function __unlockSigApply(id,signer){
+  var boxLabel=(id==='sigOp')?'Operator':'Manager';
   document.getElementById(id+'-lock').innerHTML='<div style="font-size:11px;color:var(--ok);font-weight:700">✓ Unlocked — '+signer+' — sign above</div>';
   document.getElementById(id+'-clear').style.display='block';
   auditLog('Signature unlocked',boxLabel+' signature box unlocked by '+signer);
