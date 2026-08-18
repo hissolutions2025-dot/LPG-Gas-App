@@ -846,7 +846,7 @@ var sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 function _callManageUser(payload, token){
   return fetch(SUPABASE_URL+'/functions/v1/manage-user', {
     method: 'POST',
-    headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer '+token},
+    headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer '+token, 'apikey': SUPABASE_ANON_KEY},
     body: JSON.stringify(payload)
   }).then(function(res){
     return res.json().then(function(data){
