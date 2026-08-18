@@ -60,11 +60,18 @@ Deno.serve(async (req) => {
         if (target && target.level === 'Owner') return new Response(JSON.stringify({ error: 'Only an Owner can edit an Owner account' }), { status: 403, headers: cors })
         if (level === 'Owner' || ownerEquivalentPerms(perms)) return new Response(JSON.stringify({ error: 'Only an Owner can grant Owner status or Owner-level permissions' }), { status: 403, headers: cors })
       }
-      // Profile fields first, password last: if the profile update fails, nothing has changed yet
-      // (including no password change) - a clean "the save failed" rather than a partial mutation
+      // Profile fields first, password/email last: if the profile update fails, nothing has changed yet
+      // (including no password/email change) - a clean "the save failed" rather than a partial mutation
       // the caller wasn't told about.
       const { error: profileErr } = await admin.from('profiles').update({ name, level, branches, perms, access, phone }).eq('id', id)
       if (profileErr) return new Response(JSON.stringify({ error: profileErr.message }), { status: 400, headers: cors })
+      // The Auth login email IS derived from the name (fakeEmail(name)) - resync it every time so a
+      // renamed account can still log in. Idempotent: if the name didn't change, this recomputes the
+      // same email and is a harmless no-op.
+      if (name) {
+        const { error: emailErr } = await admin.auth.admin.updateUserById(id, { email: fakeEmail(name) })
+        if (emailErr) return new Response(JSON.stringify({ error: 'Profile saved, but the login email could not be updated to match the new name: ' + emailErr.message + ' - this account may not be able to log in until this is fixed' }), { status: 500, headers: cors })
+      }
       if (password) {
         if (password.length < 3) return new Response(JSON.stringify({ error: 'Profile saved, but the password was NOT changed: password too short' }), { status: 400, headers: cors })
         const { error: pwErr } = await admin.auth.admin.updateUserById(id, { password })

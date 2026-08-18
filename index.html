@@ -2388,7 +2388,9 @@ function logout(){
   if(idleTimer){clearTimeout(idleTimer);idleTimer=null;}
   idleLockActive=false;
   var _ilo=document.getElementById('idleLockOverlay');if(_ilo)_ilo.style.display='none';
-  document.getElementById('who').style.display='none';document.getElementById('loginPin').value='';document.getElementById('loginUser').value='';loginUserChanged();show('login');
+  document.getElementById('who').style.display='none';document.getElementById('loginPin').value='';document.getElementById('loginUser').value='';loginUserChanged();
+  initLoginScreen();
+  show('login');
 }
 function switchUser(){logout();toast('Signed out — next user can sign in');}
 function signOut(){if(confirm('Sign out now?'))logout();}
@@ -2675,6 +2677,10 @@ function userSave(){
       if(res.error || (res.data && res.data.error)){toast('Save failed: '+(res.error?res.error.message:res.data.error),true);return;}
       var beforeSnap=existing?{name:existing.name,level:existing.level,branches:existing.branches.slice()}:null;
       auditLog(existing?'User edited':'User created',(existing?'Edited user "':'Created '+lvl+' "')+name+'"'+(existing?'':' ('+branches.join(', ')+')'),beforeSnap,{name:name,level:lvl,branches:branches,perms:permsObj});
+      if(currentProfile && existing && existing.id===currentProfile.id){
+        currentProfile={id:currentProfile.id,name:name,level:lvl,branches:branches,perms:permsObj,access:accessObj,phone:phone};
+        currentPerms=userPerms(currentProfile);
+      }
       toast('User saved ✓');backToUserList();
     }).catch(function(){_resetBusy();toast('Network error — check your connection',true);});
   }).catch(function(){_resetBusy();toast('Network error — check your connection',true);});
