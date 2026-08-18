@@ -48,14 +48,17 @@ Deno.serve(async (req) => {
     function ownerEquivalentPerms(p: any) { return !!p && (!!p.users || !!p.audit) }
 
     if (action === 'create') {
-      const { name, password, level, branches, perms, access, phone } = body
+      const { name, password, level, branches, perms, access, phone, active } = body
       if (!name || !password || password.length < 3) return new Response(JSON.stringify({ error: 'Invalid input' }), { status: 400, headers: cors })
       if (!callerIsOwner && (level === 'Owner' || ownerEquivalentPerms(perms))) {
         return new Response(JSON.stringify({ error: 'Only an Owner can create an Owner account or grant Owner-level permissions' }), { status: 403, headers: cors })
       }
+      if (level === 'Owner' && active === false) {
+        return new Response(JSON.stringify({ error: 'Owner accounts cannot be locked out' }), { status: 400, headers: cors })
+      }
       const { data: created, error: createErr } = await admin.auth.admin.createUser({ email: fakeEmail(name), password, email_confirm: true })
       if (createErr) return new Response(JSON.stringify({ error: createErr.message }), { status: 400, headers: cors })
-      const { error: profileErr } = await admin.from('profiles').insert({ id: created.user.id, name, level, branches, perms, access, phone })
+      const { error: profileErr } = await admin.from('profiles').insert({ id: created.user.id, name, level, branches, perms, access, phone, active: active !== false })
       if (profileErr) {
         const { error: rollbackErr } = await admin.auth.admin.deleteUser(created.user.id)
         if (rollbackErr) return new Response(JSON.stringify({ error: profileErr.message + ' (and cleanup also failed: ' + rollbackErr.message + ' - an orphaned login account may exist, contact support)' }), { status: 500, headers: cors })
@@ -65,17 +68,24 @@ Deno.serve(async (req) => {
     }
 
     if (action === 'update') {
-      const { id, name, level, branches, perms, access, phone, password } = body
+      const { id, name, level, branches, perms, access, phone, password, active } = body
       if (!id) return new Response(JSON.stringify({ error: 'Missing id' }), { status: 400, headers: cors })
       const { data: target } = await admin.from('profiles').select('level').eq('id', id).single()
       if (!callerIsOwner) {
         if (target && target.level === 'Owner') return new Response(JSON.stringify({ error: 'Only an Owner can edit an Owner account' }), { status: 403, headers: cors })
         if (level === 'Owner' || ownerEquivalentPerms(perms)) return new Response(JSON.stringify({ error: 'Only an Owner can grant Owner status or Owner-level permissions' }), { status: 403, headers: cors })
       }
+      // An Owner account can never be locked out through this function - same protective
+      // philosophy as "Cannot delete the Owner" below. Locking out the only Owner would leave
+      // nobody able to sign in and undo it. If an Owner genuinely needs to be deactivated,
+      // change their level first as a separate, deliberate step.
+      if (active === false && ((target && target.level === 'Owner') || level === 'Owner')) {
+        return new Response(JSON.stringify({ error: 'Owner accounts cannot be locked out' }), { status: 400, headers: cors })
+      }
       // Profile fields first, password/email last: if the profile update fails, nothing has changed yet
       // (including no password/email change) - a clean "the save failed" rather than a partial mutation
       // the caller wasn't told about.
-      const { error: profileErr } = await admin.from('profiles').update({ name, level, branches, perms, access, phone }).eq('id', id)
+      const { error: profileErr } = await admin.from('profiles').update({ name, level, branches, perms, access, phone, active }).eq('id', id)
       if (profileErr) return new Response(JSON.stringify({ error: profileErr.message }), { status: 400, headers: cors })
       // The Auth login email IS derived from the name (fakeEmail(name)) - resync it every time so a
       // renamed account can still log in. Idempotent: if the name didn't change, this recomputes the

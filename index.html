@@ -28,6 +28,14 @@
   .userMenu.show{display:block;}
   .userMenu button{display:block;width:100%;text-align:left;background:none;border:none;padding:11px 12px;font-size:13px;font-weight:700;color:var(--navy);cursor:pointer;border-radius:8px;}
   .userMenu button:active{background:#EEF3F8;}
+  .fieldDD{width:100%;text-align:left;display:flex;justify-content:space-between;align-items:center;cursor:pointer;}
+  .fieldDD .arrow{color:var(--steel);font-weight:800;}
+  .fieldDDMenu{display:none;position:relative;background:var(--card);border:1.5px solid var(--line);border-radius:12px;box-shadow:0 8px 20px rgba(0,0,0,.18);padding:6px;margin-top:4px;max-height:280px;overflow-y:auto;z-index:40;}
+  .fieldDDMenu.show{display:block;}
+  .fieldDDMenu .grp{font-size:11px;font-weight:800;color:var(--steel);text-transform:uppercase;letter-spacing:.4px;padding:8px 10px 4px;}
+  .fieldDDMenu button{display:block;width:100%;text-align:left;background:none;border:none;padding:10px 12px;font-size:14px;font-weight:700;color:var(--navy);cursor:pointer;border-radius:8px;}
+  .fieldDDMenu button:active{background:var(--sel);}
+  .fieldDDMenu button.on{background:var(--sel);color:var(--steel);}
   .userMenu button.danger{color:var(--bad);}
   .wrap{padding:18px;} .greet{font-size:13px;color:var(--muted);margin:2px 0 14px;}
   #login{display:flex;flex-direction:column;min-height:calc(100vh - 66px);}
@@ -270,7 +278,11 @@
     <div class="adminRow">
       <div class="grow"><label class="mLabel" style="font-size:11px">Size</label>
         <input type="hidden" id="rgSize" value="">
-        <div id="rgSizeGrid" class="csizegrid" style="margin-top:4px"></div></div>
+        <button type="button" class="mField fieldDD" id="rgSizeField" onclick="toggleResidualSizeMenu(event)">
+          <span id="rgSizeFieldLabel" style="color:var(--muted)">Select size…</span><span class="arrow">▾</span>
+        </button>
+        <div id="rgSizeMenu" class="fieldDDMenu"></div>
+      </div>
     </div>
     <div class="adminRow">
       <div class="grow"><label class="mLabel" style="font-size:11px">Cyl scale (kg)</label>
@@ -524,6 +536,10 @@
   <label class="mLabel">Password</label>
   <input type="password" class="mField" id="uePw" placeholder="Set / change password">
   <div class="mNote" id="uePwNote" style="margin-top:4px;">Owner override: setting a password here replaces the user's password without needing their old one.</div>
+  <label style="display:flex;align-items:center;gap:8px;margin-top:14px;padding:10px;border:1.5px solid var(--line);border-radius:10px;background:#FFFBF2">
+    <input type="checkbox" id="ueLockout" style="width:18px;height:18px;flex:none">
+    <span style="font-size:13px"><b style="color:var(--navy)">Lock out this user</b><br><span style="font-weight:400;color:var(--muted)">Temporarily disable their login — keeps the account, history and permissions intact so they can be reactivated anytime. Not the same as deleting.</span></span>
+  </label>
   <label class="mLabel" style="margin-top:14px">Permissions <span style="font-weight:400;color:var(--muted)">(level sets defaults — tick to override)</span></label>
   <div id="uePerms" style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px"></div>
   <div class="mNote" style="margin-top:4px">Owner always keeps Manage users & View audit.</div>
@@ -1596,21 +1612,33 @@ function residualSetBranch(b){
   residualResetForm(); // switching branches starts a fresh cylinder entry - same as Faulty capture
   renderResidualCommitted();
 }
-// Tappable size grid (matches the .csize/.csizegrid pattern already used by Manifold/Refill/
-// Private's grid) instead of a native <select> with <optgroup> - much more consistent and
-// reliable to use on a phone than a two-level native dropdown. The actual selected value still
-// lives in the hidden #rgSize input, so residualAdd()/residualCalcUpdate() don't need to change.
+// Custom themed dropdown (.fieldDD/.fieldDDMenu - a reusable pattern, not Residual-specific)
+// instead of a native <select> with <optgroup>, which rendered inconsistently and looked
+// unstyled. Same click-to-open/click-outside-to-close behavior as the existing user menu
+// (see toggleUserMenu/closeUserMenu). The actual selected value still lives in the hidden
+// #rgSize input, so residualAdd()/residualCalcUpdate() don't need to change.
 function residualPopulateSize(){
-  var grid=document.getElementById('rgSizeGrid');if(!grid||grid.children.length)return;
-  grid.innerHTML=RESIDUAL_SIZES.map(function(g){
-    return '<div style="grid-column:1/-1;font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin:6px 0 2px">'+g.group+'</div>'+
-      g.items.map(function(s){return '<button type="button" class="csize" id="rgsz-'+s+'" onclick="residualPickSize(\''+s+'\')"><span class="sz">'+s+'</span></button>';}).join('');
+  var menu=document.getElementById('rgSizeMenu');if(!menu||menu.children.length)return;
+  menu.innerHTML=RESIDUAL_SIZES.map(function(g){
+    return '<div class="grp">'+g.group+'</div>'+
+      g.items.map(function(s){return '<button type="button" id="rgszm-'+s+'" onclick="residualPickSize(\''+s+'\')">'+s+'</button>';}).join('');
   }).join('');
 }
+function toggleResidualSizeMenu(ev){
+  if(ev)ev.stopPropagation();
+  document.getElementById('rgSizeMenu').classList.toggle('show');
+}
+function closeResidualSizeMenu(){document.getElementById('rgSizeMenu').classList.remove('show');}
+document.addEventListener('click',function(ev){
+  var menu=document.getElementById('rgSizeMenu');
+  if(menu && menu.classList.contains('show') && !ev.target.closest('#rgSizeField') && !menu.contains(ev.target))closeResidualSizeMenu();
+});
 function residualPickSize(s){
   document.getElementById('rgSize').value=s;
-  [].slice.call(document.querySelectorAll('#rgSizeGrid .csize')).forEach(function(b){b.classList.remove('done');});
-  var btn=document.getElementById('rgsz-'+s);if(btn)btn.classList.add('done');
+  var lbl=document.getElementById('rgSizeFieldLabel');lbl.textContent=s;lbl.style.color='var(--navy)';
+  [].slice.call(document.querySelectorAll('#rgSizeMenu button')).forEach(function(b){b.classList.remove('on');});
+  var btn=document.getElementById('rgszm-'+s);if(btn)btn.classList.add('on');
+  closeResidualSizeMenu();
   residualCalcUpdate();
 }
 function residualBrandChanged(){
@@ -1633,7 +1661,8 @@ function residualResetForm(){
   residualPopulateBrand(); // also rebuilds Brand's options for the (possibly new) branch
   document.getElementById('rgBrandOther').value='';
   document.getElementById('rgSize').value='';
-  [].slice.call(document.querySelectorAll('#rgSizeGrid .csize')).forEach(function(b){b.classList.remove('done');});
+  var rgLbl=document.getElementById('rgSizeFieldLabel');rgLbl.textContent='Select size…';rgLbl.style.color='var(--muted)';
+  [].slice.call(document.querySelectorAll('#rgSizeMenu button')).forEach(function(b){b.classList.remove('on');});
   document.getElementById('rgScale').value='';document.getElementById('rgTare').value='';document.getElementById('rgNote').value='';
   rgPhoto=[];rgRenderPhotoThumbs();
   residualBrandChanged();residualCalcUpdate();
@@ -2405,6 +2434,16 @@ function doLogin(){
   }).catch(function(){loginBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}toast('Network error — check your connection',true);});
 }
 function _finishLogin(u,b){
+  // Checked here (not just filtered out of the login_names picker) because this function is
+  // also the shared path for _bootApp()'s session auto-resume on reload - without this check,
+  // someone already signed in on a device would keep their session even after being locked
+  // out, until they happened to sign out and back in.
+  if(u.active===false){
+    sb.auth.signOut();
+    toast('This account has been locked out — contact your Owner or Manager',true);
+    initLoginScreen();show('login');
+    return;
+  }
   currentProfile=u;
   operator=u.name;role=u.level;branch=b;today=computeToday();currentPerms=userPerms(u);
   document.getElementById('dateVal').textContent=today+(getDateOffset()?'  (TEST +'+getDateOffset()+'d)':'  (today only)');
@@ -2601,9 +2640,10 @@ function renderUserList(){
     if(res.error){toast('Could not load users: '+res.error.message,true);return;}
     _userListCache=res.data||[];
     document.getElementById('userList').innerHTML=_userListCache.map(function(u){
-      return '<div class="brandCard" style="cursor:pointer" onclick="userEdit(\''+u.id+'\')">'+
+      var lockedTag=(u.active===false)?' <span style="color:var(--bad);font-weight:800">🔒 Locked out</span>':'';
+      return '<div class="brandCard" style="cursor:pointer'+(u.active===false?';opacity:.6':'')+'" onclick="userEdit(\''+u.id+'\')">'+
         '<div style="display:flex;justify-content:space-between;align-items:center">'+
-        '<div><b style="color:var(--navy);font-size:15px">'+u.name+'</b><div style="font-size:12px;color:var(--muted)">'+u.level+' · '+(u.branches||[]).join(', ')+'</div></div>'+
+        '<div><b style="color:var(--navy);font-size:15px">'+u.name+'</b><div style="font-size:12px;color:var(--muted)">'+u.level+' · '+(u.branches||[]).join(', ')+lockedTag+'</div></div>'+
         '<span style="color:var(--steel);font-weight:800">edit ›</span></div></div>';
     }).join('');
   }).catch(function(){toast('Network error loading users — check your connection',true);});
@@ -2631,6 +2671,7 @@ function userEdit(id){
   document.getElementById('ueLevel').value=u?u.level:'Operator';
   document.getElementById('uePw').value='';
   document.getElementById('uePw').placeholder=u?'Leave blank to keep current':'Set password';
+  document.getElementById('ueLockout').checked=!!(u&&u.active===false);
   ueLevelChanged();
   // prefill branches
   if(u){
@@ -2711,6 +2752,8 @@ function userSave(){
   [].slice.call(document.querySelectorAll('.ueAccSec')).forEach(function(c){accessObj.sections[c.getAttribute('data-sec')]=c.checked?1:0;});
   [].slice.call(document.querySelectorAll('.ueAccItem')).forEach(function(c){var s=c.getAttribute('data-sec');accessObj.items[s]=accessObj.items[s]||{};accessObj.items[s][c.getAttribute('data-item')]=c.checked?1:0;});
   if(lvl==='Owner'){permsObj.users=1;permsObj.audit=1;} // safety
+  var active=!document.getElementById('ueLockout').checked;
+  if(lvl==='Owner' && !active){toast('Owner accounts cannot be locked out',true);return;}
   var existing=ueEditingName?_userListFind(ueEditingName):null;
   if(_userListCache.some(function(u){return u.name===name && u.id!==ueEditingName;})){toast('A user with that name exists',true);return;}
   if(!existing && (!pw || pw.length<3)){toast('Set a password (min 3 chars)',true);return;}
@@ -2724,15 +2767,15 @@ function userSave(){
     if(!session){_resetBusy();toast('Session expired — please sign in again',true);return;}
     var token=session.access_token;
     var payload=existing
-      ? {action:'update',id:existing.id,name:name,level:lvl,branches:branches,perms:permsObj,access:accessObj,phone:phone,password:pw||undefined}
-      : {action:'create',name:name,password:pw,level:lvl,branches:branches,perms:permsObj,access:accessObj,phone:phone};
+      ? {action:'update',id:existing.id,name:name,level:lvl,branches:branches,perms:permsObj,access:accessObj,phone:phone,password:pw||undefined,active:active}
+      : {action:'create',name:name,password:pw,level:lvl,branches:branches,perms:permsObj,access:accessObj,phone:phone,active:active};
     _callManageUser(payload, token).then(function(res){
       _resetBusy();
       if(res.error || (res.data && res.data.error)){toast('Save failed: '+(res.error?res.error.message:res.data.error),true);return;}
       var beforeSnap=existing?{name:existing.name,level:existing.level,branches:existing.branches.slice()}:null;
       auditLog(existing?'User edited':'User created',(existing?'Edited user "':'Created '+lvl+' "')+name+'"'+(existing?'':' ('+branches.join(', ')+')'),beforeSnap,{name:name,level:lvl,branches:branches,perms:permsObj});
       if(currentProfile && existing && existing.id===currentProfile.id){
-        currentProfile={id:currentProfile.id,name:name,level:lvl,branches:branches,perms:permsObj,access:accessObj,phone:phone};
+        currentProfile={id:currentProfile.id,name:name,level:lvl,branches:branches,perms:permsObj,access:accessObj,phone:phone,active:active};
         currentPerms=userPerms(currentProfile);
       }
       toast('User saved ✓');backToUserList();
@@ -2751,17 +2794,25 @@ function userDelete(){
   userDeleteBusy=true;if(btn){btn.disabled=true;btn.style.opacity='.6';}
   function _resetBusy(){userDeleteBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}}
 
-  sb.auth.getSession().then(function(sres){
-    var session=sres.data && sres.data.session;
-    if(!session){_resetBusy();toast('Session expired — please sign in again',true);return;}
-    var token=session.access_token;
-    _callManageUser({action:'delete',id:ueEditingName}, token).then(function(res){
-      _resetBusy();
-      if(res.error || (res.data && res.data.error)){toast('Delete failed: '+(res.error?res.error.message:res.data.error),true);return;}
-      auditLog('User deleted','Deleted user "'+(u?u.name:'')+'"',u?{name:u.name,level:u.level,branches:u.branches}:null,null);
-      toast('User deleted');backToUserList();
+  // Deleting is irreversible, so beyond the confirm() above it also requires the CURRENT
+  // operator to re-enter their own password here, even though they already unlocked Manage
+  // Users once to get to this screen - a fresh check specifically at the moment of deletion,
+  // so leaving Manage Users open/unattended doesn't let anyone who picks up the device delete
+  // an account with no further check.
+  _selfReauth('Confirm password to delete "'+(u?u.name:'')+'"').then(function(me){
+    if(!me){_resetBusy();toast('Password required to delete a user',true);return;}
+    sb.auth.getSession().then(function(sres){
+      var session=sres.data && sres.data.session;
+      if(!session){_resetBusy();toast('Session expired — please sign in again',true);return;}
+      var token=session.access_token;
+      _callManageUser({action:'delete',id:ueEditingName}, token).then(function(res){
+        _resetBusy();
+        if(res.error || (res.data && res.data.error)){toast('Delete failed: '+(res.error?res.error.message:res.data.error),true);return;}
+        auditLog('User deleted',me.name+' deleted user "'+(u?u.name:'')+'"',u?{name:u.name,level:u.level,branches:u.branches}:null,null);
+        toast('User deleted');backToUserList();
+      }).catch(function(){_resetBusy();toast('Network error — check your connection',true);});
     }).catch(function(){_resetBusy();toast('Network error — check your connection',true);});
-  }).catch(function(){_resetBusy();toast('Network error — check your connection',true);});
+  });
 }
 
 
