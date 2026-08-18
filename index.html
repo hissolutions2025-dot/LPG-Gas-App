@@ -220,7 +220,7 @@
   <div class="wrap" style="width:100%">
     <!-- NORMAL LOGIN -->
     <div class="loginCard" id="loginCard">
-      <span class="demoTag">DEMO LOGIN · v53</span><h2>Sign in</h2>
+      <h2>Sign in</h2>
       <label class="mLabel">User</label>
       <select class="mField" id="loginUser" onchange="loginUserChanged()"><option value="">Select your name…</option></select>
       <label class="mLabel">Password</label>
@@ -230,7 +230,6 @@
       <div class="mNote" id="branchNote" style="margin-top:4px;"></div>
       <button class="saveBtn" id="loginSubmitBtn" onclick="doLogin()" style="margin-top:14px;">Sign in</button>
       <button class="sigClear" onclick="forgotPw()" style="margin-top:10px;width:100%">Forgot password?</button>
-      <div class="demoNote">Demo only — passwords stored on this device in plain text. Not real security.</div>
     </div>
   </div>
 </div>
@@ -251,18 +250,6 @@
       <button class="tile t1" id="tileUsers" onclick="openUsers()" style="display:none"><div class="ic">&#128100;</div><h3>Manage Users</h3><p>Owner: users, levels &amp; branches</p></button>
       <button class="tile t5" id="tileAudit" onclick="openAudit()" style="display:none"><div class="ic">&#128220;</div><h3>Audit Log</h3><p>Owner only — who did what, when</p></button>
       <button class="tile t2" id="tileAdmin" onclick="openAdmin()" style="display:none"><div class="ic">&#9881;</div><h3>Admin</h3><p>Seal register &amp; suppliers</p></button>
-    </div>
-    <div style="margin-top:18px;display:flex;flex-direction:column;gap:10px;">
-      <div id="testDateBox" style="display:none;margin-top:8px;border:1.5px dashed var(--amber);border-radius:12px;padding:12px;background:#FFFBF2">
-        <div style="font-size:11px;font-weight:800;color:#B5533B;text-transform:uppercase;letter-spacing:.4px">⚙ Test date (demo only)</div>
-        <div style="font-size:11px;color:var(--muted);margin:4px 0 8px">Advance the working date to test day-over-day carry-forward. Remove before real use.</div>
-        <div style="display:flex;gap:8px;align-items:center">
-          <button class="sigClear" onclick="shiftTestDate(-1)">‹ Day</button>
-          <div id="testDateLabel" style="flex:1;text-align:center;font-weight:800;color:var(--navy);font-size:13px"></div>
-          <button class="sigClear" onclick="shiftTestDate(1)">Day ›</button>
-        </div>
-        <button class="sigClear" style="width:100%;margin-top:8px" onclick="resetTestDate()">Reset to real today</button>
-      </div>
     </div>
   </div>
 </div>
