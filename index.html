@@ -2457,6 +2457,7 @@ function idleUnlock(){
   if(!idleLockActive)return;
   var pw=document.getElementById('idleLockPw').value;
   _verifyPersonPassword(operator, pw, null).then(function(u){
+    if(!idleLockActive)return; // lock was already dismissed some other way (e.g. sign-out) while this was in flight - don't act on a stale result
     if(!u){toast('Wrong password',true);return;}
     idleLockActive=false;
     document.getElementById('idleLockOverlay').style.display='none';
