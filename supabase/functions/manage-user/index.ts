@@ -30,8 +30,8 @@ Deno.serve(async (req) => {
     // fixes Auth verification for the new key format, this can be reverted to the env var.
     const legacyAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp5eW1ua3ljaGhnbGlzcWp2a3FzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY5OTI2ODcsImV4cCI6MjEwMjU2ODY4N30.bkmpU3v4aRw_9rR4CWNAYYoUq-IOD8IAC0BZnwga-ko'
 
-    const callerClient = createClient(supabaseUrl, legacyAnonKey, { global: { headers: { Authorization: 'Bearer ' + callerToken } } })
-    const { data: { user } } = await callerClient.auth.getUser()
+    const callerClient = createClient(supabaseUrl, legacyAnonKey)
+    const { data: { user } } = await callerClient.auth.getUser(callerToken)
     if (!user) return new Response(JSON.stringify({ error: 'Not signed in' }), { status: 401, headers: cors })
 
     const { data: callerProfile } = await admin.from('profiles').select('level,perms').eq('id', user.id).single()
