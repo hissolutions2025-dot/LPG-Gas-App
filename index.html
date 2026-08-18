@@ -269,7 +269,8 @@
     </div>
     <div class="adminRow">
       <div class="grow"><label class="mLabel" style="font-size:11px">Size</label>
-        <select class="mField" id="rgSize" onchange="residualCalcUpdate()"></select></div>
+        <input type="hidden" id="rgSize" value="">
+        <div id="rgSizeGrid" class="csizegrid" style="margin-top:4px"></div></div>
     </div>
     <div class="adminRow">
       <div class="grow"><label class="mLabel" style="font-size:11px">Cyl scale (kg)</label>
@@ -287,8 +288,13 @@
     <button class="saveBtn" style="margin-top:10px" onclick="residualAdd()">+ Add cylinder to list</button>
   </div>
 
+  <div class="histSection" id="residualCommittedWrap" style="display:none">
+    <h4>✓ Already logged today</h4>
+    <div id="residualCommittedBox"></div>
+  </div>
+
   <div class="histSection">
-    <h4>Cylinders to submit</h4>
+    <h4>Review before submitting</h4>
     <div id="residualListBox"><div class="histEmpty" style="text-align:center;padding:16px">No cylinders added yet.</div></div>
     <div id="residualTotal" style="font-size:12px;color:var(--navy);font-weight:700;margin:8px 0">Total residual: 0.0kg (0 cylinders)</div>
     <button class="saveBtn" id="residualSubmitBtn" onclick="residualSubmit()">Submit residual gas (0)</button>
@@ -885,7 +891,7 @@ const MOVES=['Received-Full','Returned-Empty','Faulty-Full'];
 const CYLS=['Cyl 1','Cyl 2','Cyl 3','Cyl 4'];
 const SIZEKG={'5kg':5,'9kg':9,'12kg':12,'14kg':14,'19kg':19,'14kg-FLT':14,'19kg-FLT':19,'8kg-Prop':8,'18kg-Prop':18};
 
-let store={count:[],manifold:[],refill:[],private:[],received:[]};
+let store={count:[],manifold:[],refill:[],private:[],received:[],residual:[]};
 let operator=null, branch=null, role=null, today='';
 var currentProfile=null;
 // ===== TEST-ONLY date control (demo aid; remove for production) =====
@@ -1580,6 +1586,7 @@ function openResidual(){
   residualPopulateBrand();
   residualCalcUpdate();
   renderResidualList();
+  renderResidualCommitted();
   show('residualView');window.scrollTo(0,0);
 }
 function residualSetBranch(b){
@@ -1587,12 +1594,24 @@ function residualSetBranch(b){
   if(b===residualBranch)return; // already on this branch - don't wipe an in-progress entry for nothing
   residualBranch=b;applyBranchLock('rgbr-',b);
   residualResetForm(); // switching branches starts a fresh cylinder entry - same as Faulty capture
+  renderResidualCommitted();
 }
+// Tappable size grid (matches the .csize/.csizegrid pattern already used by Manifold/Refill/
+// Private's grid) instead of a native <select> with <optgroup> - much more consistent and
+// reliable to use on a phone than a two-level native dropdown. The actual selected value still
+// lives in the hidden #rgSize input, so residualAdd()/residualCalcUpdate() don't need to change.
 function residualPopulateSize(){
-  var sel=document.getElementById('rgSize');if(!sel||sel.options.length)return;
-  sel.innerHTML='<option value="">Select…</option>'+RESIDUAL_SIZES.map(function(g){
-    return '<optgroup label="'+g.group+'">'+g.items.map(function(s){return '<option value="'+s+'">'+s+'</option>';}).join('')+'</optgroup>';
+  var grid=document.getElementById('rgSizeGrid');if(!grid||grid.children.length)return;
+  grid.innerHTML=RESIDUAL_SIZES.map(function(g){
+    return '<div style="grid-column:1/-1;font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin:6px 0 2px">'+g.group+'</div>'+
+      g.items.map(function(s){return '<button type="button" class="csize" id="rgsz-'+s+'" onclick="residualPickSize(\''+s+'\')"><span class="sz">'+s+'</span></button>';}).join('');
   }).join('');
+}
+function residualPickSize(s){
+  document.getElementById('rgSize').value=s;
+  [].slice.call(document.querySelectorAll('#rgSizeGrid .csize')).forEach(function(b){b.classList.remove('done');});
+  var btn=document.getElementById('rgsz-'+s);if(btn)btn.classList.add('done');
+  residualCalcUpdate();
 }
 function residualBrandChanged(){
   var v=document.getElementById('rgBrand').value;
@@ -1613,7 +1632,8 @@ function residualPopulateBrand(){
 function residualResetForm(){
   residualPopulateBrand(); // also rebuilds Brand's options for the (possibly new) branch
   document.getElementById('rgBrandOther').value='';
-  var sizeEl=document.getElementById('rgSize');if(sizeEl&&sizeEl.options.length)sizeEl.selectedIndex=0;
+  document.getElementById('rgSize').value='';
+  [].slice.call(document.querySelectorAll('#rgSizeGrid .csize')).forEach(function(b){b.classList.remove('done');});
   document.getElementById('rgScale').value='';document.getElementById('rgTare').value='';document.getElementById('rgNote').value='';
   rgPhoto=[];rgRenderPhotoThumbs();
   residualBrandChanged();residualCalcUpdate();
@@ -1683,6 +1703,27 @@ function renderResidualList(){
   var subBtn=document.getElementById('residualSubmitBtn');
   if(subBtn)subBtn.textContent='Submit residual gas ('+residualList.length+')';
 }
+// Rows already successfully submitted today for this branch, kept locally (store.residual,
+// persisted the same way as Count/Refill/Received) purely so the operator can see what they've
+// already logged - this app has no way to read back what's actually on the backend sheet, so
+// this is "what this device sent today", not a live server-truth reconciliation.
+function residualCommittedToday(br){
+  return (store.residual||[]).filter(function(r){return r.Branch===br && (r._date||today)===today;});
+}
+function renderResidualCommitted(){
+  var wrap=document.getElementById('residualCommittedWrap');
+  var box=document.getElementById('residualCommittedBox');
+  if(!wrap||!box)return;
+  var rows=residualCommittedToday(residualBranch||branch);
+  if(!rows.length){wrap.style.display='none';box.innerHTML='';return;}
+  wrap.style.display='block';
+  var total=rows.reduce(function(s,r){return s+(r.Residual||0);},0);
+  box.innerHTML=rows.map(function(r){
+    return '<div class="brandCard" style="margin-bottom:6px;opacity:.85">'+
+      '<b style="color:var(--ok)">✓ '+r.Brand+' '+r.Size+'</b>'+
+      '<div style="font-size:11px;color:var(--muted)">'+r.GasType+' · Residual '+r.Residual.toFixed(1)+'kg'+(r.Note?(' · '+r.Note):'')+'</div></div>';
+  }).join('')+'<div style="font-size:12px;color:var(--navy);font-weight:700;margin-top:6px">Logged today: '+total.toFixed(1)+'kg ('+rows.length+' cylinder'+(rows.length===1?'':'s')+')</div>';
+}
 var residualSubmitBusy=false;
 async function residualSubmit(){
   // Reentrancy guard - same class of bug as rCommit/capCommit/faultySubmit: fire-and-forget
@@ -1711,8 +1752,18 @@ async function residualSubmit(){
     var res=await apiPost('residualLog',{rows:rows});
     if(!res||!res.ok){toast((res&&res.msg)||'Could not submit residual gas',true);return;}
     toast('Residual gas submitted ('+(res.wrote!==undefined?res.wrote:rows.length)+')');
+    // Keep a local, persisted copy of what was just sent so the operator can see it under
+    // "Already logged today" - this app has no way to read the backend sheet back, so this is
+    // "what this device sent today", cleared naturally the same way every other section's
+    // working-day data is (new day/branch working-store key).
+    var committedRows=residualList.map(function(r){
+      return {Branch:r.Branch,Brand:r.Brand,Size:r.Size,GasType:r.GasType,CylScale:r.CylScale,CylTare:r.CylTare,Residual:r.Residual,Note:r.Note,_operator:operator,_date:today,_committed:true};
+    });
+    store.residual=(store.residual||[]).concat(committedRows);
+    saveWorkingStore();
     residualList=[];
     renderResidualList();
+    renderResidualCommitted();
   }catch(e){
     toast('Network error — check your connection',true);
   }finally{
@@ -2757,26 +2808,17 @@ function openCount(){
   if(!canUseSection(branch||'Helderberg','count')){toast(sectionActive(branch||'Helderberg','count')?'Stock Count is not enabled for your user':'Stock Count is deactivated for '+(branch||'this branch'),true);return;}
   requireEdit().then(function(ok){
     if(!ok)return;
+    // TEMPORARY: the two password checks below (additional same-day count, no-previous-close) are
+    // disabled per explicit request - re-enable once a proper day-close/previous-day workflow is
+    // set up. Still logged to the audit trail so there's a record, just no password prompt.
     if(loadSavedDay(today,branch) && !store._extraCountAuth){
-      _borrowAuth('Owner','A stock count was already closed for '+branch+' today.',function(p){return p.level==='Owner';}).then(function(owner){
-        if(!owner){toast('Owner password required for an additional count',true);return;}
-        store._extraCountAuth=true;
-        auditLog('Additional count authorised','Owner authorised a second same-day count for '+branch);
-        toast('Additional count unlocked \u2713');
-        openCount();
-      });
-      return;
+      store._extraCountAuth=true;
+      auditLog('Additional count (no auth required)','Second same-day count for '+branch+' - password check temporarily disabled');
     }
     cBranch=branch||'Helderberg';
     if(!cHasPrevClose(cBranch) && !store._noPrevAuth){
-      _borrowAuth('Manager or Owner','No previous day close exists for '+cBranch+' to check the opening count against.',function(p){return p.level==='Manager'||p.level==='Owner';}).then(function(auth){
-        if(!auth){toast('Manager or Owner password required to proceed',true);return;}
-        store._noPrevAuth=true;
-        auditLog('Count authorised (no prev close)',auth.name+' authorised counting with no previous close for '+cBranch);
-        toast('Count authorised \u2713');
-        openCount();
-      });
-      return;
+      store._noPrevAuth=true;
+      auditLog('Count started (no auth required)','No previous day close for '+cBranch+' - password check temporarily disabled');
     }
     applyBranchLock('cbr-',cBranch);
     document.getElementById('hTitle').textContent='Stock Count';
@@ -4879,8 +4921,8 @@ function saveWorkingStore(){
     if(!today||!branch)return;
     // split store by branch: save only THIS branch's rows for the working key
     var slice={};
-    ['count','manifold','refill','private','received'].forEach(function(k){
-      slice[k]=(store[k]||[]).filter(function(r){return !r.branch||r.branch===branch;});
+    ['count','manifold','refill','private','received','residual'].forEach(function(k){
+      slice[k]=(store[k]||[]).filter(function(r){return !r.branch&&!r.Branch||r.branch===branch||r.Branch===branch;});
     });
     slice._startedBy=store._startedBy||operator;slice._startedAt=store._startedAt||nowStamp();
     localStorage.setItem(workKey(today,branch),JSON.stringify(slice));
@@ -4893,8 +4935,8 @@ function loadWorkingStore(){
     if(!raw)return;
     var slice=JSON.parse(raw);
     // merge saved branch rows back into store (replace this branch's rows)
-    ['count','manifold','refill','private','received'].forEach(function(k){
-      var others=(store[k]||[]).filter(function(r){return r.branch&&r.branch!==branch;});
+    ['count','manifold','refill','private','received','residual'].forEach(function(k){
+      var others=(store[k]||[]).filter(function(r){return (r.branch&&r.branch!==branch)||(r.Branch&&r.Branch!==branch);});
       store[k]=others.concat(slice[k]||[]);
     });
     store._startedBy=slice._startedBy;store._startedAt=slice._startedAt;
