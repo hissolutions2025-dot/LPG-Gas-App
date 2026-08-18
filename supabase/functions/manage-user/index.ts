@@ -21,7 +21,10 @@ Deno.serve(async (req) => {
     // weakening the check - it's the same verification, just carried differently.
     const callerToken = body.callerToken
     if (!callerToken) return new Response(JSON.stringify({ error: 'Missing auth' }), { status: 401, headers: cors })
-    const { data: { user } } = await admin.auth.getUser(callerToken)
+    console.log('DEBUG callerToken length:', callerToken.length, 'prefix:', callerToken.slice(0, 20))
+    const getUserResult = await admin.auth.getUser(callerToken)
+    console.log('DEBUG getUser result:', JSON.stringify({ hasUser: !!getUserResult.data?.user, error: getUserResult.error ? getUserResult.error.message : null }))
+    const user = getUserResult.data?.user
     if (!user) return new Response(JSON.stringify({ error: 'Not signed in' }), { status: 401, headers: cors })
 
     const { data: callerProfile } = await admin.from('profiles').select('level,perms').eq('id', user.id).single()
