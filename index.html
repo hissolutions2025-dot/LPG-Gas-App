@@ -198,6 +198,7 @@
   .calLegend{font-size:11px;color:var(--muted);margin-top:10px;display:flex;align-items:center;gap:6px;}
   .calLegend .dot{width:12px;height:12px;border-radius:3px;background:var(--sel);border:1.5px solid var(--steel);display:inline-block;}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
 <header>
@@ -217,22 +218,9 @@
 <!-- LOGIN -->
 <div id="login" class="view active">
   <div class="wrap" style="width:100%">
-    <!-- FIRST-RUN OWNER SETUP -->
-    <div class="loginCard" id="setupCard" style="display:none">
-      <span class="demoTag">FIRST-TIME SETUP</span><h2>Create Owner account</h2>
-      <div class="demoNote" style="text-align:left;margin:0 0 14px">No users exist yet. Set up the Owner — the top-level account that manages all users and branches.</div>
-      <label class="mLabel">Owner name</label>
-      <input type="text" class="mField" id="setupName" placeholder="e.g. Fred">
-      <label class="mLabel">Password</label>
-      <input type="password" class="mField" id="setupPw" placeholder="Choose a password">
-      <label class="mLabel">Confirm password</label>
-      <input type="password" class="mField" id="setupPw2" placeholder="Re-enter password">
-      <button class="saveBtn" onclick="createOwner()" style="margin-top:14px;">Create Owner &amp; continue</button>
-      <div class="demoNote">Demo only — passwords are stored on this device in plain text, not encrypted. Real accounts need a secure backend.</div>
-    </div>
     <!-- NORMAL LOGIN -->
     <div class="loginCard" id="loginCard">
-      <span class="demoTag">DEMO LOGIN · v53/span><h2>Sign in</h2>
+      <span class="demoTag">DEMO LOGIN · v53</span><h2>Sign in</h2>
       <label class="mLabel">User</label>
       <select class="mField" id="loginUser" onchange="loginUserChanged()"><option value="">Select your name…</option></select>
       <label class="mLabel">Password</label>
@@ -240,7 +228,7 @@
       <label class="mLabel">Branch</label>
       <select class="mField" id="loginBranch"><option value="">Select name first…</option></select>
       <div class="mNote" id="branchNote" style="margin-top:4px;"></div>
-      <button class="saveBtn" onclick="doLogin()" style="margin-top:14px;">Sign in</button>
+      <button class="saveBtn" id="loginSubmitBtn" onclick="doLogin()" style="margin-top:14px;">Sign in</button>
       <button class="sigClear" onclick="forgotPw()" style="margin-top:10px;width:100%">Forgot password?</button>
       <div class="demoNote">Demo only — passwords stored on this device in plain text. Not real security.</div>
     </div>
@@ -502,7 +490,7 @@
     <div class="detBanner full" style="margin-bottom:14px"><div class="big">Manage Users</div><div class="small">Owner access only</div></div>
     <label class="mLabel">Enter your Owner password to open</label>
     <input type="password" class="mField" id="usersPw" placeholder="Owner password">
-    <button class="saveBtn" onclick="usersUnlock()" style="margin-top:12px">Unlock user management</button>
+    <button class="saveBtn" id="usersUnlockBtn" onclick="usersUnlock()" style="margin-top:12px">Unlock user management</button>
   </div>
   <!-- user list (after unlock) -->
   <div id="usersPanel" style="display:none">
@@ -550,7 +538,7 @@
   <div id="ueAccess" style="margin-top:4px"></div>
   <div class="cFooter" style="position:static;box-shadow:none;border:none;padding:16px 0 0;margin-top:10px">
     <button class="cbGhost" onclick="backToUserList()">Cancel</button>
-    <button class="cbPrimary" onclick="userSave()">Save user</button>
+    <button class="cbPrimary" id="ueSaveBtn" onclick="userSave()">Save user</button>
   </div>
   <button class="sigClear" id="ueDeleteBtn" onclick="userDelete()" style="width:100%;margin-top:8px;background:#FBE9E7;color:var(--bad);border-color:var(--bad);display:none">Delete this user</button>
 </div></div>
@@ -852,6 +840,39 @@
 // ===== FEATURE FLAGS (dormant until switched on) =====
 // Flip to true to activate. Backend (Apps Script) handler is deployed but idle until then.
 var FEATURES={ share:false, driveUpload:false };
+var SUPABASE_URL = 'https://zyymnkychhglisqjvkqs.supabase.co';
+var SUPABASE_ANON_KEY = 'sb_publishable_Fl1QFiNogBHFQ7cBIpd8Qw_jgZR2EkD';
+var sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+function _fakeEmail(name){return name.toLowerCase().replace(/[^a-z0-9]/g,'')+'@gassales.local';}
+function _verifyPersonPassword(name, password, filterFn){
+  if(!name || !password) return Promise.resolve(null);
+  var tmp = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {auth:{persistSession:false, autoRefreshToken:false}});
+  var email = _fakeEmail(name);
+  return tmp.auth.signInWithPassword({email:email, password:password}).then(function(res){
+    if(res.error) return null;
+    return sb.from('profiles').select('*').eq('id',res.data.user.id).single().then(function(pres){
+      tmp.auth.signOut();
+      if(pres.error || !pres.data) return null;
+      if(filterFn && !filterFn(pres.data)) return null;
+      return pres.data;
+    });
+  }).catch(function(){
+    toast('Network error — check your connection',true);
+    return null;
+  });
+}
+function _selfReauth(actionLabel){
+  var pw=prompt(actionLabel+'\n\nEnter YOUR password to authorise:');
+  if(pw===null)return Promise.resolve(null);
+  return _verifyPersonPassword(operator, pw, null);
+}
+function _borrowAuth(roleHint, actionLabel, filterFn){
+  var name=prompt(actionLabel+'\n\nEnter the '+roleHint+"'s name:");
+  if(name===null)return Promise.resolve(null);
+  var pw=prompt('Enter '+name+"'s password:");
+  if(pw===null)return Promise.resolve(null);
+  return _verifyPersonPassword(name, pw, filterFn);
+}
 const BRANDS=['Afrox','Oryx','Easigas','Totalgas','Afrigas','Other'];
 const ALLSIZES=['5kg','9kg','12kg','14kg','19kg','48kg-SV','14kg-FLT','19kg-FLT','48kg-DV','8kg-Prop','18kg-Prop','45kg-Prop-SV','45kg-Prop-DV'];
 const FILLSIZES=['5kg','9kg','12kg','14kg','19kg','14kg-FLT','19kg-FLT','8kg-Prop','18kg-Prop'];
@@ -863,6 +884,7 @@ const SIZEKG={'5kg':5,'9kg':9,'12kg':12,'14kg':14,'19kg':19,'14kg-FLT':14,'19kg-
 
 let store={count:[],manifold:[],refill:[],private:[],received:[]};
 let operator=null, branch=null, role=null, today='';
+var currentProfile=null;
 // ===== TEST-ONLY date control (demo aid; remove for production) =====
 function getDateOffset(){try{return parseInt(localStorage.getItem('gs_test_offset')||'0',10)||0;}catch(e){return 0;}}
 function setDateOffset(n){try{localStorage.setItem('gs_test_offset',String(n));}catch(e){}}
@@ -1038,11 +1060,12 @@ function adminTab(t){
   // password gate per tab — ALWAYS ask, every tap (sensitive area)
   var permKey=ADMIN_TAB_PERM[t];
   if(permKey && !(role==='Owner'||perm(permKey))){toast('You do not have rights for '+ADMIN_TAB_NAME[t],true);return;}
-  var me=findUser(operator);
   askPassword('Unlock '+ADMIN_TAB_NAME[t], 'Enter your password to open '+ADMIN_TAB_NAME[t]+':').then(function(pw){
     if(pw===null)return;
-    if(!me||pw!==me.pw){toast('Wrong password',true);return;}
-    _adminTabShow(t);
+    _verifyPersonPassword(operator, pw, null).then(function(me){
+      if(!me){toast('Wrong password',true);return;}
+      _adminTabShow(t);
+    });
   });
 }
 function _adminTabShow(t){
@@ -1069,7 +1092,7 @@ function _adminTabShow(t){
   if(t==='counttimes')loadCountCutoffUI();
 }
 function adminSetBranch(b){
-  if(role==='Manager' && (findUser(operator).branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
+  if(role==='Manager' && (_curUser().branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
   adminBranch=b;applyBranchLock('asbr-',b);renderRolls();
 }
 function fillBrandPicker(){
@@ -1082,30 +1105,35 @@ function nrPreviewUpdate(){
   if(e>=s&&s>0)el.textContent='Roll of '+(e-s+1)+' seals ('+s+'\u2013'+e+').';
   else el.textContent='Enter a valid range (end \u2265 start).';
 }
+var createRollBusy=false;
 function createRoll(){
+  if(createRollBusy)return;
   var brand=document.getElementById('nrBrand').value;
   var s=num(document.getElementById('nrStart').value), e=num(document.getElementById('nrEnd').value);
   var warn=num(document.getElementById('nrWarn').value)||DEFAULT_SEAL_WARN;
   if(!(s>0)||!(e>=s)){toast('Enter a valid start/end range',true);return;}
   var willQueue=!!activeRoll(adminBranch);
   var summ='Create '+(willQueue?'and QUEUE':'and ACTIVATE')+' this roll?\n\n'+brand+' \u00b7 '+adminBranch+'\nSeals '+s+'\u2013'+e+' ('+(e-s+1)+' total)\nWarn at '+warn+' left'+(willQueue?'\n\n(A roll is already active \u2014 this one will queue behind it.)':'');
-  var auth=authGate('seal_create', summ);
-  if(!auth)return;
-  // overlap check against existing rolls for this branch+brand
-  var rolls=sealsLoad();
-  var clash=rolls.some(function(r){return r.branch===adminBranch&&r.brand===brand&&r.status!=='Closed'&&r.status!=='Depleted'&&!(e<r.start||s>r.end);});
-  if(clash){toast('Range overlaps an existing active/queued roll for this brand',true);return;}
-  var hasActive=!!activeRoll(adminBranch);
-  var roll={id:newRollId(),branch:adminBranch,brand:brand,start:s,end:e,warnAt:warn,
-    status:hasActive?'Queued':'Active',createdBy:operator,createdAt:nowStamp()};
-  // only one queued roll per branch allowed
-  if(roll.status==='Queued' && queuedRoll(adminBranch)){toast('A roll is already queued for this branch. Close/deplete the active one first.',true);return;}
-  rolls.push(roll);sealsSave(rolls);
-  auditLog('Seal roll created',adminBranch+' '+brand+' '+s+'\u2013'+e+' ('+roll.status+') by '+auth.name);
-  syncPushRoll(roll, roll.status==='Active'?'ACTIVATED':'QUEUED');
-  toast('Roll '+s+'\u2013'+e+' '+(roll.status==='Active'?'activated':'queued')+' \u2713');
-  document.getElementById('nrStart').value='';document.getElementById('nrEnd').value='';document.getElementById('nrWarn').value='';
-  renderRolls();
+  createRollBusy=true;
+  authGate('seal_create', summ).then(function(auth){
+    createRollBusy=false;
+    if(!auth)return;
+    // overlap check against existing rolls for this branch+brand
+    var rolls=sealsLoad();
+    var clash=rolls.some(function(r){return r.branch===adminBranch&&r.brand===brand&&r.status!=='Closed'&&r.status!=='Depleted'&&!(e<r.start||s>r.end);});
+    if(clash){toast('Range overlaps an existing active/queued roll for this brand',true);return;}
+    var hasActive=!!activeRoll(adminBranch);
+    var roll={id:newRollId(),branch:adminBranch,brand:brand,start:s,end:e,warnAt:warn,
+      status:hasActive?'Queued':'Active',createdBy:operator,createdAt:nowStamp()};
+    // only one queued roll per branch allowed
+    if(roll.status==='Queued' && queuedRoll(adminBranch)){toast('A roll is already queued for this branch. Close/deplete the active one first.',true);return;}
+    rolls.push(roll);sealsSave(rolls);
+    auditLog('Seal roll created',adminBranch+' '+brand+' '+s+'\u2013'+e+' ('+roll.status+') by '+auth.name);
+    syncPushRoll(roll, roll.status==='Active'?'ACTIVATED':'QUEUED');
+    toast('Roll '+s+'\u2013'+e+' '+(roll.status==='Active'?'activated':'queued')+' \u2713');
+    document.getElementById('nrStart').value='';document.getElementById('nrEnd').value='';document.getElementById('nrWarn').value='';
+    renderRolls();
+  });
 }
 function renderRolls(){
   renderUsedSeals();
@@ -1131,26 +1159,28 @@ function renderRolls(){
   }).join('');
 }
 function closeRollEarly(id){
-  var auth=authGate('seal_create','Close this roll early?\nEnds it before all seals are used. A queued roll (if any) becomes active.');
-  if(!auth)return;
-  var reason=prompt('Reason for closing early (required):');
-  if(!reason||!reason.trim()){toast('A reason is required',true);return;}
-  var rolls=sealsLoad();var idx=rolls.findIndex(function(x){return x.id===id;});
-  if(idx<0)return;
-  rolls[idx].status='Closed';rolls[idx].closedBy=auth.name;rolls[idx].closedAt=nowStamp();rolls[idx].closeReason=reason.trim();
-  sealsSave(rolls);
-  auditLog('Seal roll closed early',rolls[idx].brand+' '+rolls[idx].start+'\u2013'+rolls[idx].end+' by '+auth.name+' \u2014 '+reason.trim());
-  syncPushRoll(rolls[idx],'CLOSED');
-  promoteQueued(rolls[idx].branch);
-  renderRolls();
+  authGate('seal_create','Close this roll early?\nEnds it before all seals are used. A queued roll (if any) becomes active.').then(function(auth){
+    if(!auth)return;
+    var reason=prompt('Reason for closing early (required):');
+    if(!reason||!reason.trim()){toast('A reason is required',true);return;}
+    var rolls=sealsLoad();var idx=rolls.findIndex(function(x){return x.id===id;});
+    if(idx<0)return;
+    rolls[idx].status='Closed';rolls[idx].closedBy=auth.name;rolls[idx].closedAt=nowStamp();rolls[idx].closeReason=reason.trim();
+    sealsSave(rolls);
+    auditLog('Seal roll closed early',rolls[idx].brand+' '+rolls[idx].start+'\u2013'+rolls[idx].end+' by '+auth.name+' \u2014 '+reason.trim());
+    syncPushRoll(rolls[idx],'CLOSED');
+    promoteQueued(rolls[idx].branch);
+    renderRolls();
+  });
 }
 function cancelQueued(id){
   var r=sealsLoad().find(function(x){return x.id===id;});
   if(r && rollUsedCount(id)>0){toast('This roll has recorded seals \u2014 close it, do not cancel',true);return;}
-  var auth=authGate('seal_create','Cancel this queued roll?');
-  if(!auth)return;
-  var rolls=sealsLoad().filter(function(x){return x.id!==id;});sealsSave(rolls);
-  auditLog('Queued roll cancelled',id+' by '+auth.name);renderRolls();
+  authGate('seal_create','Cancel this queued roll?').then(function(auth){
+    if(!auth)return;
+    var rolls=sealsLoad().filter(function(x){return x.id!==id;});sealsSave(rolls);
+    auditLog('Queued roll cancelled',id+' by '+auth.name);renderRolls();
+  });
 }
 // EDIT a roll's range/warn. Allowed only while ZERO seals used.
 // zero-used -> seal_create tier; any used -> seal_edit_used (destructive) tier.
@@ -1165,33 +1195,36 @@ function editRoll(id){
   if(ne===null)return; ne=num(ne);
   if(!(ns>0)||!(ne>=ns)){toast('Invalid range',true);return;}
   if(used>0 && (ns>r.start || ne<Math.max.apply(null,rollUsedList(id)))){toast('New range must still contain all '+used+' seals already used',true);return;}
-  var auth=authGate(key,'Edit roll range to '+ns+'\u2013'+ne+'?'+(used>0?'\n\nWARNING: '+used+' seals already recorded against this roll.':''));
-  if(!auth)return;
-  var oldr=r.start+'\u2013'+r.end;
-  r.start=ns;r.end=ne;sealsSave(rolls);
-  auditLog('Seal roll edited',oldr+' \u2192 '+ns+'\u2013'+ne+' ('+r.brand+' '+r.branch+') by '+auth.name);
-  syncPushRoll(r,'EDITED');
-  renderRolls();
+  authGate(key,'Edit roll range to '+ns+'\u2013'+ne+'?'+(used>0?'\n\nWARNING: '+used+' seals already recorded against this roll.':'')).then(function(auth){
+    if(!auth)return;
+    var oldr=r.start+'\u2013'+r.end;
+    r.start=ns;r.end=ne;sealsSave(rolls);
+    auditLog('Seal roll edited',oldr+' \u2192 '+ns+'\u2013'+ne+' ('+r.brand+' '+r.branch+') by '+auth.name);
+    syncPushRoll(r,'EDITED');
+    renderRolls();
+  });
 }
 // DELETE a roll. Zero-used only (else must close). Destructive if it somehow has seals -> seal_edit_used.
 function deleteRoll(id){
   var used=rollUsedCount(id);
+  var authPromise, forced=(used>0);
   if(used>0){
     if(!perm('seal_edit_used')){toast('This roll has '+used+' recorded seal(s) and cannot be deleted \u2014 close it instead (owner rights needed to force-delete).',true);return;}
-    var authD=authGate('seal_edit_used','FORCE-DELETE a roll with '+used+' recorded seals?\nThis ORPHANS those refills in the master recon. Prefer Close.');
-    if(!authD)return;
+    authPromise=authGate('seal_edit_used','FORCE-DELETE a roll with '+used+' recorded seals?\nThis ORPHANS those refills in the master recon. Prefer Close.');
   } else {
-    var authD=authGate('seal_create','Delete this unused roll?');
-    if(!authD)return;
+    authPromise=authGate('seal_create','Delete this unused roll?');
   }
-  var r=sealsLoad().find(function(x){return x.id===id;});
-  var wasActive=r&&r.status==='Active';
-  var rolls=sealsLoad().filter(function(x){return x.id!==id;});sealsSave(rolls);
-  // also drop its used-history if force-deleted
-  var uo=sealUsedLoad();if(uo[id]){delete uo[id];sealUsedSave(uo);}
-  auditLog('Seal roll deleted',id+(used>0?(' (FORCED, '+used+' seals orphaned)'):'')+' by '+authD.name);
-  if(wasActive)promoteQueued(r.branch);
-  renderRolls();
+  authPromise.then(function(authD){
+    if(!authD)return;
+    var r=sealsLoad().find(function(x){return x.id===id;});
+    var wasActive=r&&r.status==='Active';
+    var rolls=sealsLoad().filter(function(x){return x.id!==id;});sealsSave(rolls);
+    // also drop its used-history if force-deleted
+    var uo=sealUsedLoad();if(uo[id]){delete uo[id];sealUsedSave(uo);}
+    auditLog('Seal roll deleted',id+(forced?(' (FORCED, '+used+' seals orphaned)'):'')+' by '+authD.name);
+    if(wasActive)promoteQueued(r.branch);
+    renderRolls();
+  });
 }
 function renderSuppliers(){
   var box=document.getElementById('supplierList');if(!box)return;
@@ -1262,13 +1295,13 @@ function doClearStockTake(){
   if(!areas.length){toast('Tick at least one area to clear',true);return;}
   var branches=(brSel==='Both')?['Helderberg','Kleinmond']:[brSel];
   // owner password (own password) + explicit confirm
-  var me=findUser(operator);
-  if(!me){toast('No active user',true);return;}
   if(!confirm('Clear '+areas.join(', ')+'\nfor '+branches.join(' & ')+'\non '+date+'?\n\nThis deletes the data on this device AND in the Google Sheet. Cannot be undone.'))return;
   askPassword('Owner authorisation','Owner password to authorise this deletion:').then(function(pw){
    if(pw===null)return;
-   if(pw!==me.pw || !(role==='Owner'||perm('seal_edit_used'))){toast('Not authorised',true);return;}
-   _clearStockTakeDo(date,brSel,areas,branches);
+   _verifyPersonPassword(operator, pw, null).then(function(me){
+     if(!me || !(role==='Owner'||perm('seal_edit_used'))){toast('Not authorised',true);return;}
+     _clearStockTakeDo(date,brSel,areas,branches);
+   });
   });
 }
 function _clearStockTakeDo(date,brSel,areas,branches){
@@ -1329,7 +1362,9 @@ function doVoidSeal(){
   var sn=num(document.getElementById('voidSealNo').value);
   if(!(sn>0)){toast('Enter a seal number',true);return;}
   var closed=document.getElementById('voidClosedDay').checked;
-  if(voidSeal(adminBranch, sn, closed)){document.getElementById('voidSealNo').value='';document.getElementById('voidClosedDay').checked=false;renderRolls();renderUsedSeals();}
+  voidSeal(adminBranch, sn, closed).then(function(ok){
+    if(ok){document.getElementById('voidSealNo').value='';document.getElementById('voidClosedDay').checked=false;renderRolls();renderUsedSeals();}
+  });
 }
 
 // ===== FAULTY CYLINDERS (Admin tab) =====
@@ -1355,11 +1390,12 @@ function faultyShowSub(sub){
     if(!perm('faultyRegister')){toast('You do not have Faulty Register rights',true);return;}
     // Open register books actual gas losses — re-prompt for password like the other Admin tabs,
     // even though Log faulty (routine daily capture) does not.
-    var me=findUser(operator);
     askPassword('Open Faulty Register','Enter your password to open the Open Register:').then(function(pw){
       if(pw===null)return;
-      if(!me||pw!==me.pw){toast('Wrong password',true);return;}
-      _faultyShowSub('register');
+      _verifyPersonPassword(operator, pw, null).then(function(me){
+        if(!me){toast('Wrong password',true);return;}
+        _faultyShowSub('register');
+      });
     });
     return;
   }
@@ -1388,7 +1424,7 @@ function faultyCaptureInit(){
   faultyBrandChanged();faultyReasonChanged();faultySetState(faultyState);faultyCalcUpdate();
 }
 function faultySetBranch(b){
-  if(role==='Manager' && (findUser(operator).branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
+  if(role==='Manager' && (_curUser().branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
   if(b===faultyBranch)return; // already on this branch - don't wipe an in-progress entry for nothing
   faultyBranch=b;applyBranchLock('fcbr-',b);
   faultyResetForm(); // switching branches starts a fresh entry - never carry another branch's draft across
@@ -1457,7 +1493,7 @@ function faultyResetForm(){
 // ---- Open register ----
 // The register always shows exactly ONE branch at a time — see _faultyVisibleRows().
 function faultyRegisterBranches(){
-  return (role==='Owner') ? ['Helderberg','Kleinmond'] : (findUser(operator).branches||[]);
+  return (role==='Owner') ? ['Helderberg','Kleinmond'] : (_curUser().branches||[]);
 }
 function faultyRegisterInit(){
   var mine=faultyRegisterBranches();
@@ -1544,7 +1580,7 @@ function openResidual(){
   show('residualView');window.scrollTo(0,0);
 }
 function residualSetBranch(b){
-  if(role==='Manager' && (findUser(operator).branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
+  if(role==='Manager' && (_curUser().branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
   if(b===residualBranch)return; // already on this branch - don't wipe an in-progress entry for nothing
   residualBranch=b;applyBranchLock('rgbr-',b);
   residualResetForm(); // switching branches starts a fresh cylinder entry - same as Faulty capture
@@ -1865,7 +1901,7 @@ function saveCountCutoffUI(){
   toast('Count times saved ✓');
 }
 // default: everything ACTIVE (all on) unless explicitly turned off
-function _curUser(){return findUser(operator);}
+function _curUser(){return currentProfile;}
 // combined gate: branch has it active AND the logged-in user is allowed it
 function canUseSection(branch,sec){return sectionActive(branch,sec)&&userAccessAllows(_curUser(),sec,null);}
 function canUseItem(branch,sec,item){return itemActive(branch,sec,item)&&userAccessAllows(_curUser(),sec,item);}
@@ -1891,9 +1927,6 @@ function bcfgSet(branch,sec,item,val){
 }
 function perm(k){return !!currentPerms[k];}
 // user = {name, level:'Owner|Manager|Operator', branches:['Helderberg',...], pw}
-function loadUsers(){try{return JSON.parse(localStorage.getItem('gs_users')||'[]');}catch(e){return [];}}
-function saveUsers(arr){try{localStorage.setItem('gs_users',JSON.stringify(arr));}catch(e){toast('Storage unavailable in this viewer',true);}}
-function findUser(name){return loadUsers().filter(function(u){return u.name===name;})[0]||null;}
 // Normalise a SA mobile to E.164 (+27XXXXXXXXX). Returns {ok, value, msg}. Empty input is allowed (optional field).
 function normalizePhoneZA(raw){
   if(raw===undefined||raw===null)return {ok:true,value:''};
@@ -1916,19 +1949,16 @@ function normalizePhoneZA(raw){
 // Authority cannot be borrowed: another user's password will not pass.
 // Returns the authorising user object, or null if cancelled/failed.
 function authGate(key, actionLabel){
-  var me=findUser(operator);
-  if(!me){toast('No active user',true);return null;}
-  if(!perm(key)){toast('You do not have rights for this action ('+(PERM_LABELS[key]||key)+')',true);return null;}
-  var pw=prompt(actionLabel+'\n\nEnter YOUR password to authorise:');
-  if(pw===null)return null;
-  if(pw!==me.pw){toast('Password does not match your login',true);return null;}
-  return me;
+  if(!perm(key)){toast('You do not have rights for this action ('+(PERM_LABELS[key]||key)+')',true);return Promise.resolve(null);}
+  return _selfReauth(actionLabel).then(function(me){
+    if(!me)toast('Password does not match your login',true);
+    return me;
+  });
 }
 // Back-compat shim (old callers). Now verifies the CURRENT user only.
 function verifyElevatedPw(pw){
-  var me=findUser(operator);
-  if(me && pw===me.pw && (perm('seal_boundary')||perm('seal_edit_used')||perm('seal_create'))) return me;
-  return null;
+  if(!(perm('seal_boundary')||perm('seal_edit_used')||perm('seal_create')))return Promise.resolve(null);
+  return _verifyPersonPassword(operator, pw, null);
 }
 // Seal boundary override: current user's own password + seal_boundary right. Logs it.
 // Returns a Promise<boolean> (true if authorised). Uses the app's own custom password
@@ -1937,51 +1967,56 @@ function verifyElevatedPw(pw){
 // override could silently fail to even appear. Same modal already used for Admin tabs,
 // Manage Users, and Audit, so this brings seal overrides in line with the rest of the app.
 function sealBoundaryOverride(msg){
-  var me=findUser(operator);
-  if(!me){toast('No active user',true);return Promise.resolve(false);}
   if(!perm('seal_boundary')){toast('You do not have rights for this action ('+(PERM_LABELS.seal_boundary||'seal_boundary')+')',true);return Promise.resolve(false);}
   return askPassword('Authorise override', msg+'\n\nThis records an out-of-roll seal. Enter YOUR password to authorise:').then(function(pw){
     if(pw===null)return false; // cancelled
-    if(pw!==me.pw){toast('Password does not match your login',true);return false;}
-    auditLog('Seal boundary override','By '+me.name+' ('+me.level+') \u2014 '+capBranch+' \u2014 '+msg);
-    syncPush('Adjustments',[{date:today||'',branch:capBranch,Kind:'SEAL_OVERRIDE',Line:msg,From:'',To:'',Reason:'boundary override',By:me.name}]);
-    toast('Override authorised by '+me.name);
-    return true;
+    return _verifyPersonPassword(operator, pw, null).then(function(me){
+      if(!me){toast('Password does not match your login',true);return false;}
+      auditLog('Seal boundary override','By '+me.name+' ('+me.level+') \u2014 '+capBranch+' \u2014 '+msg);
+      syncPush('Adjustments',[{date:today||'',branch:capBranch,Kind:'SEAL_OVERRIDE',Line:msg,From:'',To:'',Reason:'boundary override',By:me.name}]);
+      toast('Override authorised by '+me.name);
+      return true;
+    });
   });
 }
 // VOID a wrongly-captured seal. mode: 'reuse' (number returns to pool) or 'burn' (number retired).
 // Open day (today, not closed) -> seal_void_open. Closed/prior day -> seal_edit_used.
 // dayIsClosed: caller passes whether the target refill's day is already closed.
+var voidSealBusy=false;
 function voidSeal(branch, seal, dayIsClosed){
+  if(voidSealBusy)return Promise.resolve(false);
   seal=num(seal);
   var key=dayIsClosed?'seal_edit_used':'seal_void_open';
-  if(!perm(key)){toast(dayIsClosed?'Voiding a closed-day seal needs owner rights':'You lack seal-void rights',true);return false;}
+  if(!perm(key)){toast(dayIsClosed?'Voiding a closed-day seal needs owner rights':'You lack seal-void rights',true);return Promise.resolve(false);}
   // ask outcome
   var mode=prompt('Void seal '+seal+' on '+branch+'.\n\nType R = number REUSABLE (mis-entry, seal still good)\nType B = seal DESTROYED / lost (retire the number)\n\nR or B:');
-  if(mode===null)return false;
+  if(mode===null)return Promise.resolve(false);
   mode=(mode||'').trim().toUpperCase();
-  if(mode!=='R'&&mode!=='B'){toast('Type R or B',true);return false;}
-  var auth=authGate(key,'Void seal '+seal+' ('+(mode==='R'?'reusable':'destroyed')+')'+(dayIsClosed?' on a CLOSED day':'')+'?');
-  if(!auth)return false;
-  // update used-history: remove seal from its roll. If burn, add to a retired list so it can't be reused.
-  var r=activeRoll(branch)||sealsLoad().filter(function(x){return x.branch===branch;}).sort(function(a,b){return b.start-a.start;})[0];
-  var uo=sealUsedLoad();
-  if(r&&uo[r.id]){var i=uo[r.id].indexOf(seal);if(i>-1)uo[r.id].splice(i,1);sealUsedSave(uo);}
-  if(mode==='B'){
-    var retired=[];try{retired=JSON.parse(localStorage.getItem('gs_seal_retired')||'[]');}catch(e){}
-    retired.push({branch:branch,seal:seal});try{localStorage.setItem('gs_seal_retired',JSON.stringify(retired));}catch(e){}
-  }
-  auditLog('Seal voided',seal+' on '+branch+' \u2014 '+(mode==='R'?'REUSABLE':'DESTROYED')+(dayIsClosed?' (closed day)':'')+' by '+auth.name);
-  // enrich: find the original refill row this seal belongs to (open store first, else saved day)
-  var origSize='',origDate=(dayIsClosed?'(closed day)':today),origBrand='';
-  var _rf=(store.refill||[]).filter(function(x){return num(x.seal)===seal && (!x.branch||x.branch===branch);})[0];
-  if(_rf){origSize=_rf.size||'';origBrand=_rf.brand||'';}
-  syncPush('Adjustments',[{date:today||'',branch:branch,Kind:'SEAL_VOID',
-    Line:'seal '+seal+(origSize?(' ('+origSize+(origBrand?' '+origBrand:'')+')'):''),
-    From:String(seal),To:(mode==='R'?'reusable':'retired'),
-    Reason:'void'+(dayIsClosed?' [closed-day, orig '+origDate+']':''),By:auth.name}]);
-  toast('Seal '+seal+' voided ('+(mode==='R'?'reusable':'retired')+')');
-  return true;
+  if(mode!=='R'&&mode!=='B'){toast('Type R or B',true);return Promise.resolve(false);}
+  voidSealBusy=true;
+  return authGate(key,'Void seal '+seal+' ('+(mode==='R'?'reusable':'destroyed')+')'+(dayIsClosed?' on a CLOSED day':'')+'?').then(function(auth){
+    voidSealBusy=false;
+    if(!auth)return false;
+    // update used-history: remove seal from its roll. If burn, add to a retired list so it can't be reused.
+    var r=activeRoll(branch)||sealsLoad().filter(function(x){return x.branch===branch;}).sort(function(a,b){return b.start-a.start;})[0];
+    var uo=sealUsedLoad();
+    if(r&&uo[r.id]){var i=uo[r.id].indexOf(seal);if(i>-1)uo[r.id].splice(i,1);sealUsedSave(uo);}
+    if(mode==='B'){
+      var retired=[];try{retired=JSON.parse(localStorage.getItem('gs_seal_retired')||'[]');}catch(e){}
+      retired.push({branch:branch,seal:seal});try{localStorage.setItem('gs_seal_retired',JSON.stringify(retired));}catch(e){}
+    }
+    auditLog('Seal voided',seal+' on '+branch+' \u2014 '+(mode==='R'?'REUSABLE':'DESTROYED')+(dayIsClosed?' (closed day)':'')+' by '+auth.name);
+    // enrich: find the original refill row this seal belongs to (open store first, else saved day)
+    var origSize='',origDate=(dayIsClosed?'(closed day)':today),origBrand='';
+    var _rf=(store.refill||[]).filter(function(x){return num(x.seal)===seal && (!x.branch||x.branch===branch);})[0];
+    if(_rf){origSize=_rf.size||'';origBrand=_rf.brand||'';}
+    syncPush('Adjustments',[{date:today||'',branch:branch,Kind:'SEAL_VOID',
+      Line:'seal '+seal+(origSize?(' ('+origSize+(origBrand?' '+origBrand:'')+')'):''),
+      From:String(seal),To:(mode==='R'?'reusable':'retired'),
+      Reason:'void'+(dayIsClosed?' [closed-day, orig '+origDate+']':''),By:auth.name}]);
+    toast('Seal '+seal+' voided ('+(mode==='R'?'reusable':'retired')+')');
+    return true;
+  });
 }
 // ===== HIGH-RISK SECOND PASSWORD (Owner-set; required for Close Day + Factory Reset) =====
 function getHighRiskPw(){try{return localStorage.getItem('gs_highrisk_pw')||'';}catch(e){return '';}}
@@ -2168,13 +2203,14 @@ function openAudit(){
   show('auditView');window.scrollTo(0,0);
 }
 function auditUnlock(){
-  var me=findUser(operator);
   var pw=document.getElementById('auditPw').value;
-  if(!me||pw!==me.pw){toast('Wrong password',true);return;}
-  auditLog('Audit opened','Owner opened the audit report');
-  document.getElementById('auditGate').style.display='none';
-  document.getElementById('auditDateList').style.display='block';
-  renderAuditDates();
+  _verifyPersonPassword(operator, pw, null).then(function(me){
+    if(!me){toast('Wrong password',true);return;}
+    auditLog('Audit opened','Owner opened the audit report');
+    document.getElementById('auditGate').style.display='none';
+    document.getElementById('auditDateList').style.display='block';
+    renderAuditDates();
+  });
 }
 function renderAuditDates(){
   var all=auditLoad();
@@ -2263,33 +2299,22 @@ function auditCSV(){
 
 // ---------- first-run / login screen wiring ----------
 function initLoginScreen(){
-  var users=loadUsers();
-  if(users.length===0){
-    document.getElementById('setupCard').style.display='block';
-    document.getElementById('loginCard').style.display='none';
-  } else {
-    document.getElementById('setupCard').style.display='none';
-    document.getElementById('loginCard').style.display='block';
-    var sel=document.getElementById('loginUser');
-    sel.innerHTML='<option value="">Select your name…</option>'+users.map(function(u){return '<option>'+u.name+'</option>';}).join('');
-  }
+  document.getElementById('loginCard').style.display='block';
+  var sel=document.getElementById('loginUser');
+  sel.innerHTML='<option value="">Loading names…</option>';
+  sb.from('login_names').select('id,name,level,branches').order('name').then(function(res){
+    if(res.error){toast('Could not load user list: '+res.error.message,true);sel.innerHTML='<option value="">Select your name…</option>';return;}
+    _loginNamesCache=res.data||[];
+    sel.innerHTML='<option value="">Select your name…</option>'+_loginNamesCache.map(function(u){return '<option>'+u.name+'</option>';}).join('');
+  }).catch(function(){toast('Network error loading user list — check your connection',true);sel.innerHTML='<option value="">Select your name…</option>';});
 }
-function createOwner(){
-  var n=(document.getElementById('setupName').value||'').trim();
-  var p=document.getElementById('setupPw').value,p2=document.getElementById('setupPw2').value;
-  if(!n){toast('Enter the owner name',true);return;}
-  if(!p||p.length<3){toast('Password must be at least 3 characters',true);return;}
-  if(p!==p2){toast('Passwords do not match',true);return;}
-  saveUsers([{name:n,level:'Owner',branches:['Helderberg','Kleinmond'],pw:p}]);
-  operator=n;role='Owner';branch='';auditLog('Owner created','First-run: Owner account "'+n+'" created');operator=null;role=null;
-  toast('Owner account created ✓');
-  initLoginScreen();
-}
+var _loginNamesCache=[];
+function _loginFindName(name){return _loginNamesCache.filter(function(u){return u.name===name;})[0]||null;}
 function forgotPw(){
   alert('Password reset by SMS OTP is not available in this demo — it needs a secure backend and an SMS service.\n\nWhen the app is linked to real online storage, the Owner will be able to reset a forgotten password via a one-time PIN sent to their phone. For now, the Owner can reset any user password from Manage Users.');
 }
 function loginUserChanged(){
-  var u=findUser(document.getElementById('loginUser').value);
+  var u=_loginFindName(document.getElementById('loginUser').value);
   var bsel=document.getElementById('loginBranch');
   var note=document.getElementById('branchNote');
   if(!u){bsel.innerHTML='<option value="">Select name first…</option>';bsel.disabled=false;bsel.style.opacity='1';note.textContent='';return;}
@@ -2303,14 +2328,30 @@ function loginUserChanged(){
     note.innerHTML='<b>'+u.level+'</b> — locked to '+br[0]+'.';
   }
 }
+var loginBusy=false;
 function doLogin(){
-  var u=findUser(document.getElementById('loginUser').value);
+  if(loginBusy)return;
+  var picked=_loginFindName(document.getElementById('loginUser').value);
   var p=document.getElementById('loginPin').value;
-  if(!u){toast('Pick your name',true);return;}
-  if(p!==u.pw){toast('Wrong password',true);return;}
-  var br=u.branches||[];
+  if(!picked){toast('Pick your name',true);return;}
+  var br=picked.branches||[];
   var b=(br.length>1)?document.getElementById('loginBranch').value:br[0];
   if(!b){toast('Pick a branch',true);return;}
+  loginBusy=true;
+  var btn=document.getElementById('loginSubmitBtn');
+  if(btn){btn.disabled=true;btn.style.opacity='.6';}
+  var fakeEmail=_fakeEmail(picked.name);
+  sb.auth.signInWithPassword({email:fakeEmail,password:p}).then(function(res){
+    if(res.error){loginBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}toast('Sign-in failed: '+res.error.message,true);return;}
+    sb.from('profiles').select('*').eq('id',res.data.user.id).single().then(function(pres){
+      loginBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}
+      if(pres.error||!pres.data){toast('Could not load your profile: '+(pres.error?pres.error.message:'not found'),true);return;}
+      _finishLogin(pres.data,b);
+    }).catch(function(){loginBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}toast('Network error — check your connection',true);});
+  }).catch(function(){loginBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}toast('Network error — check your connection',true);});
+}
+function _finishLogin(u,b){
+  currentProfile=u;
   operator=u.name;role=u.level;branch=b;today=computeToday();currentPerms=userPerms(u);
   document.getElementById('dateVal').textContent=today+(getDateOffset()?'  (TEST +'+getDateOffset()+'d)':'  (today only)');
   document.getElementById('who').style.display='block';
@@ -2339,14 +2380,17 @@ function doLogin(){
 }
 function logout(){
   if(operator)auditLog('Logout','Signed out');
-  operator=null;branch=null;role=null;
+  sb.auth.signOut();
+  operator=null;branch=null;role=null;currentProfile=null;
   // idle lock must not be able to outlive its own session - clear it unconditionally on
   // every logout, whether that's a normal sign-out or the lock screen's own "Not you? Sign
   // out instead" escape hatch (which just calls this function directly).
   if(idleTimer){clearTimeout(idleTimer);idleTimer=null;}
   idleLockActive=false;
   var _ilo=document.getElementById('idleLockOverlay');if(_ilo)_ilo.style.display='none';
-  document.getElementById('who').style.display='none';document.getElementById('loginPin').value='';document.getElementById('loginUser').value='';loginUserChanged();show('login');
+  document.getElementById('who').style.display='none';document.getElementById('loginPin').value='';document.getElementById('loginUser').value='';loginUserChanged();
+  initLoginScreen();
+  show('login');
 }
 function switchUser(){logout();toast('Signed out — next user can sign in');}
 function signOut(){if(confirm('Sign out now?'))logout();}
@@ -2386,13 +2430,15 @@ function triggerIdleLock(){
 function idleUnlock(){
   if(!idleLockActive)return;
   var pw=document.getElementById('idleLockPw').value;
-  var u=findUser(operator);
-  if(!u||pw!==u.pw){toast('Wrong password',true);return;}
-  idleLockActive=false;
-  document.getElementById('idleLockOverlay').style.display='none';
-  document.getElementById('idleLockPw').value='';
-  auditLog('Idle unlock','Resumed after idle lock');
-  _armIdleTimer();
+  _verifyPersonPassword(operator, pw, null).then(function(u){
+    if(!idleLockActive)return; // lock was already dismissed some other way (e.g. sign-out) while this was in flight - don't act on a stale result
+    if(!u){toast('Wrong password',true);return;}
+    idleLockActive=false;
+    document.getElementById('idleLockOverlay').style.display='none';
+    document.getElementById('idleLockPw').value='';
+    auditLog('Idle unlock','Resumed after idle lock');
+    _armIdleTimer();
+  });
 }
 // Escape hatch for when the device gets handed to someone else while still locked and they
 // don't know the locked user's password - just routes into the normal logout flow (which
@@ -2419,19 +2465,21 @@ document.addEventListener('click',function(ev){
   if(menu && menu.classList.contains('show') && !document.getElementById('who').contains(ev.target))closeUserMenu();
 });
 function changeMyPw(){
-  var me=findUser(operator);
-  if(!me){toast('No user in session',true);return;}
   var cur=prompt('Enter your CURRENT password:');
   if(cur===null)return;
-  if(cur!==me.pw){toast('Current password is wrong',true);return;}
   var nw=prompt('Enter your NEW password (min 3 characters):');
   if(nw===null)return;
   if(!nw||nw.length<3){toast('New password too short',true);return;}
   var nw2=prompt('Re-enter your NEW password:');
   if(nw2===null)return;
   if(nw!==nw2){toast('New passwords do not match',true);return;}
-  var users=loadUsers();var u=users.filter(function(x){return x.name===operator;})[0];
-  if(u){u.pw=nw;saveUsers(users);auditLog('Password change','Changed own password');toast('Your password was changed ✓');}
+  sb.auth.signInWithPassword({email:_fakeEmail(operator),password:cur}).then(function(chk){
+    if(chk.error){toast('Current password is wrong',true);return;}
+    sb.auth.updateUser({password:nw}).then(function(res){
+      if(res.error){toast('Could not change password: '+res.error.message,true);return;}
+      auditLog('Password change','Changed own password');toast('Your password was changed ✓');
+    }).catch(function(){toast('Network error — check your connection',true);});
+  }).catch(function(){toast('Network error — check your connection',true);});
 }
 function show(id){var vs=document.querySelectorAll('.view');for(var i=0;i<vs.length;i++)vs[i].classList.remove('active');document.getElementById(id).classList.add('active');
   syncHeader(id);}
@@ -2469,15 +2517,23 @@ function openUsers(){
   document.getElementById('usersPw').value='';
   show('usersView');window.scrollTo(0,0);
 }
+var usersUnlockBusy=false;
 function usersUnlock(){
-  var me=findUser(operator);
+  if(usersUnlockBusy)return;
   var pw=document.getElementById('usersPw').value;
-  if(!me||pw!==me.pw){toast('Wrong password',true);return;}
-  auditLog('User management opened','Owner opened Manage Users');
-  document.getElementById('usersGate').style.display='none';
-  document.getElementById('usersPanel').style.display='block';
-  renderUserList();
-  loadSyncCfgUI();
+  var btn=document.getElementById('usersUnlockBtn');
+  usersUnlockBusy=true;if(btn){btn.disabled=true;btn.style.opacity='.6';}
+  var tmp=supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY,{auth:{persistSession:false,autoRefreshToken:false}});
+  tmp.auth.signInWithPassword({email:_fakeEmail(operator),password:pw}).then(function(res){
+    tmp.auth.signOut();
+    usersUnlockBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}
+    if(res.error){toast('Wrong password',true);return;}
+    auditLog('User management opened','Owner opened Manage Users');
+    document.getElementById('usersGate').style.display='none';
+    document.getElementById('usersPanel').style.display='block';
+    renderUserList();
+    loadSyncCfgUI();
+  }).catch(function(){usersUnlockBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}toast('Network error — check your connection',true);});
 }
 function backToUserList(){
   document.getElementById('usersGate').style.display='none';
@@ -2485,15 +2541,20 @@ function backToUserList(){
   document.getElementById('hTitle').textContent='Manage Users';document.getElementById('backBtn').style.display='block';
   renderUserList();show('usersView');window.scrollTo(0,0);
 }
+var _userListCache=[];
 function renderUserList(){
-  var users=loadUsers();
-  document.getElementById('userList').innerHTML=users.map(function(u){
-    return '<div class="brandCard" style="cursor:pointer" onclick="userEdit(\''+u.name.replace(/'/g,"\\'")+'\')">'+
-      '<div style="display:flex;justify-content:space-between;align-items:center">'+
-      '<div><b style="color:var(--navy);font-size:15px">'+u.name+'</b><div style="font-size:12px;color:var(--muted)">'+u.level+' · '+(u.branches||[]).join(', ')+'</div></div>'+
-      '<span style="color:var(--steel);font-weight:800">edit ›</span></div></div>';
-  }).join('');
+  sb.from('profiles').select('*').order('name').then(function(res){
+    if(res.error){toast('Could not load users: '+res.error.message,true);return;}
+    _userListCache=res.data||[];
+    document.getElementById('userList').innerHTML=_userListCache.map(function(u){
+      return '<div class="brandCard" style="cursor:pointer" onclick="userEdit(\''+u.id+'\')">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center">'+
+        '<div><b style="color:var(--navy);font-size:15px">'+u.name+'</b><div style="font-size:12px;color:var(--muted)">'+u.level+' · '+(u.branches||[]).join(', ')+'</div></div>'+
+        '<span style="color:var(--steel);font-weight:800">edit ›</span></div></div>';
+    }).join('');
+  }).catch(function(){toast('Network error loading users — check your connection',true);});
 }
+function _userListFind(id){return _userListCache.filter(function(u){return u.id===id;})[0]||null;}
 function ueLevelChanged(){
   var lvl=document.getElementById('ueLevel').value;
   var wrap=document.getElementById('ueBranchControl');var note=document.getElementById('ueBranchNote');
@@ -2507,9 +2568,9 @@ function ueLevelChanged(){
   }
   renderUePerms(null); // reset checkboxes to the new level's preset
 }
-function userEdit(name){
-  ueEditingName=name;
-  var u=name?findUser(name):null;
+function userEdit(id){
+  ueEditingName=id; // repurposed to hold the id now, not the name - see userSave/userDelete below
+  var u=id?_userListFind(id):null;
   document.getElementById('ueTitle').textContent=u?('Edit — '+u.name):'New user';
   document.getElementById('ueName').value=u?u.name:'';
   document.getElementById('uePhone').value=(u&&u.phone)?u.phone:'';
@@ -2575,7 +2636,9 @@ function renderUePerms(u){
       '<input type="checkbox" class="uePerm" data-k="'+k+'"'+(eff[k]?' checked':'')+(locked?' disabled':'')+'> '+PERM_LABELS[k]+'</label>';
   }).join('');
 }
+var userSaveBusy=false;
 function userSave(){
+  if(userSaveBusy)return;
   var name=(document.getElementById('ueName').value||'').trim();
   var lvl=document.getElementById('ueLevel').value;
   var pw=document.getElementById('uePw').value;
@@ -2594,32 +2657,57 @@ function userSave(){
   [].slice.call(document.querySelectorAll('.ueAccSec')).forEach(function(c){accessObj.sections[c.getAttribute('data-sec')]=c.checked?1:0;});
   [].slice.call(document.querySelectorAll('.ueAccItem')).forEach(function(c){var s=c.getAttribute('data-sec');accessObj.items[s]=accessObj.items[s]||{};accessObj.items[s][c.getAttribute('data-item')]=c.checked?1:0;});
   if(lvl==='Owner'){permsObj.users=1;permsObj.audit=1;} // safety
-  var users=loadUsers();
-  var existing=ueEditingName?users.filter(function(u){return u.name===ueEditingName;})[0]:null;
-  // name uniqueness (unless same record)
-  if(users.some(function(u){return u.name===name && u.name!==ueEditingName;})){toast('A user with that name exists',true);return;}
-  if(!existing){
-    if(!pw||pw.length<3){toast('Set a password (min 3 chars)',true);return;}
-    users.push({name:name,level:lvl,branches:branches,pw:pw,perms:permsObj,access:accessObj,phone:phone});
-    saveUsers(users);
-    auditLog('User created','Created '+lvl+' "'+name+'" ('+branches.join(', ')+')',null,{name:name,level:lvl,branches:branches,perms:permsObj});
-  } else {
-    var beforeSnap={name:existing.name,level:existing.level,branches:existing.branches.slice()};
-    var pwChanged=!!pw;
-    existing.name=name;existing.level=lvl;existing.branches=branches;existing.perms=permsObj;existing.access=accessObj;existing.phone=phone;if(pw)existing.pw=pw;
-    saveUsers(users);
-    auditLog('User edited','Edited user "'+name+'"'+(pwChanged?' (password reset by owner)':''),beforeSnap,{name:name,level:lvl,branches:branches,perms:permsObj});
-  }
-  toast('User saved ✓');backToUserList();
+  var existing=ueEditingName?_userListFind(ueEditingName):null;
+  if(_userListCache.some(function(u){return u.name===name && u.id!==ueEditingName;})){toast('A user with that name exists',true);return;}
+  if(!existing && (!pw || pw.length<3)){toast('Set a password (min 3 chars)',true);return;}
+
+  var btn=document.getElementById('ueSaveBtn');
+  userSaveBusy=true;if(btn){btn.disabled=true;btn.style.opacity='.6';}
+  function _resetBusy(){userSaveBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}}
+
+  sb.auth.getSession().then(function(sres){
+    var session=sres.data && sres.data.session;
+    if(!session){_resetBusy();toast('Session expired — please sign in again',true);return;}
+    var token=session.access_token;
+    var payload=existing
+      ? {action:'update',id:existing.id,name:name,level:lvl,branches:branches,perms:permsObj,access:accessObj,phone:phone,password:pw||undefined}
+      : {action:'create',name:name,password:pw,level:lvl,branches:branches,perms:permsObj,access:accessObj,phone:phone};
+    sb.functions.invoke('manage-user',{body:payload,headers:{Authorization:'Bearer '+token}}).then(function(res){
+      _resetBusy();
+      if(res.error || (res.data && res.data.error)){toast('Save failed: '+(res.error?res.error.message:res.data.error),true);return;}
+      var beforeSnap=existing?{name:existing.name,level:existing.level,branches:existing.branches.slice()}:null;
+      auditLog(existing?'User edited':'User created',(existing?'Edited user "':'Created '+lvl+' "')+name+'"'+(existing?'':' ('+branches.join(', ')+')'),beforeSnap,{name:name,level:lvl,branches:branches,perms:permsObj});
+      if(currentProfile && existing && existing.id===currentProfile.id){
+        currentProfile={id:currentProfile.id,name:name,level:lvl,branches:branches,perms:permsObj,access:accessObj,phone:phone};
+        currentPerms=userPerms(currentProfile);
+      }
+      toast('User saved ✓');backToUserList();
+    }).catch(function(){_resetBusy();toast('Network error — check your connection',true);});
+  }).catch(function(){_resetBusy();toast('Network error — check your connection',true);});
 }
+var userDeleteBusy=false;
 function userDelete(){
+  if(userDeleteBusy)return;
   if(!ueEditingName)return;
-  var u=findUser(ueEditingName);
+  var u=_userListFind(ueEditingName);
   if(u&&u.level==='Owner'){toast('Cannot delete the Owner',true);return;}
-  if(!confirm('Delete user "'+ueEditingName+'"? This cannot be undone.'))return;
-  auditLog('User deleted','Deleted user "'+ueEditingName+'"',u?{name:u.name,level:u.level,branches:u.branches}:null,null);
-  saveUsers(loadUsers().filter(function(x){return x.name!==ueEditingName;}));
-  toast('User deleted');backToUserList();
+  if(!confirm('Delete user "'+(u?u.name:'')+'"? This cannot be undone.'))return;
+
+  var btn=document.getElementById('ueDeleteBtn');
+  userDeleteBusy=true;if(btn){btn.disabled=true;btn.style.opacity='.6';}
+  function _resetBusy(){userDeleteBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}}
+
+  sb.auth.getSession().then(function(sres){
+    var session=sres.data && sres.data.session;
+    if(!session){_resetBusy();toast('Session expired — please sign in again',true);return;}
+    var token=session.access_token;
+    sb.functions.invoke('manage-user',{body:{action:'delete',id:ueEditingName},headers:{Authorization:'Bearer '+token}}).then(function(res){
+      _resetBusy();
+      if(res.error || (res.data && res.data.error)){toast('Delete failed: '+(res.error?res.error.message:res.data.error),true);return;}
+      auditLog('User deleted','Deleted user "'+(u?u.name:'')+'"',u?{name:u.name,level:u.level,branches:u.branches}:null,null);
+      toast('User deleted');backToUserList();
+    }).catch(function(){_resetBusy();toast('Network error — check your connection',true);});
+  }).catch(function(){_resetBusy();toast('Network error — check your connection',true);});
 }
 
 
@@ -2664,40 +2752,36 @@ function applyBranchLock(prefix,current){
 }
 function openCount(){
   if(!canUseSection(branch||'Helderberg','count')){toast(sectionActive(branch||'Helderberg','count')?'Stock Count is not enabled for your user':'Stock Count is deactivated for '+(branch||'this branch'),true);return;}
-  if(!requireEdit())return;
-  // #2 A day already closed for today+branch requires Owner override to count again
-  if(loadSavedDay(today,branch) && !store._extraCountAuth){
-    askPassword('Owner authorisation','A stock count was already closed for '+branch+' today.\n\nEnter the OWNER password to start an additional count:').then(function(pw){
-      if(pw===null)return;
-      var owner=loadUsers().filter(function(u){return u.level==='Owner';})[0];
-      if(!owner || pw!==owner.pw){toast('Owner password required for an additional count',true);return;}
-      store._extraCountAuth=true;
-      auditLog('Additional count authorised','Owner authorised a second same-day count for '+branch);
-      toast('Additional count unlocked \u2713');
-      openCount(); // re-enter now that auth flag is set
-    });
-    return;
-  }
-  cBranch=branch||'Helderberg';
-  // #1/#3 If no previous close exists to compare an Opening count against, a Manager/Owner must authorise
-  if(!cHasPrevClose(cBranch) && !store._noPrevAuth){
-    askPassword('Manager/Owner authorisation','No previous day close exists for '+cBranch+' to check the opening count against.\n\nA Manager or Owner password is required to proceed with this count:').then(function(pw2){
-      if(pw2===null)return;
-      var auth=loadUsers().filter(function(u){return (u.level==='Manager'||u.level==='Owner') && u.pw===pw2;})[0];
-      if(!auth){toast('Manager or Owner password required to proceed',true);return;}
-      store._noPrevAuth=true;
-      auditLog('Count authorised (no prev close)',auth.name+' authorised counting with no previous close for '+cBranch);
-      toast('Count authorised \u2713');
-      openCount(); // re-enter now that auth flag is set
-    });
-    return;
-  }
-  applyBranchLock('cbr-',cBranch);
-  document.getElementById('hTitle').textContent='Stock Count';
-  document.getElementById('hSub').textContent='Tap Full or Empty on a size';
-  document.getElementById('backBtn').style.display='block';
-  cShow('countGridView');cRenderGrid();window.scrollTo(0,0);
-  _saveCurrentSection('count');
+  requireEdit().then(function(ok){
+    if(!ok)return;
+    if(loadSavedDay(today,branch) && !store._extraCountAuth){
+      _borrowAuth('Owner','A stock count was already closed for '+branch+' today.',function(p){return p.level==='Owner';}).then(function(owner){
+        if(!owner){toast('Owner password required for an additional count',true);return;}
+        store._extraCountAuth=true;
+        auditLog('Additional count authorised','Owner authorised a second same-day count for '+branch);
+        toast('Additional count unlocked \u2713');
+        openCount();
+      });
+      return;
+    }
+    cBranch=branch||'Helderberg';
+    if(!cHasPrevClose(cBranch) && !store._noPrevAuth){
+      _borrowAuth('Manager or Owner','No previous day close exists for '+cBranch+' to check the opening count against.',function(p){return p.level==='Manager'||p.level==='Owner';}).then(function(auth){
+        if(!auth){toast('Manager or Owner password required to proceed',true);return;}
+        store._noPrevAuth=true;
+        auditLog('Count authorised (no prev close)',auth.name+' authorised counting with no previous close for '+cBranch);
+        toast('Count authorised \u2713');
+        openCount();
+      });
+      return;
+    }
+    applyBranchLock('cbr-',cBranch);
+    document.getElementById('hTitle').textContent='Stock Count';
+    document.getElementById('hSub').textContent='Tap Full or Empty on a size';
+    document.getElementById('backBtn').style.display='block';
+    cShow('countGridView');cRenderGrid();window.scrollTo(0,0);
+    _saveCurrentSection('count');
+  });
 }
 function cSetBranch(x){
   if(role==='Operator' && x!==branch){toast('Locked to '+branch,true);return;}
@@ -3295,14 +3379,16 @@ function rRemovePhoto(i){var st=rSupplierFor(rBranch);if(st.photos){st.photos.sp
 
 function openReceived(){
   if(!canUseSection(branch||'Helderberg','received')){toast(sectionActive(branch||'Helderberg','received')?'Stock Received is not enabled for your user':'Stock Received is deactivated for '+(branch||'this branch'),true);return;}
-  if(!requireEdit())return;
-  rBranch=branch||'Helderberg';
-  applyBranchLock('rbr-',rBranch);
-  document.getElementById('hTitle').textContent='Stock Received';
-  document.getElementById('hSub').textContent='Full received vs empty returned';
-  document.getElementById('backBtn').style.display='block';
-  rShow('recvGridView');rRenderGrid();rLoadSuppliers();window.scrollTo(0,0);
-  _saveCurrentSection('received');
+  requireEdit().then(function(ok){
+    if(!ok)return;
+    rBranch=branch||'Helderberg';
+    applyBranchLock('rbr-',rBranch);
+    document.getElementById('hTitle').textContent='Stock Received';
+    document.getElementById('hSub').textContent='Full received vs empty returned';
+    document.getElementById('backBtn').style.display='block';
+    rShow('recvGridView');rRenderGrid();rLoadSuppliers();window.scrollTo(0,0);
+    _saveCurrentSection('received');
+  });
 }
 function rSetBranch(x){
   if(role==='Operator' && x!==branch){toast('Locked to '+branch,true);return;}
@@ -3682,7 +3768,8 @@ function _draftHasContent(data){
 }
 function openCap(type,opts){
   if(!canUseSection(branch||'Helderberg',type)){toast(sectionActive(branch||'Helderberg',type)?(type+' is not enabled for your user'):(type+' is deactivated for '+(branch||'this branch')),true);return;}
-  if(!requireEdit())return;
+  requireEdit().then(function(ok){
+  if(!ok)return;
   capType=type; var c=CAP[type];
   if(!capData||capData._type!==type){capData={_type:type};}
   toggleSel={};
@@ -3712,6 +3799,7 @@ function openCap(type,opts){
   if(type==='private')loadPrivateSuppliers(); // populate the Supplier/redistributor dropdown
   show('capView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);
   _saveCurrentSection(type);
+  });
 }
 // Same backend-synced list Manage Suppliers/Stock Received use - kept as its own module var
 // (not shared state with rSuppliersList) so this feature stays self-contained.
@@ -4554,25 +4642,21 @@ var sigUnlocked={sigOp:false,sigMgr:false};
 var sigSignedBy={sigOp:'',sigMgr:''};
 function unlockSig(id){
   var boxLabel=(id==='sigOp')?'Operator':'Manager';
-  askPassword('Sign '+boxLabel+' box','Enter the '+boxLabel+' password to sign this box (Owner password also works):').then(function(pw){
-  if(pw===null)return;
-  var users=loadUsers();
-  var owner=users.filter(function(u){return u.level==='Owner';})[0];
-  var ok=false, signer='';
-  // owner password unlocks either
-  if(owner && pw===owner.pw){ok=true;signer=owner.name+' (Owner override)';}
-  else {
-    // match against a user of the right level with that password
-    var wantLevel=(id==='sigOp')?'Operator':'Manager';
-    var match=users.filter(function(u){return u.level===wantLevel && u.pw===pw;})[0];
-    if(match){ok=true;signer=match.name;}
-  }
-  if(!ok){toast('Wrong password for '+boxLabel+' box',true);return;}
-  sigUnlocked[id]=true;sigSignedBy[id]=signer;
-  __unlockSigApply(id,signer);
+  var wantLevel=(id==='sigOp')?'Operator':'Manager';
+  var name=prompt('Sign '+boxLabel+' box\n\nEnter the name of the person signing (an Owner may also sign either box):');
+  if(name===null)return;
+  askPassword('Sign '+boxLabel+' box','Enter '+name+"'s password:").then(function(pw){
+    if(pw===null)return;
+    _verifyPersonPassword(name, pw, function(p){return p.level==='Owner'||p.level===wantLevel;}).then(function(u){
+      if(!u){toast('Wrong password for '+boxLabel+' box',true);return;}
+      var signer=(u.level==='Owner')?(u.name+' (Owner override)'):u.name;
+      sigUnlocked[id]=true;sigSignedBy[id]=signer;
+      __unlockSigApply(id,signer);
+    });
   });
 }
 function __unlockSigApply(id,signer){
+  var boxLabel=(id==='sigOp')?'Operator':'Manager';
   document.getElementById(id+'-lock').innerHTML='<div style="font-size:11px;color:var(--ok);font-weight:700">✓ Unlocked — '+signer+' — sign above</div>';
   document.getElementById(id+'-clear').style.display='block';
   auditLog('Signature unlocked',boxLabel+' signature box unlocked by '+signer);
@@ -4649,13 +4733,17 @@ function closeDay(){
   if(unresolved.length){toast('Cannot close: '+unresolved.length+' opening line(s) unmatched. Manager/Owner must adjust them in Count History.',true);openHistory();return;}
   // Close Day requires: an authoriser WITH close-day permission + the high-risk second password
   if(!store._closeAuth){
-    var pw=prompt('Close Day — password of a person with Close-Day permission:');
+    var name=prompt('Close Day — name of a person with Close-Day permission:');
+    if(name===null)return;
+    var pw=prompt("Enter "+name+"'s password:");
     if(pw===null)return;
-    var users=loadUsers();
-    var auth=users.filter(function(u){return u.pw===pw && userPerms(u).closeday;})[0];
-    if(!auth){toast('A Close-Day-authorised password is required',true);return;}
-    if(!checkHighRisk('Close Day'))return;
-    store._closeAuth=auth.name+' ('+auth.level+')';
+    _verifyPersonPassword(name, pw, function(p){return userPerms(p).closeday;}).then(function(auth){
+      if(!auth){toast('A Close-Day-authorised password is required',true);return;}
+      if(!checkHighRisk('Close Day'))return;
+      store._closeAuth=auth.name+' ('+auth.level+')';
+      closeDay();
+    });
+    return;
   }
   // MANIFOLD BALANCE GATE
   var bal=manifoldBalance();
@@ -4814,12 +4902,11 @@ function clearWorkingStore(){try{if(today&&branch)localStorage.removeItem(workKe
 var editUnlocked=false;
 function canEdit(){return perm('capture') || perm('edit') || editUnlocked;}
 function requireEdit(){
-  if(canEdit())return true;
-  var pw=prompt('You do not have capture/edit rights.\n\nAn Owner can unlock editing by entering the Owner password:');
-  if(pw===null)return false;
-  var owner=loadUsers().filter(function(u){return u.level==='Owner';})[0];
-  if(owner && pw===owner.pw){editUnlocked=true;auditLog('Edit unlocked','Owner unlocked editing on '+branch+' (via '+operator+')');toast('Editing unlocked ✓');return true;}
-  toast('Wrong Owner password',true);return false;
+  if(canEdit())return Promise.resolve(true);
+  return _borrowAuth('Owner','You do not have capture/edit rights.', function(p){return p.level==='Owner';}).then(function(owner){
+    if(owner){editUnlocked=true;auditLog('Edit unlocked','Owner unlocked editing on '+branch+' (via '+operator+')');toast('Editing unlocked ✓');return true;}
+    toast('Wrong Owner password',true);return false;
+  });
 }
 function saveDayToHistory(){
   try{
@@ -4932,14 +5019,13 @@ function corrLines(st,section,br){
 }
 function openCorrection(cfg){
   if(!perm('edit')){toast('You do not have edit/correct rights',true);return;}
-  var pw=prompt('Manager or Owner password to log a correction:');
-  if(pw===null)return;
-  var auth=loadUsers().filter(function(u){return (u.level==='Manager'||u.level==='Owner') && u.pw===pw;})[0];
-  if(!auth){toast('Manager or Owner password required',true);return;}
-  corrCfg=cfg;corrAuth=auth;
-  document.getElementById('corrTitle').textContent=cfg.title||'Log a correction';
-  document.getElementById('corrModal').classList.add('show');
-  corrStepSection();
+  _borrowAuth('Manager or Owner','Log a correction?',function(p){return p.level==='Manager'||p.level==='Owner';}).then(function(auth){
+    if(!auth){toast('Manager or Owner password required',true);return;}
+    corrCfg=cfg;corrAuth=auth;
+    document.getElementById('corrTitle').textContent=cfg.title||'Log a correction';
+    document.getElementById('corrModal').classList.add('show');
+    corrStepSection();
+  });
 }
 function corrStepSection(){
   var secs=corrCfg.sections||['Opening','Closing','Received','Refills','Private','Manifold'];
@@ -5144,51 +5230,49 @@ function adjustMismatch(i){
   if(!perm('adjust')){toast('You do not have adjust rights',true);return;}
   var mmList=(store._openMismatch||[]).filter(function(m){return m.branch===histBranch;});
   var m=mmList[i];if(!m)return;
-  var pw=prompt('Manager or Owner password to log this adjustment:');
-  if(pw===null)return;
-  var users=loadUsers();
-  var auth=users.filter(function(u){return u.pw===pw && userPerms(u).adjust;})[0];
-  if(!auth){toast('An adjust-authorised password is required',true);return;}
-  var bc=m.branch, oldVal, correct, itemLabel;
-  if(m.kind==='manifold'){
-    itemLabel='Manifold '+m.cyl;
-    var nv=prompt('Correct OPENING gas-left (kg) for '+m.cyl+'\n(previous close was '+m.expected+'kg, counted '+m.counted+'kg):', String(m.counted));
-    if(nv===null)return;
-    correct=num(nv);
-    var reason=prompt('Reason / note for this correction (required):');
-    if(reason===null)return; if(!reason.trim()){toast('A reason is required',true);return;}
-    var mrow=store.manifold.filter(function(r){return r.stage==='Opening'&&r.cyl===m.cyl&&(!r.branch||r.branch===bc);})[0];
-    oldVal=mrow?mrow.gasLeft:m.counted;
-    if(mrow){mrow.gasLeft=correct;mrow.scale=num(mrow.tare)+correct;mrow._adjusted=true;}
-    m.resolved=true;m.counted=correct;m.adjustedTo=correct;
-    m.adjustNote='Adj by '+auth.name+' ('+auth.level+') → '+correct+'kg: '+reason.trim();
-    m.adjustedBy=auth.name;m.adjustedAt=nowStamp();
-    auditLog('Manifold mismatch adjusted',m.cyl+' — prev close '+m.expected+'kg, counted '+oldVal+'kg, corrected to '+correct+'kg · '+reason.trim(),
-      {prevClose:m.expected,counted:oldVal},{correctedOpening:correct,reason:reason.trim()});
-  } else {
-    var st=m.state, sz=m.size, br=m.brand;
-    itemLabel=sz+' '+st+' '+br;
-    var nv2=prompt('Correct OPENING quantity for '+sz+' '+st+' '+br+'\n(previous close was '+m.expected+', operator counted '+m.counted+'):', String(m.counted));
-    if(nv2===null)return;
-    correct=num(nv2);
-    var reason2=prompt('Reason / note for this correction (required):');
-    if(reason2===null)return; if(!reason2.trim()){toast('A reason is required',true);return;}
-    var row=store.count.filter(function(r){return r.countType==='Opening'&&r.state===st&&r.size===sz&&r.brand===br&&(!r.branch||r.branch===bc);})[0];
-    oldVal=row?row.qty:m.counted;
-    if(row){row.qty=correct;row._adjusted=true;}
-    else{store.count.push({countType:'Opening',state:st,size:sz,brand:br,qty:correct,branch:bc,_adjusted:true,_date:today});}
-    m.resolved=true;m.counted=correct;m.adjustedTo=correct;
-    m.adjustNote='Adj by '+auth.name+' ('+auth.level+') → '+correct+': '+reason2.trim();
-    m.adjustedBy=auth.name;m.adjustedAt=nowStamp();
-    var lockKey=bc+'|Opening|'+st+'|'+sz+'|'+br;
-    delete cLocked[lockKey];cTries[lockKey]=0;
-    auditLog('Opening mismatch adjusted',sz+' '+st+' '+br+' — prev close '+m.expected+', counted '+oldVal+', corrected to '+correct+' · '+reason2.trim(),
-      {prevClose:m.expected,counted:oldVal},{correctedOpening:correct,reason:reason2.trim()});
-    syncPush('Adjustments',[{date:today,branch:bc,Kind:'OpeningMismatch',Line:sz+' '+st+' '+br,From:oldVal,To:correct,Reason:reason2.trim(),By:auth.name+' ('+auth.level+')'}]);
-  }
-  saveWorkingStore();
-  toast(itemLabel+' corrected to '+correct+' ✓');
-  openHistory();
+  _borrowAuth('Manager or Owner','Log this adjustment?',function(p){return userPerms(p).adjust;}).then(function(auth){
+    if(!auth){toast('An adjust-authorised password is required',true);return;}
+    var bc=m.branch, oldVal, correct, itemLabel;
+    if(m.kind==='manifold'){
+      itemLabel='Manifold '+m.cyl;
+      var nv=prompt('Correct OPENING gas-left (kg) for '+m.cyl+'\n(previous close was '+m.expected+'kg, counted '+m.counted+'kg):', String(m.counted));
+      if(nv===null)return;
+      correct=num(nv);
+      var reason=prompt('Reason / note for this correction (required):');
+      if(reason===null)return; if(!reason.trim()){toast('A reason is required',true);return;}
+      var mrow=store.manifold.filter(function(r){return r.stage==='Opening'&&r.cyl===m.cyl&&(!r.branch||r.branch===bc);})[0];
+      oldVal=mrow?mrow.gasLeft:m.counted;
+      if(mrow){mrow.gasLeft=correct;mrow.scale=num(mrow.tare)+correct;mrow._adjusted=true;}
+      m.resolved=true;m.counted=correct;m.adjustedTo=correct;
+      m.adjustNote='Adj by '+auth.name+' ('+auth.level+') → '+correct+'kg: '+reason.trim();
+      m.adjustedBy=auth.name;m.adjustedAt=nowStamp();
+      auditLog('Manifold mismatch adjusted',m.cyl+' — prev close '+m.expected+'kg, counted '+oldVal+'kg, corrected to '+correct+'kg · '+reason.trim(),
+        {prevClose:m.expected,counted:oldVal},{correctedOpening:correct,reason:reason.trim()});
+    } else {
+      var st=m.state, sz=m.size, br=m.brand;
+      itemLabel=sz+' '+st+' '+br;
+      var nv2=prompt('Correct OPENING quantity for '+sz+' '+st+' '+br+'\n(previous close was '+m.expected+', operator counted '+m.counted+'):', String(m.counted));
+      if(nv2===null)return;
+      correct=num(nv2);
+      var reason2=prompt('Reason / note for this correction (required):');
+      if(reason2===null)return; if(!reason2.trim()){toast('A reason is required',true);return;}
+      var row=store.count.filter(function(r){return r.countType==='Opening'&&r.state===st&&r.size===sz&&r.brand===br&&(!r.branch||r.branch===bc);})[0];
+      oldVal=row?row.qty:m.counted;
+      if(row){row.qty=correct;row._adjusted=true;}
+      else{store.count.push({countType:'Opening',state:st,size:sz,brand:br,qty:correct,branch:bc,_adjusted:true,_date:today});}
+      m.resolved=true;m.counted=correct;m.adjustedTo=correct;
+      m.adjustNote='Adj by '+auth.name+' ('+auth.level+') → '+correct+': '+reason2.trim();
+      m.adjustedBy=auth.name;m.adjustedAt=nowStamp();
+      var lockKey=bc+'|Opening|'+st+'|'+sz+'|'+br;
+      delete cLocked[lockKey];cTries[lockKey]=0;
+      auditLog('Opening mismatch adjusted',sz+' '+st+' '+br+' — prev close '+m.expected+', counted '+oldVal+', corrected to '+correct+' · '+reason2.trim(),
+        {prevClose:m.expected,counted:oldVal},{correctedOpening:correct,reason:reason2.trim()});
+      syncPush('Adjustments',[{date:today,branch:bc,Kind:'OpeningMismatch',Line:sz+' '+st+' '+br,From:oldVal,To:correct,Reason:reason2.trim(),By:auth.name+' ('+auth.level+')'}]);
+    }
+    saveWorkingStore();
+    toast(itemLabel+' corrected to '+correct+' ✓');
+    openHistory();
+  });
 }
 function listSavedDays(){
   var out=[];
@@ -5235,13 +5319,16 @@ function viewSavedDay(ds){
   // Only Manager or Owner may open historical days, with password
   if(!perm('history')){toast('You do not have permission to open historical counts',true);return;}
   if(!store._auditBypass){
-    var pw=prompt('Enter your Manager or Owner password to open the count for '+ds+':');
-    if(pw===null)return;
-    var me=findUser(operator);
-    var owner=loadUsers().filter(function(u){return u.level==='Owner';})[0];
-    var ok=(me && pw===me.pw && (role==='Manager'||role==='Owner')) || (owner && pw===owner.pw);
-    if(!ok){toast('Wrong password',true);return;}
-    auditLog('Historical count opened','Opened saved count for '+ds+' ('+branch+')');
+    var eligibleNow=(role==='Manager'||role==='Owner');
+    var authPromise=eligibleNow
+      ? _selfReauth('Open the count for '+ds+'?')
+      : _borrowAuth('Owner','Open the count for '+ds+'?',function(p){return p.level==='Owner';});
+    authPromise.then(function(auth){
+      if(!auth){toast('Wrong password',true);return;}
+      auditLog('Historical count opened','Opened saved count for '+ds+' ('+branch+')');
+      store._auditBypass=true;viewSavedDay(ds);store._auditBypass=false;
+    });
+    return;
   }
   calSelDate=ds;renderCalendar();
   var rec=loadSavedDay(ds,branch);
@@ -5546,7 +5633,22 @@ function exportData(){
 }
 var tT;function toast(msg,err){var t=document.getElementById('toast');t.textContent=msg;t.className='show'+(err?' err':'');clearTimeout(tT);tT=setTimeout(function(){t.className=err?'err':'';},1800);}
 document.body.setAttribute('data-view','login');
-initLoginScreen();
+function _bootApp(){
+  initLoginScreen(); // always populate the login name dropdown, even when we're about to auto-resume straight past it - otherwise a later logout leaves the dropdown permanently empty
+  sb.auth.getSession().then(function(res){
+    var session=res.data && res.data.session;
+    if(!session){show('login');return;}
+    sb.from('profiles').select('*').eq('id',session.user.id).single().then(function(pres){
+      if(pres.error||!pres.data){show('login');return;}
+      var todayNow=computeToday();
+      var saved=_loadCurrentSection();
+      var rememberedBranch=(saved && saved.operator===pres.data.name && saved.date===todayNow) ? saved.branch : null;
+      var br=rememberedBranch || (pres.data.branches||[])[0] || 'Helderberg';
+      _finishLogin(pres.data,br);
+    }).catch(function(){show('login');});
+  }).catch(function(){show('login');});
+}
+_bootApp();
 
 // ===== PDF SHARE + DRIVE UPLOAD PIPELINE (dormant unless FEATURES.* true) =====
 // Renders the count HTML into a real PDF blob via jsPDF, then shares (navigator.share)
