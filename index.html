@@ -4750,13 +4750,17 @@ function closeDay(){
   if(unresolved.length){toast('Cannot close: '+unresolved.length+' opening line(s) unmatched. Manager/Owner must adjust them in Count History.',true);openHistory();return;}
   // Close Day requires: an authoriser WITH close-day permission + the high-risk second password
   if(!store._closeAuth){
-    var pw=prompt('Close Day — password of a person with Close-Day permission:');
+    var name=prompt('Close Day — name of a person with Close-Day permission:');
+    if(name===null)return;
+    var pw=prompt("Enter "+name+"'s password:");
     if(pw===null)return;
-    var users=loadUsers();
-    var auth=users.filter(function(u){return u.pw===pw && userPerms(u).closeday;})[0];
-    if(!auth){toast('A Close-Day-authorised password is required',true);return;}
-    if(!checkHighRisk('Close Day'))return;
-    store._closeAuth=auth.name+' ('+auth.level+')';
+    _verifyPersonPassword(name, pw, function(p){return userPerms(p).closeday;}).then(function(auth){
+      if(!auth){toast('A Close-Day-authorised password is required',true);return;}
+      if(!checkHighRisk('Close Day'))return;
+      store._closeAuth=auth.name+' ('+auth.level+')';
+      closeDay();
+    });
+    return;
   }
   // MANIFOLD BALANCE GATE
   var bal=manifoldBalance();
@@ -5032,14 +5036,13 @@ function corrLines(st,section,br){
 }
 function openCorrection(cfg){
   if(!perm('edit')){toast('You do not have edit/correct rights',true);return;}
-  var pw=prompt('Manager or Owner password to log a correction:');
-  if(pw===null)return;
-  var auth=loadUsers().filter(function(u){return (u.level==='Manager'||u.level==='Owner') && u.pw===pw;})[0];
-  if(!auth){toast('Manager or Owner password required',true);return;}
-  corrCfg=cfg;corrAuth=auth;
-  document.getElementById('corrTitle').textContent=cfg.title||'Log a correction';
-  document.getElementById('corrModal').classList.add('show');
-  corrStepSection();
+  _borrowAuth('Manager or Owner','Log a correction?',function(p){return p.level==='Manager'||p.level==='Owner';}).then(function(auth){
+    if(!auth){toast('Manager or Owner password required',true);return;}
+    corrCfg=cfg;corrAuth=auth;
+    document.getElementById('corrTitle').textContent=cfg.title||'Log a correction';
+    document.getElementById('corrModal').classList.add('show');
+    corrStepSection();
+  });
 }
 function corrStepSection(){
   var secs=corrCfg.sections||['Opening','Closing','Received','Refills','Private','Manifold'];
@@ -5244,51 +5247,49 @@ function adjustMismatch(i){
   if(!perm('adjust')){toast('You do not have adjust rights',true);return;}
   var mmList=(store._openMismatch||[]).filter(function(m){return m.branch===histBranch;});
   var m=mmList[i];if(!m)return;
-  var pw=prompt('Manager or Owner password to log this adjustment:');
-  if(pw===null)return;
-  var users=loadUsers();
-  var auth=users.filter(function(u){return u.pw===pw && userPerms(u).adjust;})[0];
-  if(!auth){toast('An adjust-authorised password is required',true);return;}
-  var bc=m.branch, oldVal, correct, itemLabel;
-  if(m.kind==='manifold'){
-    itemLabel='Manifold '+m.cyl;
-    var nv=prompt('Correct OPENING gas-left (kg) for '+m.cyl+'\n(previous close was '+m.expected+'kg, counted '+m.counted+'kg):', String(m.counted));
-    if(nv===null)return;
-    correct=num(nv);
-    var reason=prompt('Reason / note for this correction (required):');
-    if(reason===null)return; if(!reason.trim()){toast('A reason is required',true);return;}
-    var mrow=store.manifold.filter(function(r){return r.stage==='Opening'&&r.cyl===m.cyl&&(!r.branch||r.branch===bc);})[0];
-    oldVal=mrow?mrow.gasLeft:m.counted;
-    if(mrow){mrow.gasLeft=correct;mrow.scale=num(mrow.tare)+correct;mrow._adjusted=true;}
-    m.resolved=true;m.counted=correct;m.adjustedTo=correct;
-    m.adjustNote='Adj by '+auth.name+' ('+auth.level+') → '+correct+'kg: '+reason.trim();
-    m.adjustedBy=auth.name;m.adjustedAt=nowStamp();
-    auditLog('Manifold mismatch adjusted',m.cyl+' — prev close '+m.expected+'kg, counted '+oldVal+'kg, corrected to '+correct+'kg · '+reason.trim(),
-      {prevClose:m.expected,counted:oldVal},{correctedOpening:correct,reason:reason.trim()});
-  } else {
-    var st=m.state, sz=m.size, br=m.brand;
-    itemLabel=sz+' '+st+' '+br;
-    var nv2=prompt('Correct OPENING quantity for '+sz+' '+st+' '+br+'\n(previous close was '+m.expected+', operator counted '+m.counted+'):', String(m.counted));
-    if(nv2===null)return;
-    correct=num(nv2);
-    var reason2=prompt('Reason / note for this correction (required):');
-    if(reason2===null)return; if(!reason2.trim()){toast('A reason is required',true);return;}
-    var row=store.count.filter(function(r){return r.countType==='Opening'&&r.state===st&&r.size===sz&&r.brand===br&&(!r.branch||r.branch===bc);})[0];
-    oldVal=row?row.qty:m.counted;
-    if(row){row.qty=correct;row._adjusted=true;}
-    else{store.count.push({countType:'Opening',state:st,size:sz,brand:br,qty:correct,branch:bc,_adjusted:true,_date:today});}
-    m.resolved=true;m.counted=correct;m.adjustedTo=correct;
-    m.adjustNote='Adj by '+auth.name+' ('+auth.level+') → '+correct+': '+reason2.trim();
-    m.adjustedBy=auth.name;m.adjustedAt=nowStamp();
-    var lockKey=bc+'|Opening|'+st+'|'+sz+'|'+br;
-    delete cLocked[lockKey];cTries[lockKey]=0;
-    auditLog('Opening mismatch adjusted',sz+' '+st+' '+br+' — prev close '+m.expected+', counted '+oldVal+', corrected to '+correct+' · '+reason2.trim(),
-      {prevClose:m.expected,counted:oldVal},{correctedOpening:correct,reason:reason2.trim()});
-    syncPush('Adjustments',[{date:today,branch:bc,Kind:'OpeningMismatch',Line:sz+' '+st+' '+br,From:oldVal,To:correct,Reason:reason2.trim(),By:auth.name+' ('+auth.level+')'}]);
-  }
-  saveWorkingStore();
-  toast(itemLabel+' corrected to '+correct+' ✓');
-  openHistory();
+  _borrowAuth('Manager or Owner','Log this adjustment?',function(p){return userPerms(p).adjust;}).then(function(auth){
+    if(!auth){toast('An adjust-authorised password is required',true);return;}
+    var bc=m.branch, oldVal, correct, itemLabel;
+    if(m.kind==='manifold'){
+      itemLabel='Manifold '+m.cyl;
+      var nv=prompt('Correct OPENING gas-left (kg) for '+m.cyl+'\n(previous close was '+m.expected+'kg, counted '+m.counted+'kg):', String(m.counted));
+      if(nv===null)return;
+      correct=num(nv);
+      var reason=prompt('Reason / note for this correction (required):');
+      if(reason===null)return; if(!reason.trim()){toast('A reason is required',true);return;}
+      var mrow=store.manifold.filter(function(r){return r.stage==='Opening'&&r.cyl===m.cyl&&(!r.branch||r.branch===bc);})[0];
+      oldVal=mrow?mrow.gasLeft:m.counted;
+      if(mrow){mrow.gasLeft=correct;mrow.scale=num(mrow.tare)+correct;mrow._adjusted=true;}
+      m.resolved=true;m.counted=correct;m.adjustedTo=correct;
+      m.adjustNote='Adj by '+auth.name+' ('+auth.level+') → '+correct+'kg: '+reason.trim();
+      m.adjustedBy=auth.name;m.adjustedAt=nowStamp();
+      auditLog('Manifold mismatch adjusted',m.cyl+' — prev close '+m.expected+'kg, counted '+oldVal+'kg, corrected to '+correct+'kg · '+reason.trim(),
+        {prevClose:m.expected,counted:oldVal},{correctedOpening:correct,reason:reason.trim()});
+    } else {
+      var st=m.state, sz=m.size, br=m.brand;
+      itemLabel=sz+' '+st+' '+br;
+      var nv2=prompt('Correct OPENING quantity for '+sz+' '+st+' '+br+'\n(previous close was '+m.expected+', operator counted '+m.counted+'):', String(m.counted));
+      if(nv2===null)return;
+      correct=num(nv2);
+      var reason2=prompt('Reason / note for this correction (required):');
+      if(reason2===null)return; if(!reason2.trim()){toast('A reason is required',true);return;}
+      var row=store.count.filter(function(r){return r.countType==='Opening'&&r.state===st&&r.size===sz&&r.brand===br&&(!r.branch||r.branch===bc);})[0];
+      oldVal=row?row.qty:m.counted;
+      if(row){row.qty=correct;row._adjusted=true;}
+      else{store.count.push({countType:'Opening',state:st,size:sz,brand:br,qty:correct,branch:bc,_adjusted:true,_date:today});}
+      m.resolved=true;m.counted=correct;m.adjustedTo=correct;
+      m.adjustNote='Adj by '+auth.name+' ('+auth.level+') → '+correct+': '+reason2.trim();
+      m.adjustedBy=auth.name;m.adjustedAt=nowStamp();
+      var lockKey=bc+'|Opening|'+st+'|'+sz+'|'+br;
+      delete cLocked[lockKey];cTries[lockKey]=0;
+      auditLog('Opening mismatch adjusted',sz+' '+st+' '+br+' — prev close '+m.expected+', counted '+oldVal+', corrected to '+correct+' · '+reason2.trim(),
+        {prevClose:m.expected,counted:oldVal},{correctedOpening:correct,reason:reason2.trim()});
+      syncPush('Adjustments',[{date:today,branch:bc,Kind:'OpeningMismatch',Line:sz+' '+st+' '+br,From:oldVal,To:correct,Reason:reason2.trim(),By:auth.name+' ('+auth.level+')'}]);
+    }
+    saveWorkingStore();
+    toast(itemLabel+' corrected to '+correct+' ✓');
+    openHistory();
+  });
 }
 function listSavedDays(){
   var out=[];
@@ -5335,13 +5336,16 @@ function viewSavedDay(ds){
   // Only Manager or Owner may open historical days, with password
   if(!perm('history')){toast('You do not have permission to open historical counts',true);return;}
   if(!store._auditBypass){
-    var pw=prompt('Enter your Manager or Owner password to open the count for '+ds+':');
-    if(pw===null)return;
-    var me=findUser(operator);
-    var owner=loadUsers().filter(function(u){return u.level==='Owner';})[0];
-    var ok=(me && pw===me.pw && (role==='Manager'||role==='Owner')) || (owner && pw===owner.pw);
-    if(!ok){toast('Wrong password',true);return;}
-    auditLog('Historical count opened','Opened saved count for '+ds+' ('+branch+')');
+    var eligibleNow=(role==='Manager'||role==='Owner');
+    var authPromise=eligibleNow
+      ? _selfReauth('Open the count for '+ds+'?')
+      : _borrowAuth('Owner','Open the count for '+ds+'?',function(p){return p.level==='Owner';});
+    authPromise.then(function(auth){
+      if(!auth){toast('Wrong password',true);return;}
+      auditLog('Historical count opened','Opened saved count for '+ds+' ('+branch+')');
+      store._auditBypass=true;viewSavedDay(ds);store._auditBypass=false;
+    });
+    return;
   }
   calSelDate=ds;renderCalendar();
   var rec=loadSavedDay(ds,branch);
