@@ -329,6 +329,7 @@
   <div class="wrap">
     <div class="ctxbar" id="cCtx" style="margin-bottom:10px;"></div>
     <div id="cTimeWarnBanner" style="display:none;background:rgba(230,57,70,.12);border:2px solid var(--alert);border-radius:10px;padding:8px 12px;font-size:12px;color:var(--alert);font-weight:800;margin-bottom:10px"></div>
+    <button type="button" id="cAdjustLink" style="display:none;background:none;border:none;color:var(--steel);font-size:11px;font-weight:700;padding:0 0 12px;cursor:pointer" onclick="openCountAdjust()">✎ Adjust an already-committed entry (today only)</button>
     <div class="capHint" id="cHint" style="margin-bottom:12px;"></div>
     <div class="cGrid" id="cGrid"></div>
   </div>
@@ -2950,6 +2951,14 @@ function cRenderGrid(){
       _twb.style.display='none';
     }
   }
+  // Same-day adjustment link - see openCountAdjust(). Only offered while there's something
+  // committed today for this branch to actually adjust, and the day hasn't been closed yet
+  // (same pattern as Received/Manifold/Refill/Private's equivalent link).
+  var _cal=document.getElementById('cAdjustLink');
+  if(_cal){
+    var _hasCommittedToday=store.count.some(function(r){return r.branch===cBranch && (r._date||today)===today;});
+    _cal.style.display=(_hasCommittedToday && !loadSavedDay(today,cBranch))?'block':'none';
+  }
   document.getElementById('cHint').innerHTML='Tap a <b>Full</b> or <b>Empty</b> cell to complete that size. Full brands: '+C_FULLBRANDS[cBranch].join(', ')+' · Empties: any.';
   var html='<div class="cgHead"><div class="gc sz">Size</div><div class="gc">Full</div><div class="gc">Empty</div></div>';
   html+=C_SIZES.map(function(sz){
@@ -4059,6 +4068,39 @@ function openCapAdjust(){
     }
   });
 }
+// Same-day correction for Stock Count - same pattern as openReceivedAdjust()/openCapAdjust()
+// above, but Count never used the CAP_ADJUST_SECTION/openCapAdjust plumbing: a single day
+// always has BOTH an Opening and a Closing count (two sections at once, not one fixed section
+// per capType like Refill/Private/Manifold each are), so which section to open has to come
+// from whichever count-type toggle (cCT) the operator is currently looking at, not a static
+// map. corrLines() already fully supports 'Opening'/'Closing' (built for the 48-hour post-close
+// tool) - this just points it at TODAY's still-open store.count instead of a closed day's
+// frozen snapshot, same "filtered VIEW, not a filtered COPY" approach as the other same-day
+// tools so a correction mutates the real row in place.
+// Also unlike Received/Manifold/Refill/Private (which sync one row at a time via _rid+
+// adjustSheetRow), Count rows carry no _rid - cCommit() re-syncs a WHOLE branch+day replace-set
+// to the 'Counts' sheet on every commit (see _cCommitReal). So instead of adjustSheetRow, a
+// correction here just re-runs that same replace-set push for cBranch, which is how the
+// corrected value actually reaches the backend sheet, not just the local Adjustments note.
+function openCountAdjust(){
+  if(loadSavedDay(today,cBranch)){toast('Day already closed for '+cBranch+' - use the correction tool from Count History instead',true);return;}
+  var todaysStore={count:store.count.filter(function(r){return r.branch===cBranch && (r._date||today)===today;})};
+  openCorrection({
+    title:'Adjust Stock Count ('+cCT+') — '+cBranch+' (today, before close)',
+    store:todaysStore, branch:cBranch, sections:[cCT],
+    onApply:function(sel,oldVal,newVal,reason,auth){
+      syncPush('Adjustments',[{date:today,branch:cBranch,Kind:'SameDayCountAdjustment',Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:auth.name+' ('+auth.level+')'}]);
+      saveWorkingStore();
+      auditLog('Stock Count adjusted (same day)',cBranch+' '+sel.tag+': '+oldVal+' → '+newVal+' by '+auth.name+' - '+reason,{was:oldVal},{now:newVal});
+      var rowsForBn=syncRowsCount(store.count.filter(function(r){return r.branch===cBranch;}),cBranch);
+      syncPush('Counts', rowsForBn.map(function(x){x._replaceKey=(x.date+'|'+x.branch);return x;}));
+    },
+    afterClose:function(){
+      cRenderGrid();
+      if(document.querySelector('.view.active')&&document.querySelector('.view.active').id==='historyView')openHistory();
+    }
+  });
+}
 function capSummary(c,lines){
   if(c.weigh){
     if(capType==='refill'){
@@ -5125,7 +5167,20 @@ function corrLines(st,section,br){
 }
 function openCorrection(cfg){
   if(!perm('edit')){toast('You do not have edit/correct rights',true);return;}
-  _borrowAuth('Manager or Owner','Log a correction?',function(p){return p.level==='Manager'||p.level==='Owner';}).then(function(auth){
+  var qualifies=function(p){return p.level==='Manager'||p.level==='Owner';};
+  // If the person already logged in on THIS device already qualifies as Manager/Owner, just
+  // re-confirm THEIR OWN password (one prompt) instead of the two-step "borrow someone else's
+  // identity" flow below (name prompt, then that name's password) - that flow exists for an
+  // Operator who needs an actual Manager/Owner to step in and authorise. Making an
+  // already-qualified Owner/Manager type their own name back to the app first, through a plain
+  // unlabelled text box indistinguishable from the password box right after it, is exactly what
+  // was producing "double password, doesn't work" - a mistyped/autofilled first answer (e.g. a
+  // login-style string instead of their plain name) makes the second prompt ask for the
+  // password of a person who doesn't exist, which of course never succeeds.
+  var authPromise=(currentProfile && qualifies(currentProfile))
+    ? _selfReauth('Log a correction?')
+    : _borrowAuth('Manager or Owner','Log a correction?',qualifies);
+  authPromise.then(function(auth){
     if(!auth){toast('Manager or Owner password required',true);return;}
     corrCfg=cfg;corrAuth=auth;
     document.getElementById('corrTitle').textContent=cfg.title||'Log a correction';
