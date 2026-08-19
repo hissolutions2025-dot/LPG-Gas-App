@@ -194,6 +194,16 @@ governs audit entries and closed days from the cutover point forward.
 - **2c** — Faulty Cylinders, Seal Register, Suppliers, Branch Setup, Count Times
 - **2e** — a reliable, confirmed Google Sheets mirror of Supabase data (the existing
   best-effort push stays as-is until then)
+- **Phase 3 — Visual refresh** (placeholder, not yet designed) — a dedicated
+  cosmetic pass (colors, spacing, typography, polish) once the data-layer phases
+  above are done and the screens underneath have stopped shifting. Lower risk than
+  the phases above since it's CSS-first work on top of the app's existing shared
+  classes and design tokens, but needs care wherever JavaScript reads those same
+  class names to represent state (e.g. `.cCell.pending`, `.csize.done`) — those
+  dependencies must be traced before anything gets renamed. Deliberately sequenced
+  last so it isn't touching screens that Phase 2's remaining steps will still be
+  changing underneath it. Not scoped or brainstormed yet — revisit when Phase 2 is
+  further along.
 
 ## Success criteria
 
