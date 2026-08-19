@@ -2149,33 +2149,36 @@ function num(v){var n=parseFloat(v);return isNaN(n)?0:n;}
 function nowStamp(){var d=new Date();function p(n){return (n<10?'0':'')+n;}return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());}
 
 // ===== AUDIT LOG =====
-// Each entry: {id, ts, user, role, branch, action, detail, before, after}
-// Stored locally now; structured so it can POST to an online endpoint later
-// (see auditSync stub). Entries are append-only in normal use.
-function auditLoad(){try{return JSON.parse(localStorage.getItem('gs_audit')||'[]');}catch(e){return [];}}
-function auditSave(arr){try{localStorage.setItem('gs_audit',JSON.stringify(arr));}catch(e){}}
-function auditLog(action,detail,before,after){
+// Writes straight to Supabase's audit_log table (insert-only under RLS - see
+// the schema migration). No localStorage fallback: an entry that fails to
+// send is a genuinely lost log entry, same trust model as any server log -
+// we don't queue-and-retry audit writes the way Close Day does, since audit
+// entries are high-frequency and low-individual-stakes (losing one "Login"
+// entry to a network blip is acceptable; losing a Close Day never is).
+// Actions considered high-risk (see AUDIT_HIGH_RISK_ACTIONS below) always
+// carry risk:'high' so they can be filtered/alerted on later without a
+// schema change.
+var AUDIT_HIGH_RISK_ACTIONS=['Seal voided','Seal boundary override','Historical count corrected','Opening mismatch adjusted','Day closed','User deleted','User edited','User created','Manifold mismatch adjusted'];
+function auditLog(action,detail,before,after,outcome){
   try{
-    var arr=auditLoad();
-    var entry={
-      id:'a'+Date.now()+'_'+Math.floor(Math.random()*1000),
-      ts:nowStamp(),
-      user:operator||'(not signed in)',
-      role:role||'',
-      branch:branch||'',
+    if(!operator||!currentProfile){return;} // nothing to attribute this to - see logFailedLogin() for pre-login failures
+    var risk=(AUDIT_HIGH_RISK_ACTIONS.indexOf(action)>-1||outcome==='failure')?'high':'routine';
+    sb.from('audit_log').insert({
+      user_id:currentProfile.id,
+      user_name_snapshot:operator,
+      role_snapshot:role||'',
+      branch:branch||null,
       action:action,
       detail:detail||'',
       before:(before!==undefined?before:null),
-      after:(after!==undefined?after:null)
-    };
-    arr.push(entry);
-    auditSave(arr);
-    auditSync(entry); // stub — fires when online storage is linked
+      after:(after!==undefined?after:null),
+      outcome:outcome||'success',
+      risk:risk
+    }).then(function(res){
+      if(res.error)console.error('audit_log insert failed:',res.error.message);
+    });
   }catch(e){}
 }
-// STUB: when online storage is connected, POST the entry to the server here.
-// Left intentionally inert in the demo so nothing breaks offline.
-function auditSync(entry){ syncPush('Adjustments',[]); }
 // ===== GOOGLE SHEETS SYNC (Apps Script Web App) =====
 // Configure once in Manage Users. URL + token stored locally.
 function setSyncCfg(url,token){try{localStorage.setItem('gs_sync_cfg',JSON.stringify({url:url||'',token:token||''}));}catch(e){}}
