@@ -21,8 +21,19 @@ Deno.serve(async (req) => {
     const branchTyped = (body.branch || '').trim()
     if (!name) return new Response(JSON.stringify({ ok: true }), { status: 200, headers: cors })
 
-    const { data: profile } = await admin.from('profiles').select('id,name,level').ilike('name', name).maybeSingle()
+    const escapedName = name.replace(/[%_]/g, '\\$&')
+    const { data: profile } = await admin.from('profiles').select('id,name,level').ilike('name', escapedName).maybeSingle()
     if (!profile) return new Response(JSON.stringify({ ok: true }), { status: 200, headers: cors }) // unknown name - not logged, not an error either (don't leak which names exist)
+
+    const thirtySecondsAgo = new Date(Date.now() - 30 * 1000).toISOString()
+    const { data: recent } = await admin.from('audit_log')
+      .select('id')
+      .eq('user_id', profile.id)
+      .eq('action', 'Login failed')
+      .gte('ts', thirtySecondsAgo)
+      .limit(1)
+      .maybeSingle()
+    if (recent) return new Response(JSON.stringify({ ok: true }), { status: 200, headers: cors }) // already logged one recently for this person - throttle, don't flood
 
     await admin.from('audit_log').insert({
       user_id: profile.id,

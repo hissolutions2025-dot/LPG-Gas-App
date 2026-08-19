@@ -2173,7 +2173,7 @@ function nowStamp(){var d=new Date();function p(n){return (n<10?'0':'')+n;}retur
 var AUDIT_HIGH_RISK_ACTIONS=['Seal voided','Seal boundary override','Historical count corrected','Opening mismatch adjusted','Day closed','User deleted','User edited','User created','Manifold mismatch adjusted'];
 function auditLog(action,detail,before,after,outcome){
   try{
-    if(!operator||!currentProfile){return;} // nothing to attribute this to - see logFailedLogin() for pre-login failures
+    if(!operator||!currentProfile){return;} // nothing to attribute this to - pre-login failures are logged separately, via the log-failed-login Edge Function called from doLogin()
     var risk=(AUDIT_HIGH_RISK_ACTIONS.indexOf(action)>-1||outcome==='failure')?'high':'routine';
     sb.from('audit_log').insert({
       user_id:currentProfile.id,
