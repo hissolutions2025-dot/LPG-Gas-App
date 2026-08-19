@@ -2794,8 +2794,6 @@ function userSave(){
     _callManageUser(payload, token).then(function(res){
       _resetBusy();
       if(res.error || (res.data && res.data.error)){toast('Save failed: '+(res.error?res.error.message:res.data.error),true);return;}
-      var beforeSnap=existing?{name:existing.name,level:existing.level,branches:existing.branches.slice()}:null;
-      auditLog(existing?'User edited':'User created',(existing?'Edited user "':'Created '+lvl+' "')+name+'"'+(existing?'':' ('+branches.join(', ')+')'),beforeSnap,{name:name,level:lvl,branches:branches,perms:permsObj});
       if(currentProfile && existing && existing.id===currentProfile.id){
         currentProfile={id:currentProfile.id,name:name,level:lvl,branches:branches,perms:permsObj,access:accessObj,phone:phone,active:active};
         currentPerms=userPerms(currentProfile);
@@ -2830,7 +2828,6 @@ function userDelete(){
       _callManageUser({action:'delete',id:ueEditingName}, token).then(function(res){
         _resetBusy();
         if(res.error || (res.data && res.data.error)){toast('Delete failed: '+(res.error?res.error.message:res.data.error),true);return;}
-        auditLog('User deleted',me.name+' deleted user "'+(u?u.name:'')+'"',u?{name:u.name,level:u.level,branches:u.branches}:null,null);
         toast('User deleted');backToUserList();
       }).catch(function(){_resetBusy();toast('Network error — check your connection',true);});
     }).catch(function(){_resetBusy();toast('Network error — check your connection',true);});

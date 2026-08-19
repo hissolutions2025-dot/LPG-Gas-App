@@ -39,6 +39,21 @@ Deno.serve(async (req) => {
     const canManageUsers = callerIsOwner || (!!callerProfile && !!callerProfile.perms && !!callerProfile.perms.users)
     if (!canManageUsers) return new Response(JSON.stringify({ error: 'Not allowed' }), { status: 403, headers: cors })
 
+    const { data: callerName } = await admin.from('profiles').select('name,level').eq('id', userId).single()
+    async function logAction(actionLabel: string, detail: string, before: unknown, after: unknown) {
+      await admin.from('audit_log').insert({
+        user_id: userId,
+        user_name_snapshot: callerName?.name || 'unknown',
+        role_snapshot: callerName?.level || '',
+        action: actionLabel,
+        detail,
+        before: before ?? null,
+        after: after ?? null,
+        outcome: 'success',
+        risk: 'high'
+      })
+    }
+
     function fakeEmail(name: string) { return name.toLowerCase().replace(/[^a-z0-9]/g, '') + '@gassales.local' }
     // A caller who only has the delegated 'manage users' permission (not full Owner) may manage
     // Operator/Manager accounts, but must never be able to create/promote someone to Owner, grant
@@ -64,6 +79,7 @@ Deno.serve(async (req) => {
         if (rollbackErr) return new Response(JSON.stringify({ error: profileErr.message + ' (and cleanup also failed: ' + rollbackErr.message + ' - an orphaned login account may exist, contact support)' }), { status: 500, headers: cors })
         return new Response(JSON.stringify({ error: profileErr.message }), { status: 400, headers: cors })
       }
+      await logAction('User created', `Created ${level} "${name}" (${(branches||[]).join(', ')})`, null, { name, level, branches })
       return new Response(JSON.stringify({ ok: true, id: created.user.id }), { status: 200, headers: cors })
     }
 
@@ -99,6 +115,7 @@ Deno.serve(async (req) => {
         const { error: pwErr } = await admin.auth.admin.updateUserById(id, { password })
         if (pwErr) return new Response(JSON.stringify({ error: 'Profile saved, but the password change failed: ' + pwErr.message }), { status: 400, headers: cors })
       }
+      await logAction('User edited', `Edited user "${name}"`, { level: target?.level }, { name, level, branches, active })
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: cors })
     }
 
@@ -111,6 +128,7 @@ Deno.serve(async (req) => {
       if (profileDelErr) return new Response(JSON.stringify({ error: profileDelErr.message }), { status: 400, headers: cors })
       const { error: authDelErr } = await admin.auth.admin.deleteUser(id)
       if (authDelErr) return new Response(JSON.stringify({ error: 'The account record was removed, but the login itself could not be deleted: ' + authDelErr.message }), { status: 500, headers: cors })
+      await logAction('User deleted', `Deleted user "${target?.level || ''}"`, { level: target?.level }, null)
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: cors })
     }
 
