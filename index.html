@@ -2441,7 +2441,12 @@ function doLogin(){
   if(btn){btn.disabled=true;btn.style.opacity='.6';}
   var fakeEmail=_fakeEmail(picked.name);
   sb.auth.signInWithPassword({email:fakeEmail,password:p}).then(function(res){
-    if(res.error){loginBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}toast('Sign-in failed: '+res.error.message,true);return;}
+    if(res.error){
+      loginBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}
+      toast('Sign-in failed: '+res.error.message,true);
+      fetch(SUPABASE_URL+'/functions/v1/log-failed-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:picked.name,branch:b})}).catch(function(){});
+      return;
+    }
     sb.from('profiles').select('*').eq('id',res.data.user.id).single().then(function(pres){
       loginBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}
       if(pres.error||!pres.data){toast('Could not load your profile: '+(pres.error?pres.error.message:'not found'),true);return;}
