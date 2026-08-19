@@ -10,6 +10,8 @@
 
 **Verification convention used throughout this plan:** after each code change, (1) syntax-check with `node -e "new Function(require('fs').readFileSync('index.html','utf8').match(/<script>([\s\S]*)<\/script>/)[1])"`, (2) verify behavior with a browser-console assertion script (matching this project's established convention of bypassing login by setting `operator`/`role`/`branch`/`currentPerms`/`currentProfile` directly).
 
+**Execution-phase addition — `webapp-testing` (Playwright):** whichever subagent(s) execute this plan should load the `webapp-testing` skill and, on top of each task's manual console-assertion check, drive the actual UI through a real browser session for at least these end-to-end paths before the phase is considered done: (1) sign in with a wrong password → confirm a `Login failed` row appears in `audit_log`; (2) trigger a same-day correction as an already-qualifying Owner → confirm exactly one password prompt, not two; (3) close a day → confirm it's immediately visible in Count History from a *second*, separately-logged-in browser session (proves the cross-device read actually works, not just that the write succeeded); (4) simulate an offline Close Day (DevTools "offline" mode) → confirm the "waiting to sync" badge appears and clears once back online. These four cover the highest-risk behavior changes in this plan and are exactly the kind of thing a single-browser manual click-through is most likely to miss.
+
 ---
 
 ## File Structure
