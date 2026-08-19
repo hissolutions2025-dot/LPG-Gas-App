@@ -777,7 +777,7 @@
   </div>
   <!-- date list (after unlock) -->
   <div id="auditDateList" style="display:none">
-    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Owner view — all branches, all users.</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">All branches, all users.</div>
     <div class="adminRow">
       <div class="grow"><label class="mLabel" style="font-size:11px">From</label>
         <input type="date" class="mField" id="auditFrom"></div>
@@ -2289,7 +2289,6 @@ function syncRowsManifold(list,br){return list.map(function(r){var w=_who(r);
   // earlier Invoice/InvoiceNo and SupplierName/Invoice mismatches.
   return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Stage:(r.stage||'Opening'),Cylinder:r.cyl,Brand:(r.brand||''),GasType:(r.gasType||''),Scale:r.scale,Tare:r.tare,GasLeft:r.gasLeft,FillCheck:(r._fillCheck||''),Note:(r.notes||''),PhotoLink:(r._photoLink||''),RowId:(r._rid||'')};});}
 // ----- Audit report (password-gated, search by date range/branch/person) -----
-var auditSelDate=null;
 function openAudit(){
   if(!perm('audit')){toast('You do not have Audit Log rights',true);return;}
   document.getElementById('hTitle').textContent='Audit Report';document.getElementById('hSub').textContent='';
@@ -2321,20 +2320,22 @@ function auditSearchRange(){
   if(!from||!to){toast('Pick both dates',true);return;}
   var box=document.getElementById('auditRangeResults');
   box.innerHTML='<div class="histEmpty" style="text-align:center;padding:16px">Loading…</div>';
-  var q=sb.from('audit_log').select('*').gte('ts',from+'T00:00:00').lte('ts',to+'T23:59:59').order('ts',{ascending:false}).limit(500);
+  var q=sb.from('audit_log').select('*',{count:'exact'}).gte('ts',from+'T00:00:00').lte('ts',to+'T23:59:59').order('ts',{ascending:false}).limit(500);
   if(br)q=q.eq('branch',br);
   if(user)q=q.ilike('user_name_snapshot','%'+user+'%');
   q.then(function(res){
     if(res.error){box.innerHTML='<div class="histEmpty" style="text-align:center;padding:20px">Could not load: '+res.error.message+'</div>';return;}
     _auditRangeCache=res.data||[];
+    _auditRangeTotalCount=(res.count!==null&&res.count!==undefined)?res.count:_auditRangeCache.length;
     renderAuditRangeResults();
   });
 }
 var _auditRangeCache=[];
+var _auditRangeTotalCount=0;
 function renderAuditRangeResults(){
   var box=document.getElementById('auditRangeResults');
   if(!_auditRangeCache.length){box.innerHTML='<div class="histEmpty" style="text-align:center;padding:20px">No entries match.</div>';return;}
-  box.innerHTML=_auditRangeCache.map(function(e){
+  var rowsHtml=_auditRangeCache.map(function(e){
     var change='';
     if(e.before||e.after){var b=fmtVal(e.before),a=fmtVal(e.after);if(b||a)change='<div style="font-size:11px;color:var(--muted);margin-top:4px">'+(b?'was: '+b:'')+(b&&a?' → ':'')+(a?'now: '+a:'')+'</div>';}
     var failTag=(e.outcome==='failure')?' <span style="color:#C0392B;font-weight:800">✕ FAILED</span>':'';
@@ -2346,6 +2347,10 @@ function renderAuditRangeResults(){
       '<div style="font-size:11px;color:var(--steel);font-weight:700;margin-top:6px">'+e.user_name_snapshot+(e.role_snapshot?' ('+e.role_snapshot+')':'')+(e.branch?' · '+e.branch:'')+'</div>'+
       '</div>';
   }).join('');
+  var truncNotice=(_auditRangeTotalCount>_auditRangeCache.length)
+    ?('<div style="background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:700;padding:8px 12px;border-radius:10px;margin-bottom:10px">⚠ Showing the most recent '+_auditRangeCache.length+' of '+_auditRangeTotalCount+' matching entries — narrow the date range, branch, or person to see the rest.</div>')
+    :'';
+  box.innerHTML=truncNotice+rowsHtml;
 }
 function fmtVal(v){if(v===null||v===undefined)return '';if(typeof v==='object'){try{return Object.keys(v).map(function(k){var val=v[k];return k+': '+(Array.isArray(val)?val.join('/'):val);}).join(', ');}catch(e){return '';}}return ''+v;}
 function auditPDF(){
