@@ -870,16 +870,28 @@ function _callManageUser(payload, token){
   });
 }
 function _fakeEmail(name){return name.toLowerCase().replace(/[^a-z0-9]/g,'')+'@gassales.local';}
-function _verifyPersonPassword(name, password, filterFn){
-  if(!name || !password) return Promise.resolve(null);
+function _verifyPersonPassword(name, password, filterFn, failLabel){
+  if(!name || !password){
+    if(failLabel)auditLog(failLabel,'Cancelled or empty input','','','failure');
+    return Promise.resolve(null);
+  }
   var tmp = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {auth:{persistSession:false, autoRefreshToken:false}});
   var email = _fakeEmail(name);
   return tmp.auth.signInWithPassword({email:email, password:password}).then(function(res){
-    if(res.error) return null;
+    if(res.error){
+      if(failLabel)auditLog(failLabel,'Wrong password entered for "'+name+'"',null,null,'failure');
+      return null;
+    }
     return sb.from('profiles').select('*').eq('id',res.data.user.id).single().then(function(pres){
       tmp.auth.signOut();
-      if(pres.error || !pres.data) return null;
-      if(filterFn && !filterFn(pres.data)) return null;
+      if(pres.error || !pres.data){
+        if(failLabel)auditLog(failLabel,'Profile lookup failed for "'+name+'"',null,null,'failure');
+        return null;
+      }
+      if(filterFn && !filterFn(pres.data)){
+        if(failLabel)auditLog(failLabel,'"'+name+'" does not hold the required role/permission',null,null,'failure');
+        return null;
+      }
       return pres.data;
     });
   }).catch(function(){
@@ -890,14 +902,14 @@ function _verifyPersonPassword(name, password, filterFn){
 function _selfReauth(actionLabel){
   var pw=prompt(actionLabel+'\n\nEnter YOUR password to authorise:');
   if(pw===null)return Promise.resolve(null);
-  return _verifyPersonPassword(operator, pw, null);
+  return _verifyPersonPassword(operator, pw, null, 'Authorisation failed');
 }
 function _borrowAuth(roleHint, actionLabel, filterFn){
   var name=prompt(actionLabel+'\n\nEnter the '+roleHint+"'s name:");
   if(name===null)return Promise.resolve(null);
   var pw=prompt('Enter '+name+"'s password:");
   if(pw===null)return Promise.resolve(null);
-  return _verifyPersonPassword(name, pw, filterFn);
+  return _verifyPersonPassword(name, pw, filterFn, 'Authorisation failed');
 }
 const BRANDS=['Afrox','Oryx','Easigas','Totalgas','Afrigas','Other'];
 const ALLSIZES=['5kg','9kg','12kg','14kg','19kg','48kg-SV','14kg-FLT','19kg-FLT','48kg-DV','8kg-Prop','18kg-Prop','45kg-Prop-SV','45kg-Prop-DV'];
