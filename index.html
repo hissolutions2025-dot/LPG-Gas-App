@@ -5618,6 +5618,7 @@ function viewSavedDay(ds){
   calSelDate=ds;renderCalendar();
   document.getElementById('pastDayBody').innerHTML='<div class="histEmpty" style="text-align:center;padding:20px">Loading…</div>';
   loadSavedDayShared(ds,branch).then(function(rec){
+    if(ds!==calSelDate)return; // a different date was tapped before this one finished loading - stale, ignore it
     if(!rec){document.getElementById('pastDayBody').innerHTML='<div class="histEmpty">No saved count for that day.</div>';return;}
     _renderSavedDayBody(rec,ds);
   });
