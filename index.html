@@ -437,6 +437,7 @@
 
 <!-- COUNT HISTORY -->
 <div id="historyView" class="view"><div class="wrap">
+  <div id="closeDayPendingBadgeHistory" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
   <div class="ctxbar" id="hCtx" style="margin-bottom:12px;"></div>
   <div class="histTabs">
     <button class="htab on" id="htab-today" onclick="setHistTab('today')">Today</button>
@@ -4664,6 +4665,7 @@ function histSetBranch(x){
   histBranch=x;applyBranchLock('hbr-',x);openHistory();
 }
 function openHistory(){
+  _updateCloseDayPendingBadge();
   if(!histBranch||(role==='Operator'))histBranch=branch||'Helderberg';
   applyBranchLock('hbr-',histBranch);
   document.getElementById('hCtx').innerHTML='';document.getElementById('hCtx').style.display='none';
@@ -4933,8 +4935,30 @@ function closeDay(){
 // "waiting to sync" until confirmed. Never silently dropped, never assumed
 // successful.
 function _closeDayQueueKey(){return 'gs_closeday_pending';}
-function _closeDayQueueLoad(){try{return JSON.parse(localStorage.getItem(_closeDayQueueKey())||'[]');}catch(e){return [];}}
-function _closeDayQueueSave(q){try{localStorage.setItem(_closeDayQueueKey(),JSON.stringify(q));}catch(e){}}
+function _closeDayQueueLoad(){
+  try{return JSON.parse(localStorage.getItem(_closeDayQueueKey())||'[]');}
+  catch(e){console.error('Pending Close Day sync queue was corrupted and could not be read:',e.message);return [];}
+}
+function _closeDayQueueSave(q){
+  try{localStorage.setItem(_closeDayQueueKey(),JSON.stringify(q));}
+  catch(e){
+    console.error('Could not save the pending Close Day sync queue:',e.message);
+    toast('Could not save a pending sync record — device storage may be full. Free up space and reopen the app.',true);
+  }
+}
+function _closeDayQueueRemove(branchToRemove, dateToRemove){
+  // Re-reads the CURRENT queue right before writing, not a stale snapshot from
+  // whenever the enclosing flush started - this is what makes each removal safe
+  // even if something else pushed a new record onto the queue in the meantime.
+  // Both this and _closeDaySend's push are fully synchronous (no await between
+  // their own read and write), so neither can be interrupted mid-operation by
+  // the other under JS's single-threaded execution - the only way this used to
+  // go wrong was the OLD code holding a stale snapshot across a long async gap,
+  // which this removes entirely.
+  var q=_closeDayQueueLoad();
+  var idx=q.findIndex(function(r){return r.branch===branchToRemove && r.date===dateToRemove;});
+  if(idx>-1){q.splice(idx,1);_closeDayQueueSave(q);}
+}
 function _closeDaySend(record){
   sb.from('day_closes').insert(record).then(function(res){
     if(res.error){
@@ -4950,28 +4974,31 @@ function _closeDaySend(record){
 function _closeDayFlushQueue(){
   var q=_closeDayQueueLoad();
   if(!q.length)return;
-  var remaining=[];
-  var pending=q.length;
   q.forEach(function(record){
     sb.from('day_closes').insert(record).then(function(res){
-      pending--;
-      if(res.error && res.error.code!=='23505'){ // 23505 = unique violation (branch,date) - already landed from a prior attempt, safe to drop
-        remaining.push(record);
+      // 23505 = unique violation (branch,date) - already landed from a prior
+      // attempt; either way (fresh success or already-there), it's safely off
+      // the queue now.
+      if(!res.error || res.error.code==='23505'){
+        _closeDayQueueRemove(record.branch, record.date);
+        _updateCloseDayPendingBadge();
       }
-      if(pending===0){_closeDayQueueSave(remaining);_updateCloseDayPendingBadge();}
+      // any other error: leave it queued, already-current in localStorage,
+      // nothing to do here - it'll be retried on the next flush.
     }).catch(function(){
-      pending--;
-      remaining.push(record);
-      if(pending===0){_closeDayQueueSave(remaining);_updateCloseDayPendingBadge();}
+      // network-level failure - leave it queued, try again next flush.
     });
   });
 }
 function _updateCloseDayPendingBadge(){
   var n=_closeDayQueueLoad().length;
-  var el=document.getElementById('closeDayPendingBadge');
-  if(!el)return;
-  el.style.display=n?'block':'none';
-  el.textContent=n?('⏳ '+n+' day(s) waiting to sync'):'';
+  var text=n?('⏳ '+n+' day(s) waiting to sync'):'';
+  ['closeDayPendingBadge','closeDayPendingBadgeHistory'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(!el)return;
+    el.style.display=n?'block':'none';
+    el.textContent=text;
+  });
 }
 window.addEventListener('online',_closeDayFlushQueue);
 function _closeDayFinalize(bal){
