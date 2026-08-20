@@ -99,6 +99,10 @@
   .modal{display:none;position:fixed;inset:0;background:rgba(20,32,48,.55);z-index:60;align-items:flex-end;justify-content:center;}
   .modal.show{display:flex;}
   .modalCard{background:#fff;width:100%;max-width:520px;border-radius:20px 20px 0 0;padding:20px;max-height:88vh;overflow:auto;}
+  /* The correction picker's content is short right when it first opens (just a few
+     section buttons) - with no minimum height the sheet only grows as tall as that,
+     rendering as a thin strip pinned to the bottom instead of a properly visible sheet. */
+  #corrModal .modalCard{min-height:50vh;}
   .modalHead{display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;}
   .modalHead span{font-size:20px;font-weight:800;color:var(--navy);} .mClose{background:none;border:none;font-size:20px;color:var(--muted);cursor:pointer;padding:4px 8px;}
   .modalState{font-size:12px;font-weight:700;color:var(--steel);margin-bottom:12px;}
@@ -193,6 +197,11 @@
      .textContent in several places as the photo count changes, which would strip any
      inner markup on every update. */
   .photoBtn{margin-top:6px;background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel);border-radius:10px;padding:12px 16px;font-size:16px;font-weight:800;cursor:pointer;width:100%;}
+
+  /* "Adjust an already-committed entry/count" link, styled as a proper visible tab
+     instead of a tiny plain-text line - easy to miss at the old 11px/no-border size. */
+  .adjustTab{width:100%;text-align:left;background:var(--sel);color:var(--steel);border:1.5px solid var(--steel);border-radius:10px;padding:11px 14px;font-size:13px;font-weight:800;cursor:pointer;margin-bottom:12px;}
+  .adjustTab:active{background:var(--steel);color:#fff;}
 
   .histTabs{display:flex;gap:8px;margin-bottom:14px;}
   .htab{flex:1 1 110px;padding:10px 6px;border:1.5px solid var(--navy);border-radius:10px;background:#fff;color:var(--navy);font-size:12.5px;font-weight:800;cursor:pointer;}
@@ -335,7 +344,7 @@
   <div class="wrap">
     <div class="ctxbar" id="cCtx" style="margin-bottom:10px;"></div>
     <div id="cTimeWarnBanner" style="display:none;background:rgba(230,57,70,.12);border:2px solid var(--alert);border-radius:10px;padding:8px 12px;font-size:12px;color:var(--alert);font-weight:800;margin-bottom:10px"></div>
-    <button type="button" id="cAdjustLink" style="display:none;background:none;border:none;color:var(--steel);font-size:11px;font-weight:700;padding:0 0 12px;cursor:pointer" onclick="openCountAdjust()">✎ Adjust an already-committed entry (today only)</button>
+    <button type="button" id="cAdjustLink" class="adjustTab" style="display:none" onclick="openCountAdjust()">✎ Adjust an already-committed count (today only)</button>
     <div class="capHint" id="cHint" style="margin-bottom:12px;"></div>
     <div class="cGrid" id="cGrid"></div>
   </div>
@@ -386,7 +395,7 @@
   <div class="wrap">
     <div class="ctxbar" id="rCtx" style="margin-bottom:10px;"></div>
     <div class="capHint" id="rHint" style="margin-bottom:12px;"></div>
-    <button type="button" id="rAdjustLink" style="display:none;background:none;border:none;color:var(--steel);font-size:11px;font-weight:700;padding:0 0 12px;cursor:pointer" onclick="openReceivedAdjust()">✎ Adjust an already-committed entry (today only)</button>
+    <button type="button" id="rAdjustLink" class="adjustTab" style="display:none" onclick="openReceivedAdjust()">✎ Adjust an already-committed entry (today only)</button>
     <div class="cGrid" id="rGrid"></div>
   </div>
   <div class="cFooter"><button class="cbGhost" onclick="goHome()">Menu</button><button class="cbPrimary" onclick="rReview()">Review &amp; submit &rarr;</button></div>
@@ -424,7 +433,7 @@
   <div class="wrap" style="padding-top:14px;">
     <div class="lockmsg" id="capLock"></div>
     <div id="capTimeWarnBanner" style="display:none;background:rgba(230,57,70,.12);border:2px solid var(--alert);border-radius:10px;padding:8px 12px;font-size:12px;color:var(--alert);font-weight:800;margin-bottom:10px"></div>
-    <button type="button" id="capAdjustLink" style="display:none;background:none;border:none;color:var(--steel);font-size:11px;font-weight:700;padding:0 0 12px;cursor:pointer" onclick="openCapAdjust()">✎ Adjust an already-committed entry (today only)</button>
+    <button type="button" id="capAdjustLink" class="adjustTab" style="display:none" onclick="openCapAdjust()">✎ Adjust an already-committed entry (today only)</button>
     <div class="capHint" id="capHint"></div>
     <div class="csizegrid" id="capGrid"></div>
     <button class="saveBtn" onclick="capReview()">Review &amp; commit &rarr;</button>
@@ -2967,7 +2976,16 @@ function cCommittedLines(sz,side,br,ct){
   });
 }
 function cCellHtml(sz,side){
-  var arr=cCell(sz)[side];var t=cSideTotal(arr);var pending=arr.length>0&&t>0;
+  var arr=cCell(sz)[side];var t=cSideTotal(arr);
+  // A line still counts as "pending" (about to change) even when its new total is
+  // exactly 0 - e.g. correcting a mis-entered brand down to zero, or "Reset this size".
+  // The old `t>0` check treated an intentional zero-out as "nothing pending" and fell
+  // back to showing the stale already-committed number, making a correction or a reset
+  // look like it silently failed even though the draft was genuinely updated underneath.
+  // _fromCommitted marks a line that started from an already-committed value (see
+  // cOpenDetail/cResetSizeDo) - its presence means a real edit is in progress regardless
+  // of what the resulting total happens to be.
+  var pending=arr.some(function(l){return num(l.qty)>0||l._fromCommitted;});
   var committed=cCommittedLines(sz,side);var cTotal=committed.reduce(function(s,r){return s+num(r.qty);},0);
   var st=(side==='full')?'Full':'Empty';
   var bad=arr.some(function(l){var k=cMisKey(cBranch,st,sz,l.brand);return l._mismatch||l._locked||cLocked[k];});
@@ -3061,7 +3079,7 @@ function cRenderDetail(){
     var dis=locked?' disabled':'';
     return '<div class="brandCard"'+cardStyle+'><div class="bLine">'+
       '<select onchange="cSetBrand('+i+',this.value)"'+dis+'>'+brands.map(function(x){return '<option'+(x===l.brand?' selected':'')+'>'+x+'</option>';}).join('')+'</select>'+
-      '<input type="number" inputmode="numeric" value="'+(l.qty!==undefined?l.qty:'')+'" placeholder="qty" oninput="cSetQty('+i+',this.value)"'+dis+'>'+
+      '<input type="number" inputmode="numeric" min="0" value="'+(l.qty!==undefined?l.qty:'')+'" placeholder="qty" oninput="cSetQty('+i+',this.value)"'+dis+'>'+
       (l._fromCommitted?'<span style="font-size:9px;font-weight:800;color:var(--ok);background:#E9F7EF;border-radius:6px;padding:3px 6px;white-space:nowrap">already committed</span>':'')+
       '<button class="del" onclick="cDelLine('+i+')"'+dis+'>×</button></div>'+
       (locked?'<div style="font-size:11px;color:#C0392B;font-weight:800;margin-top:4px">🔒 This count is incorrect — locked. Manager/Owner must correct in Count History.</div>':
@@ -3076,7 +3094,13 @@ function cRenderDetail(){
 }
 function cAddLine(){cCell(cDet.size)[cDet.side].push({brand:cBrands(cDet.side)[0],qty:''});cRenderDetail();}
 function cSetBrand(i,v){cCell(cDet.size)[cDet.side][i].brand=v;cRenderDetail();}
-function cSetQty(i,v){var l=cCell(cDet.size)[cDet.side][i];l.qty=v;if(num(v)>0&&!l._ts)l._ts=nowStamp();document.getElementById('cDetTot').textContent=cSideTotal(cCell(cDet.size)[cDet.side]);}
+function cSetQty(i,v){
+  var l=cCell(cDet.size)[cDet.side][i];
+  if(num(v)<0)v='0'; // a physical cylinder count can never be negative
+  l.qty=v;
+  if(num(v)>0&&!l._ts)l._ts=nowStamp();
+  document.getElementById('cDetTot').textContent=cSideTotal(cCell(cDet.size)[cDet.side]);
+}
 function cSetNote(i,v){cCell(cDet.size)[cDet.side][i].note=v;}
 function cDelLine(i){
   var a=cCell(cDet.size)[cDet.side];
