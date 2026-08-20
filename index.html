@@ -5469,11 +5469,18 @@ function corrApply(){
 function _pushSharedCorrection(sharedId, correction){
   if(!sharedId)return;
   sb.from('day_closes').select('corrections').eq('id',sharedId).single().then(function(res){
-    if(res.error||!res.data)return;
+    if(res.error||!res.data){
+      toast('Correction saved locally, but could not sync to the shared record: '+(res.error?res.error.message:'record not found'),true);
+      return;
+    }
     var updated=(res.data.corrections||[]).concat([correction]);
     sb.from('day_closes').update({corrections:updated}).eq('id',sharedId).then(function(r2){
       if(r2.error)toast('Correction saved locally, but could not sync to the shared record: '+r2.error.message,true);
+    }).catch(function(){
+      toast('Correction saved locally, but a network error stopped it syncing to the shared record',true);
     });
+  }).catch(function(){
+    toast('Correction saved locally, but a network error stopped it syncing to the shared record',true);
   });
 }
 function correctSavedLine(ds){
