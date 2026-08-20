@@ -34,10 +34,25 @@ Deno.serve(async (req) => {
     }
     const userId = claimsData.claims.sub as string
 
-    const { data: callerProfile } = await admin.from('profiles').select('level,perms').eq('id', userId).single()
+    const { data: callerProfile } = await admin.from('profiles').select('name,level,perms').eq('id', userId).single()
     const callerIsOwner = !!callerProfile && callerProfile.level === 'Owner'
     const canManageUsers = callerIsOwner || (!!callerProfile && !!callerProfile.perms && !!callerProfile.perms.users)
     if (!canManageUsers) return new Response(JSON.stringify({ error: 'Not allowed' }), { status: 403, headers: cors })
+
+    async function logAction(actionLabel: string, detail: string, before: unknown, after: unknown) {
+      const { error } = await admin.from('audit_log').insert({
+        user_id: userId,
+        user_name_snapshot: callerProfile?.name || 'unknown',
+        role_snapshot: callerProfile?.level || '',
+        action: actionLabel,
+        detail,
+        before: before ?? null,
+        after: after ?? null,
+        outcome: 'success',
+        risk: 'high'
+      })
+      if (error) console.error('audit_log insert failed:', error.message)
+    }
 
     function fakeEmail(name: string) { return name.toLowerCase().replace(/[^a-z0-9]/g, '') + '@gassales.local' }
     // A caller who only has the delegated 'manage users' permission (not full Owner) may manage
@@ -64,13 +79,14 @@ Deno.serve(async (req) => {
         if (rollbackErr) return new Response(JSON.stringify({ error: profileErr.message + ' (and cleanup also failed: ' + rollbackErr.message + ' - an orphaned login account may exist, contact support)' }), { status: 500, headers: cors })
         return new Response(JSON.stringify({ error: profileErr.message }), { status: 400, headers: cors })
       }
+      await logAction('User created', `Created ${level} "${name}" (${(branches||[]).join(', ')})`, null, { name, level, branches })
       return new Response(JSON.stringify({ ok: true, id: created.user.id }), { status: 200, headers: cors })
     }
 
     if (action === 'update') {
       const { id, name, level, branches, perms, access, phone, password, active } = body
       if (!id) return new Response(JSON.stringify({ error: 'Missing id' }), { status: 400, headers: cors })
-      const { data: target } = await admin.from('profiles').select('level').eq('id', id).single()
+      const { data: target } = await admin.from('profiles').select('name,level,branches').eq('id', id).single()
       if (!callerIsOwner) {
         if (target && target.level === 'Owner') return new Response(JSON.stringify({ error: 'Only an Owner can edit an Owner account' }), { status: 403, headers: cors })
         if (level === 'Owner' || ownerEquivalentPerms(perms)) return new Response(JSON.stringify({ error: 'Only an Owner can grant Owner status or Owner-level permissions' }), { status: 403, headers: cors })
@@ -99,18 +115,20 @@ Deno.serve(async (req) => {
         const { error: pwErr } = await admin.auth.admin.updateUserById(id, { password })
         if (pwErr) return new Response(JSON.stringify({ error: 'Profile saved, but the password change failed: ' + pwErr.message }), { status: 400, headers: cors })
       }
+      await logAction('User edited', `Edited user "${name}"`, { name: target?.name, level: target?.level, branches: target?.branches }, { name, level, branches, active })
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: cors })
     }
 
     if (action === 'delete') {
       const { id } = body
       if (!id) return new Response(JSON.stringify({ error: 'Missing id' }), { status: 400, headers: cors })
-      const { data: target } = await admin.from('profiles').select('level').eq('id', id).single()
+      const { data: target } = await admin.from('profiles').select('name,level,branches').eq('id', id).single()
       if (target && target.level === 'Owner') return new Response(JSON.stringify({ error: 'Cannot delete the Owner' }), { status: 400, headers: cors })
       const { error: profileDelErr } = await admin.from('profiles').delete().eq('id', id)
       if (profileDelErr) return new Response(JSON.stringify({ error: profileDelErr.message }), { status: 400, headers: cors })
       const { error: authDelErr } = await admin.auth.admin.deleteUser(id)
       if (authDelErr) return new Response(JSON.stringify({ error: 'The account record was removed, but the login itself could not be deleted: ' + authDelErr.message }), { status: 500, headers: cors })
+      await logAction('User deleted', `Deleted user "${target?.name || ''}"`, { name: target?.name, level: target?.level, branches: target?.branches }, null)
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: cors })
     }
 

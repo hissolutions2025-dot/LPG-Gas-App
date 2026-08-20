@@ -73,7 +73,6 @@
   body[data-view="usersView"] #usersView,
   body[data-view="userEditView"] #userEditView,
   body[data-view="auditView"] #auditView,
-  body[data-view="auditDetailView"] #auditDetailView,
   body[data-view="adminView"] #adminView,
   body[data-view="residualView"] #residualView{display:block !important;}
   #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(80px);background:var(--ok);color:#fff;padding:14px 22px;border-radius:12px;font-weight:700;font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.25);transition:transform .3s;z-index:70;max-width:90%;text-align:center;}
@@ -252,6 +251,7 @@
 <div id="landing" class="view">
   <div class="wrap">
     <div class="datebar"><label>Stock-take date</label><div class="val" id="dateVal">—</div></div>
+    <div id="closeDayPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div class="greet">Every entry uses today's date, your name and branch.</div>
     <div class="grid">
       <button class="tile t1" onclick="openCount()"><div class="ic">&#9638;</div><h3>Stock Count</h3><p>Opening / closing, full &amp; empty</p><span class="badge" id="b-count" style="display:none">0</span></button>
@@ -443,6 +443,7 @@
 
 <!-- COUNT HISTORY -->
 <div id="historyView" class="view"><div class="wrap">
+  <div id="closeDayPendingBadgeHistory" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
   <div class="ctxbar" id="hCtx" style="margin-bottom:12px;"></div>
   <div class="histTabs">
     <button class="htab on" id="htab-today" onclick="setHistTab('today')">Today</button>
@@ -784,23 +785,23 @@
   </div>
   <!-- date list (after unlock) -->
   <div id="auditDateList" style="display:none">
-    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Owner view — all branches, all users. Pick a date to open its full report.</div>
-    <div id="auditDates"></div>
-  </div>
-</div></div>
-
-<!-- AUDIT DETAIL (own page) -->
-<div id="auditDetailView" class="view"><div class="wrap">
-  <div class="detBanner full" style="margin-bottom:14px"><div class="big" id="auditDetTitle">Audit</div><div class="small" id="auditDetSub"></div></div>
-  <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
-    <select class="mField" id="auditFilterUser" style="flex:1;min-width:120px" onchange="renderAuditDetail()"><option value="">All users</option></select>
-    <select class="mField" id="auditFilterAction" style="flex:1;min-width:120px" onchange="renderAuditDetail()"><option value="">All actions</option></select>
-  </div>
-  <div id="auditBody"></div>
-  <div style="margin-top:14px;display:flex;flex-direction:column;gap:10px">
-    <button class="exportBtn" style="background:#B5533B" onclick="auditPDF()">Download PDF</button>
-    <button class="exportBtn" onclick="auditCSV()">Export to CSV (Excel)</button>
-    <button class="exportBtn" style="background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel)" onclick="show('auditView')">&larr; Back to dates</button>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">All branches, all users.</div>
+    <div class="adminRow">
+      <div class="grow"><label class="mLabel" style="font-size:11px">From</label>
+        <input type="date" class="mField" id="auditFrom"></div>
+      <div class="grow"><label class="mLabel" style="font-size:11px">To</label>
+        <input type="date" class="mField" id="auditTo"></div>
+    </div>
+    <div class="adminRow">
+      <div class="grow"><label class="mLabel" style="font-size:11px">Branch</label>
+        <select class="mField" id="auditRangeBranch"><option value="">All branches</option><option>Helderberg</option><option>Kleinmond</option></select></div>
+      <div class="grow"><label class="mLabel" style="font-size:11px">Person</label>
+        <input type="text" class="mField" id="auditRangeUser" placeholder="Optional name filter"></div>
+    </div>
+    <button class="saveBtn" onclick="auditSearchRange()">Search</button>
+    <div id="auditRangeResults" style="margin-top:12px"></div>
+    <button class="exportBtn" style="background:#B5533B;margin-top:10px" onclick="auditPDF()">Download PDF</button>
+    <button class="exportBtn" style="margin-top:8px" onclick="auditCSV()">Export to CSV (Excel)</button>
   </div>
 </div></div>
 
@@ -876,16 +877,28 @@ function _callManageUser(payload, token){
   });
 }
 function _fakeEmail(name){return name.toLowerCase().replace(/[^a-z0-9]/g,'')+'@gassales.local';}
-function _verifyPersonPassword(name, password, filterFn){
-  if(!name || !password) return Promise.resolve(null);
+function _verifyPersonPassword(name, password, filterFn, failLabel){
+  if(!name || !password){
+    if(failLabel)auditLog(failLabel,'Cancelled or empty input','','','failure');
+    return Promise.resolve(null);
+  }
   var tmp = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {auth:{persistSession:false, autoRefreshToken:false}});
   var email = _fakeEmail(name);
   return tmp.auth.signInWithPassword({email:email, password:password}).then(function(res){
-    if(res.error) return null;
+    if(res.error){
+      if(failLabel)auditLog(failLabel,'Wrong password entered for "'+name+'"',null,null,'failure');
+      return null;
+    }
     return sb.from('profiles').select('*').eq('id',res.data.user.id).single().then(function(pres){
       tmp.auth.signOut();
-      if(pres.error || !pres.data) return null;
-      if(filterFn && !filterFn(pres.data)) return null;
+      if(pres.error || !pres.data){
+        if(failLabel)auditLog(failLabel,'Profile lookup failed for "'+name+'"',null,null,'failure');
+        return null;
+      }
+      if(filterFn && !filterFn(pres.data)){
+        if(failLabel)auditLog(failLabel,'"'+name+'" does not hold the required role/permission',null,null,'failure');
+        return null;
+      }
       return pres.data;
     });
   }).catch(function(){
@@ -896,14 +909,14 @@ function _verifyPersonPassword(name, password, filterFn){
 function _selfReauth(actionLabel){
   var pw=prompt(actionLabel+'\n\nEnter YOUR password to authorise:');
   if(pw===null)return Promise.resolve(null);
-  return _verifyPersonPassword(operator, pw, null);
+  return _verifyPersonPassword(operator, pw, null, 'Authorisation failed');
 }
 function _borrowAuth(roleHint, actionLabel, filterFn){
   var name=prompt(actionLabel+'\n\nEnter the '+roleHint+"'s name:");
   if(name===null)return Promise.resolve(null);
   var pw=prompt('Enter '+name+"'s password:");
   if(pw===null)return Promise.resolve(null);
-  return _verifyPersonPassword(name, pw, filterFn);
+  return _verifyPersonPassword(name, pw, filterFn, 'Authorisation failed');
 }
 const BRANDS=['Afrox','Oryx','Easigas','Totalgas','Afrigas','Other'];
 const ALLSIZES=['5kg','9kg','12kg','14kg','19kg','48kg-SV','14kg-FLT','19kg-FLT','48kg-DV','8kg-Prop','18kg-Prop','45kg-Prop-SV','45kg-Prop-DV'];
@@ -2109,8 +2122,26 @@ function voidSeal(branch, seal, dayIsClosed){
   });
 }
 // ===== HIGH-RISK SECOND PASSWORD (Owner-set; required for Close Day + Factory Reset) =====
-function getHighRiskPw(){try{return localStorage.getItem('gs_highrisk_pw')||'';}catch(e){return '';}}
-function setHighRiskPw(v){try{localStorage.setItem('gs_highrisk_pw',v||'');}catch(e){}}
+// Never stored client-side in any form (not even hashed) - verify-highrisk
+// owns the hash entirely server-side. See supabase/functions/verify-highrisk.
+// Distinguishes a genuine network failure (couldn't reach the server at all -
+// networkOk:false) from a response the server actually sent, even an error
+// one (networkOk:true, error:'...') - callers need this distinction: Close Day
+// is deliberately designed to keep working offline (see the day_closes queue),
+// so a true network failure here should fail OPEN, but a live server actively
+// rejecting the request should NOT be treated the same way, or sending a bad
+// request would become a way to skip this check entirely.
+function _callVerifyHighRisk(payload){
+  return sb.auth.getSession().then(function(sres){
+    var token=sres.data&&sres.data.session&&sres.data.session.access_token;
+    if(!token)return {networkOk:true, error:'Not signed in'};
+    return fetch(SUPABASE_URL+'/functions/v1/verify-highrisk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.assign({},payload,{callerToken:token}))})
+      .then(function(res){return res.json();})
+      .then(function(data){data.networkOk=true;return data;});
+  }).catch(function(){
+    return {networkOk:false, error:'Network error'};
+  });
+}
 function saveSyncCfg(){
   if(!perm('users')){toast('Owner only',true);return;}
   var url=(document.getElementById('syncUrl').value||'').trim();
@@ -2134,54 +2165,79 @@ function loadSyncCfgUI(){
 function saveHighRiskPw(){
   if(!perm('users')){toast('Owner only',true);return;}
   var v=document.getElementById('highRiskPw').value;
-  setHighRiskPw(v);
-  auditLog('High-risk password '+(v?'set':'cleared'),'High-risk second password '+(v?'updated':'disabled'));
-  toast(v?'High-risk password saved ✓':'High-risk password disabled');
-  document.getElementById('highRiskPw').value='';
+  _callVerifyHighRisk({action:'set',value:v}).then(function(res){
+    if(!res.networkOk){toast('Network error — could not save, check your connection',true);return;}
+    if(res.error){toast('Could not save: '+res.error,true);return;}
+    auditLog('High-risk password '+(v?'set':'cleared'),'High-risk second password '+(v?'updated':'disabled'));
+    toast(v?'High-risk password saved ✓':'High-risk password disabled');
+    document.getElementById('highRiskPw').value='';
+  });
 }
 function checkHighRisk(actionLabel){
-  var hp=getHighRiskPw();
-  if(!hp){
-    // not set yet — allow but nudge owner to set one
-    if(perm('users'))toast('Tip: set a high-risk second password in Manage Users',false);
-    return true;
-  }
-  var pw=prompt('Second (high-risk) password required for '+actionLabel+':');
-  if(pw===null)return false;
-  if(pw!==hp){toast('Wrong high-risk password',true);return false;}
-  return true;
+  return _callVerifyHighRisk({action:'check',value:''}).then(function(setRes){
+    if(!setRes.networkOk){
+      // genuinely couldn't reach the server - fail open, same offline-tolerant
+      // philosophy as the rest of Close Day (see the day_closes retry queue) -
+      // never block on a pure connectivity blip for this secondary check.
+      toast('Could not reach the server to check the high-risk password — continuing without it (no signal)',false);
+      return true;
+    }
+    if(setRes.error){
+      // reached the server, but it rejected the request for some other reason -
+      // fail CLOSED here, since this path is reachable by anyone signed in and
+      // must not become a way to bypass the check by sending a bad request.
+      toast('Could not verify the high-risk password: '+setRes.error,true);
+      return false;
+    }
+    if(!setRes.set){
+      if(perm('users'))toast('Tip: set a high-risk second password in Manage Users',false);
+      return true;
+    }
+    var pw=prompt('Second (high-risk) password required for '+actionLabel+':');
+    if(pw===null)return false;
+    return _callVerifyHighRisk({action:'check',value:pw}).then(function(res){
+      if(!res.networkOk){toast('Could not verify the high-risk password — check your connection',true);return false;}
+      if(res.error){toast('Could not verify the high-risk password: '+res.error,true);return false;}
+      if(res.lockedOut){toast('Too many wrong attempts — please wait 15 minutes and try again',true);return false;}
+      if(!res.match){toast('Wrong high-risk password',true);return false;}
+      return true;
+    });
+  });
 }
 function num(v){var n=parseFloat(v);return isNaN(n)?0:n;}
 function nowStamp(){var d=new Date();function p(n){return (n<10?'0':'')+n;}return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());}
 
 // ===== AUDIT LOG =====
-// Each entry: {id, ts, user, role, branch, action, detail, before, after}
-// Stored locally now; structured so it can POST to an online endpoint later
-// (see auditSync stub). Entries are append-only in normal use.
-function auditLoad(){try{return JSON.parse(localStorage.getItem('gs_audit')||'[]');}catch(e){return [];}}
-function auditSave(arr){try{localStorage.setItem('gs_audit',JSON.stringify(arr));}catch(e){}}
-function auditLog(action,detail,before,after){
+// Writes straight to Supabase's audit_log table (insert-only under RLS - see
+// the schema migration). No localStorage fallback: an entry that fails to
+// send is a genuinely lost log entry, same trust model as any server log -
+// we don't queue-and-retry audit writes the way Close Day does, since audit
+// entries are high-frequency and low-individual-stakes (losing one "Login"
+// entry to a network blip is acceptable; losing a Close Day never is).
+// Actions considered high-risk (see AUDIT_HIGH_RISK_ACTIONS below) always
+// carry risk:'high' so they can be filtered/alerted on later without a
+// schema change.
+var AUDIT_HIGH_RISK_ACTIONS=['Seal voided','Seal boundary override','Historical count corrected','Opening mismatch adjusted','Day closed','User deleted','User edited','User created','Manifold mismatch adjusted'];
+function auditLog(action,detail,before,after,outcome){
   try{
-    var arr=auditLoad();
-    var entry={
-      id:'a'+Date.now()+'_'+Math.floor(Math.random()*1000),
-      ts:nowStamp(),
-      user:operator||'(not signed in)',
-      role:role||'',
-      branch:branch||'',
+    if(!operator||!currentProfile){return;} // nothing to attribute this to - pre-login failures are logged separately, via the log-failed-login Edge Function called from doLogin()
+    var risk=(AUDIT_HIGH_RISK_ACTIONS.indexOf(action)>-1||outcome==='failure')?'high':'routine';
+    sb.from('audit_log').insert({
+      user_id:currentProfile.id,
+      user_name_snapshot:operator,
+      role_snapshot:role||'',
+      branch:branch||null,
       action:action,
       detail:detail||'',
       before:(before!==undefined?before:null),
-      after:(after!==undefined?after:null)
-    };
-    arr.push(entry);
-    auditSave(arr);
-    auditSync(entry); // stub — fires when online storage is linked
+      after:(after!==undefined?after:null),
+      outcome:outcome||'success',
+      risk:risk
+    }).then(function(res){
+      if(res.error)console.error('audit_log insert failed:',res.error.message);
+    });
   }catch(e){}
 }
-// STUB: when online storage is connected, POST the entry to the server here.
-// Left intentionally inert in the demo so nothing breaks offline.
-function auditSync(entry){ syncPush('Adjustments',[]); }
 // ===== GOOGLE SHEETS SYNC (Apps Script Web App) =====
 // Configure once in Manage Users. URL + token stored locally.
 function setSyncCfg(url,token){try{localStorage.setItem('gs_sync_cfg',JSON.stringify({url:url||'',token:token||''}));}catch(e){}}
@@ -2280,10 +2336,9 @@ function syncRowsManifold(list,br){return list.map(function(r){var w=_who(r);
   // column silently stayed blank no matter what the operator typed. Same class of bug as the
   // earlier Invoice/InvoiceNo and SupplierName/Invoice mismatches.
   return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Stage:(r.stage||'Opening'),Cylinder:r.cyl,Brand:(r.brand||''),GasType:(r.gasType||''),Scale:r.scale,Tare:r.tare,GasLeft:r.gasLeft,FillCheck:(r._fillCheck||''),Note:(r.notes||''),PhotoLink:(r._photoLink||''),RowId:(r._rid||'')};});}
-// ----- Audit report (Owner only, password-gated) -----
-var auditSelDate=null;
+// ----- Audit report (password-gated, search by date range/branch/person) -----
 function openAudit(){
-  if(role!=='Owner'){toast('Owner only',true);return;}
+  if(!perm('audit')){toast('You do not have Audit Log rights',true);return;}
   document.getElementById('hTitle').textContent='Audit Report';document.getElementById('hSub').textContent='';
   document.getElementById('backBtn').style.display='block';
   // reset to gate each time
@@ -2296,93 +2351,86 @@ function auditUnlock(){
   var pw=document.getElementById('auditPw').value;
   _verifyPersonPassword(operator, pw, null).then(function(me){
     if(!me){toast('Wrong password',true);return;}
-    auditLog('Audit opened','Owner opened the audit report');
+    auditLog('Audit opened','Opened the audit report');
     document.getElementById('auditGate').style.display='none';
     document.getElementById('auditDateList').style.display='block';
-    renderAuditDates();
+    var today10=today.slice(0,10);
+    document.getElementById('auditFrom').value=today10;
+    document.getElementById('auditTo').value=today10;
+    auditSearchRange();
   });
 }
-function renderAuditDates(){
-  var all=auditLoad();
-  var byDate={};
-  all.forEach(function(e){var d=e.ts.slice(0,10);byDate[d]=(byDate[d]||0)+1;});
-  var dates=Object.keys(byDate).sort().reverse();
-  if(dates.length===0){document.getElementById('auditDates').innerHTML='<div class="histEmpty" style="text-align:center;padding:20px">No audit entries yet.</div>';return;}
-  document.getElementById('auditDates').innerHTML=dates.map(function(d){
-    return '<div class="brandCard" style="cursor:pointer;margin-bottom:8px" onclick="openAuditDate(\''+d+'\')">'+
-      '<div style="display:flex;justify-content:space-between;align-items:center">'+
-      '<div><b style="color:var(--navy);font-size:15px">'+d+'</b><div style="font-size:12px;color:var(--muted)">'+byDate[d]+' event(s)</div></div>'+
-      '<span style="color:var(--steel);font-weight:800">open ›</span></div></div>';
-  }).join('');
+function auditSearchRange(){
+  var from=document.getElementById('auditFrom').value;
+  var to=document.getElementById('auditTo').value;
+  var br=document.getElementById('auditRangeBranch').value;
+  var user=(document.getElementById('auditRangeUser').value||'').trim();
+  if(!from||!to){toast('Pick both dates',true);return;}
+  var box=document.getElementById('auditRangeResults');
+  box.innerHTML='<div class="histEmpty" style="text-align:center;padding:16px">Loading…</div>';
+  var q=sb.from('audit_log').select('*',{count:'exact'}).gte('ts',from+'T00:00:00').lte('ts',to+'T23:59:59').order('ts',{ascending:false}).limit(500);
+  if(br)q=q.eq('branch',br);
+  if(user)q=q.ilike('user_name_snapshot','%'+user+'%');
+  q.then(function(res){
+    if(res.error){box.innerHTML='<div class="histEmpty" style="text-align:center;padding:20px">Could not load: '+res.error.message+'</div>';return;}
+    _auditRangeCache=res.data||[];
+    _auditRangeTotalCount=(res.count!==null&&res.count!==undefined)?res.count:_auditRangeCache.length;
+    renderAuditRangeResults();
+  });
 }
-function fmtVal(v){if(v===null||v===undefined)return '';if(typeof v==='object'){try{return Object.keys(v).map(function(k){var val=v[k];return k+': '+(Array.isArray(val)?val.join('/'):val);}).join(', ');}catch(e){return '';}}return ''+v;}
-function openAuditDate(d){
-  auditSelDate=d;
-  document.getElementById('auditDetTitle').textContent='Audit — '+d;
-  document.getElementById('auditDetSub').textContent='All branches · all users';
-  // populate filters from this date's entries
-  var rows=auditLoad().filter(function(e){return e.ts.slice(0,10)===d;});
-  var users=[],actions=[];
-  rows.forEach(function(e){if(users.indexOf(e.user)<0)users.push(e.user);if(actions.indexOf(e.action)<0)actions.push(e.action);});
-  document.getElementById('auditFilterUser').innerHTML='<option value="">All users</option>'+users.map(function(u){return '<option>'+u+'</option>';}).join('');
-  document.getElementById('auditFilterAction').innerHTML='<option value="">All actions</option>'+actions.map(function(a){return '<option>'+a+'</option>';}).join('');
-  renderAuditDetail();
-  show('auditDetailView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);
-}
-function auditRowsForDate(){
-  var fU=document.getElementById('auditFilterUser').value;
-  var fA=document.getElementById('auditFilterAction').value;
-  return auditLoad().filter(function(e){
-    if(e.ts.slice(0,10)!==auditSelDate)return false;
-    if(fU&&e.user!==fU)return false;
-    if(fA&&e.action!==fA)return false;
-    return true;
-  }).sort(function(a,b){return a.ts<b.ts?1:-1;});
-}
-function renderAuditDetail(){
-  var rows=auditRowsForDate();
-  if(rows.length===0){document.getElementById('auditBody').innerHTML='<div class="histEmpty" style="text-align:center;padding:20px">No entries match.</div>';return;}
-  document.getElementById('auditBody').innerHTML=rows.map(function(e){
+var _auditRangeCache=[];
+var _auditRangeTotalCount=0;
+function renderAuditRangeResults(){
+  var box=document.getElementById('auditRangeResults');
+  if(!_auditRangeCache.length){box.innerHTML='<div class="histEmpty" style="text-align:center;padding:20px">No entries match.</div>';return;}
+  var rowsHtml=_auditRangeCache.map(function(e){
     var change='';
     if(e.before||e.after){var b=fmtVal(e.before),a=fmtVal(e.after);if(b||a)change='<div style="font-size:11px;color:var(--muted);margin-top:4px">'+(b?'was: '+b:'')+(b&&a?' → ':'')+(a?'now: '+a:'')+'</div>';}
+    var failTag=(e.outcome==='failure')?' <span style="color:#C0392B;font-weight:800">✕ FAILED</span>':'';
+    var riskTag=(e.risk==='high')?' <span style="color:#B5533B;font-weight:800">⚠ high-risk</span>':'';
     return '<div class="brandCard" style="margin-bottom:8px">'+
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'+
-      '<div><b style="color:var(--navy)">'+e.action+'</b><div style="font-size:12px;color:var(--ink);margin-top:2px">'+e.detail+'</div>'+change+'</div>'+
-      '<div style="font-size:10px;color:var(--muted);text-align:right;white-space:nowrap">'+e.ts+'</div></div>'+
-      '<div style="font-size:11px;color:var(--steel);font-weight:700;margin-top:6px">'+e.user+(e.role?' ('+e.role+')':'')+(e.branch?' · '+e.branch:'')+'</div>'+
+      '<div><b style="color:var(--navy)">'+e.action+'</b>'+failTag+riskTag+'<div style="font-size:12px;color:var(--ink);margin-top:2px">'+(e.detail||'')+'</div>'+change+'</div>'+
+      '<div style="font-size:10px;color:var(--muted);text-align:right;white-space:nowrap">'+e.ts.replace('T',' ').slice(0,19)+'</div></div>'+
+      '<div style="font-size:11px;color:var(--steel);font-weight:700;margin-top:6px">'+e.user_name_snapshot+(e.role_snapshot?' ('+e.role_snapshot+')':'')+(e.branch?' · '+e.branch:'')+'</div>'+
       '</div>';
   }).join('');
+  var truncNotice=(_auditRangeTotalCount>_auditRangeCache.length)
+    ?('<div style="background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:700;padding:8px 12px;border-radius:10px;margin-bottom:10px">⚠ Showing the most recent '+_auditRangeCache.length+' of '+_auditRangeTotalCount+' matching entries — narrow the date range, branch, or person to see the rest.</div>')
+    :'';
+  box.innerHTML=truncNotice+rowsHtml;
 }
+function fmtVal(v){if(v===null||v===undefined)return '';if(typeof v==='object'){try{return Object.keys(v).map(function(k){var val=v[k];return k+': '+(Array.isArray(val)?val.join('/'):val);}).join(', ');}catch(e){return '';}}return ''+v;}
 function auditPDF(){
-  var rows=auditRowsForDate();
+  var rows=_auditRangeCache;
   if(rows.length===0){toast('Nothing to export',true);return;}
   function esc(s){return (''+(s===undefined||s===null?'':s)).replace(/</g,'&lt;');}
   var trs=rows.map(function(e){
     var chg='';var b=fmtVal(e.before),a=fmtVal(e.after);if(b||a)chg=esc((b?'was: '+b:'')+(b&&a?' → ':'')+(a?'now: '+a:''));
-    return '<tr><td>'+esc(e.ts)+'</td><td>'+esc(e.user)+' ('+esc(e.role)+')</td><td>'+esc(e.branch)+'</td><td>'+esc(e.action)+'</td><td>'+esc(e.detail)+(chg?'<br><i style="color:#666">'+chg+'</i>':'')+'</td></tr>';
+    return '<tr><td>'+esc(e.ts)+'</td><td>'+esc(e.user_name_snapshot)+' ('+esc(e.role_snapshot)+')</td><td>'+esc(e.branch)+'</td><td>'+esc(e.action)+'</td><td>'+esc(e.detail)+(chg?'<br><i style="color:#666">'+chg+'</i>':'')+'</td></tr>';
   }).join('');
-  var doc='<!DOCTYPE html><html><head><meta charset="utf-8"><title>Audit '+auditSelDate+'</title><style>'+
+  var doc='<!DOCTYPE html><html><head><meta charset="utf-8"><title>Audit '+esc(document.getElementById('auditFrom').value)+' to '+esc(document.getElementById('auditTo').value)+'</title><style>'+
     'body{font-family:Arial,sans-serif;color:#16202B;padding:26px;max-width:900px;margin:0 auto}'+
     'h1{color:#1F3A5F;font-size:20px;margin:0 0 4px}.meta{color:#555;font-size:12px;margin-bottom:16px}'+
     'table{border-collapse:collapse;width:100%;font-size:12px}th,td{border:1px solid #ccc;padding:6px 8px;text-align:left;vertical-align:top}'+
     'th{background:#1F3A5F;color:#fff}button{margin-top:16px;padding:10px 18px;font-size:14px}'+
     '</style></head><body><h1>Gas Sales — Audit Report</h1>'+
-    '<div class="meta">Date: <b>'+auditSelDate+'</b> · Generated by '+esc(operator)+' (Owner) · '+nowStamp()+'</div>'+
+    '<div class="meta">Range: <b>'+esc(document.getElementById('auditFrom').value)+' to '+esc(document.getElementById('auditTo').value)+'</b> · Generated by '+esc(operator)+' · '+nowStamp()+'</div>'+
     '<table><tr><th>Time</th><th>User</th><th>Branch</th><th>Action</th><th>Detail</th></tr>'+trs+'</table>'+
     '<button onclick="window.print()">Print / Save as PDF</button></body></html>';
   var w=window.open('','_blank');if(w){w.document.write(doc);w.document.close();}else toast('Allow popups to export',true);
 }
 function auditCSV(){
-  var rows=auditRowsForDate();
+  var rows=_auditRangeCache;
   if(rows.length===0){toast('Nothing to export',true);return;}
   function q(s){s=(s===undefined||s===null)?'':(''+s);return '"'+s.replace(/"/g,'""')+'"';}
   var head=['Timestamp','User','Role','Branch','Action','Detail','Before','After'];
   var lines=[head.map(q).join(',')];
-  rows.forEach(function(e){lines.push([e.ts,e.user,e.role,e.branch,e.action,e.detail,fmtVal(e.before),fmtVal(e.after)].map(q).join(','));});
+  rows.forEach(function(e){lines.push([e.ts,e.user_name_snapshot,e.role_snapshot,e.branch,e.action,e.detail,fmtVal(e.before),fmtVal(e.after)].map(q).join(','));});
   var csv=lines.join('\r\n');
   var blob=new Blob([csv],{type:'text/csv'});
   var url=URL.createObjectURL(blob);
-  var a=document.createElement('a');a.href=url;a.download='audit_'+auditSelDate+'.csv';document.body.appendChild(a);a.click();
+  var a=document.createElement('a');a.href=url;a.download='audit_'+document.getElementById('auditFrom').value+'_to_'+document.getElementById('auditTo').value+'.csv';document.body.appendChild(a);a.click();
   setTimeout(function(){document.body.removeChild(a);URL.revokeObjectURL(url);},100);
   toast('CSV exported ✓');
 }
@@ -2432,7 +2480,12 @@ function doLogin(){
   if(btn){btn.disabled=true;btn.style.opacity='.6';}
   var fakeEmail=_fakeEmail(picked.name);
   sb.auth.signInWithPassword({email:fakeEmail,password:p}).then(function(res){
-    if(res.error){loginBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}toast('Sign-in failed: '+res.error.message,true);return;}
+    if(res.error){
+      loginBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}
+      toast('Sign-in failed: '+res.error.message,true);
+      fetch(SUPABASE_URL+'/functions/v1/log-failed-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:picked.name,branch:b})}).catch(function(){});
+      return;
+    }
     sb.from('profiles').select('*').eq('id',res.data.user.id).single().then(function(pres){
       loginBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}
       if(pres.error||!pres.data){toast('Could not load your profile: '+(pres.error?pres.error.message:'not found'),true);return;}
@@ -2470,6 +2523,8 @@ function _finishLogin(u,b){
   cLoadDraftIntoMemory();
   rLoadDraftIntoMemory();
   syncFlush();
+  _closeDayFlushQueue();
+  _updateCloseDayPendingBadge();
   refreshTestDateUI();
   // "Where was I" - resume the same section (with its data) this operator was on when this
   // device last left off, instead of always landing on the home screen. Falls back to home
@@ -2789,8 +2844,6 @@ function userSave(){
     _callManageUser(payload, token).then(function(res){
       _resetBusy();
       if(res.error || (res.data && res.data.error)){toast('Save failed: '+(res.error?res.error.message:res.data.error),true);return;}
-      var beforeSnap=existing?{name:existing.name,level:existing.level,branches:existing.branches.slice()}:null;
-      auditLog(existing?'User edited':'User created',(existing?'Edited user "':'Created '+lvl+' "')+name+'"'+(existing?'':' ('+branches.join(', ')+')'),beforeSnap,{name:name,level:lvl,branches:branches,perms:permsObj});
       if(currentProfile && existing && existing.id===currentProfile.id){
         currentProfile={id:currentProfile.id,name:name,level:lvl,branches:branches,perms:permsObj,access:accessObj,phone:phone,active:active};
         currentPerms=userPerms(currentProfile);
@@ -2825,7 +2878,6 @@ function userDelete(){
       _callManageUser({action:'delete',id:ueEditingName}, token).then(function(res){
         _resetBusy();
         if(res.error || (res.data && res.data.error)){toast('Delete failed: '+(res.error?res.error.message:res.data.error),true);return;}
-        auditLog('User deleted',me.name+' deleted user "'+(u?u.name:'')+'"',u?{name:u.name,level:u.level,branches:u.branches}:null,null);
         toast('User deleted');backToUserList();
       }).catch(function(){_resetBusy();toast('Network error — check your connection',true);});
     }).catch(function(){_resetBusy();toast('Network error — check your connection',true);});
@@ -4659,6 +4711,7 @@ function histSetBranch(x){
   histBranch=x;applyBranchLock('hbr-',x);openHistory();
 }
 function openHistory(){
+  _updateCloseDayPendingBadge();
   if(!histBranch||(role==='Operator'))histBranch=branch||'Helderberg';
   applyBranchLock('hbr-',histBranch);
   document.getElementById('hCtx').innerHTML='';document.getElementById('hCtx').style.display='none';
@@ -4797,16 +4850,15 @@ var sigSignedBy={sigOp:'',sigMgr:''};
 function unlockSig(id){
   var boxLabel=(id==='sigOp')?'Operator':'Manager';
   var wantLevel=(id==='sigOp')?'Operator':'Manager';
-  var name=prompt('Sign '+boxLabel+' box\n\nEnter the name of the person signing (an Owner may also sign either box):');
-  if(name===null)return;
-  askPassword('Sign '+boxLabel+' box','Enter '+name+"'s password:").then(function(pw){
-    if(pw===null)return;
-    _verifyPersonPassword(name, pw, function(p){return p.level==='Owner'||p.level===wantLevel;}).then(function(u){
-      if(!u){toast('Wrong password for '+boxLabel+' box',true);return;}
-      var signer=(u.level==='Owner')?(u.name+' (Owner override)'):u.name;
-      sigUnlocked[id]=true;sigSignedBy[id]=signer;
-      __unlockSigApply(id,signer);
-    });
+  var sigQualifies=function(p){return p.level==='Owner'||p.level===wantLevel;};
+  var sigAuthPromise=(currentProfile && sigQualifies(currentProfile))
+    ? _selfReauth('Sign the '+boxLabel+' box')
+    : _borrowAuth(boxLabel+' or Owner','Sign the '+boxLabel+' box',sigQualifies);
+  sigAuthPromise.then(function(u){
+    if(!u){toast('Wrong password for '+boxLabel+' box',true);return;}
+    var signer=(u.level==='Owner'&&wantLevel!=='Owner')?(u.name+' (Owner override)'):u.name;
+    sigUnlocked[id]=true;sigSignedBy[id]=signer;
+    __unlockSigApply(id,signer);
   });
 }
 function __unlockSigApply(id,signer){
@@ -4887,15 +4939,17 @@ function closeDay(){
   if(unresolved.length){toast('Cannot close: '+unresolved.length+' opening line(s) unmatched. Manager/Owner must adjust them in Count History.',true);openHistory();return;}
   // Close Day requires: an authoriser WITH close-day permission + the high-risk second password
   if(!store._closeAuth){
-    var name=prompt('Close Day — name of a person with Close-Day permission:');
-    if(name===null)return;
-    var pw=prompt("Enter "+name+"'s password:");
-    if(pw===null)return;
-    _verifyPersonPassword(name, pw, function(p){return userPerms(p).closeday;}).then(function(auth){
+    var closeQualifies=function(p){return userPerms(p).closeday;};
+    var closeAuthPromise=(currentProfile && closeQualifies(currentProfile))
+      ? _selfReauth('Close Day for '+branch+'?')
+      : _borrowAuth('Manager or Owner','Close Day for '+branch+'?',closeQualifies);
+    closeAuthPromise.then(function(auth){
       if(!auth){toast('A Close-Day-authorised password is required',true);return;}
-      if(!checkHighRisk('Close Day'))return;
-      store._closeAuth=auth.name+' ('+auth.level+')';
-      closeDay();
+      checkHighRisk('Close Day').then(function(ok){
+        if(!ok)return;
+        store._closeAuth=auth.name+' ('+auth.level+')';
+        closeDay();
+      });
     });
     return;
   }
@@ -4918,11 +4972,97 @@ function closeDay(){
     'Both signatures are on file. Once closed, the day is marked final for this demo.';
   if(!confirm(summary))return;
   if(!confirm('FINAL STEP — This will CLOSE and ZERO the day for '+branch+'. The count cannot be added to after this. Are you sure?'))return;
+  _closeDayFinalize(bal);
+}
+// Split out so a retry (from the pending-sync queue, added in the next task)
+// can re-run the actual close without re-asking the two confirm() dialogs above.
+// ===== CLOSE DAY OFFLINE QUEUE =====
+// If the Supabase write fails (no signal, or Supabase briefly down), the day
+// still closes locally - queued here, retried automatically, and shown as
+// "waiting to sync" until confirmed. Never silently dropped, never assumed
+// successful.
+function _closeDayQueueKey(){return 'gs_closeday_pending';}
+function _closeDayQueueLoad(){
+  try{return JSON.parse(localStorage.getItem(_closeDayQueueKey())||'[]');}
+  catch(e){console.error('Pending Close Day sync queue was corrupted and could not be read:',e.message);return [];}
+}
+function _closeDayQueueSave(q){
+  try{localStorage.setItem(_closeDayQueueKey(),JSON.stringify(q));}
+  catch(e){
+    console.error('Could not save the pending Close Day sync queue:',e.message);
+    toast('Could not save a pending sync record — device storage may be full. Free up space and reopen the app.',true);
+  }
+}
+function _closeDayQueueRemove(branchToRemove, dateToRemove){
+  // Re-reads the CURRENT queue right before writing, not a stale snapshot from
+  // whenever the enclosing flush started - this is what makes each removal safe
+  // even if something else pushed a new record onto the queue in the meantime.
+  // Both this and _closeDaySend's push are fully synchronous (no await between
+  // their own read and write), so neither can be interrupted mid-operation by
+  // the other under JS's single-threaded execution - the only way this used to
+  // go wrong was the OLD code holding a stale snapshot across a long async gap,
+  // which this removes entirely.
+  var q=_closeDayQueueLoad();
+  var idx=q.findIndex(function(r){return r.branch===branchToRemove && r.date===dateToRemove;});
+  if(idx>-1){q.splice(idx,1);_closeDayQueueSave(q);}
+}
+function _closeDaySend(record){
+  sb.from('day_closes').insert(record).then(function(res){
+    if(res.error){
+      console.error('day_closes insert failed, queuing:',res.error.message);
+      var q=_closeDayQueueLoad();q.push(record);_closeDayQueueSave(q);
+      _updateCloseDayPendingBadge();
+    }
+  }).catch(function(){
+    var q=_closeDayQueueLoad();q.push(record);_closeDayQueueSave(q);
+    _updateCloseDayPendingBadge();
+  });
+}
+function _closeDayFlushQueue(){
+  var q=_closeDayQueueLoad();
+  if(!q.length)return;
+  q.forEach(function(record){
+    sb.from('day_closes').insert(record).then(function(res){
+      // 23505 = unique violation (branch,date) - already landed from a prior
+      // attempt; either way (fresh success or already-there), it's safely off
+      // the queue now.
+      if(!res.error || res.error.code==='23505'){
+        _closeDayQueueRemove(record.branch, record.date);
+        _updateCloseDayPendingBadge();
+      }
+      // any other error: leave it queued, already-current in localStorage,
+      // nothing to do here - it'll be retried on the next flush.
+    }).catch(function(){
+      // network-level failure - leave it queued, try again next flush.
+    });
+  });
+}
+function _updateCloseDayPendingBadge(){
+  var n=_closeDayQueueLoad().length;
+  var text=n?('⏳ '+n+' day(s) waiting to sync'):'';
+  ['closeDayPendingBadge','closeDayPendingBadgeHistory'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(!el)return;
+    el.style.display=n?'block':'none';
+    el.textContent=text;
+  });
+}
+window.addEventListener('online',_closeDayFlushQueue);
+function _closeDayFinalize(bal){
   dayClosed=true;
+  var record={
+    branch:branch, date:today,
+    closed_by:currentProfile.id,
+    authoriser_name:(store._closeAuth||'?').split(' (')[0],
+    authoriser_level:(store._closeAuth||'').replace(/^.*\(([^)]+)\)$/,'$1')||role,
+    store_snapshot:JSON.parse(JSON.stringify(store)),
+    signatures:{op:sigData.sigOp,mgr:sigData.sigMgr,signedByOp:sigSignedBy.sigOp,signedByMgr:sigSignedBy.sigMgr},
+    manifold_balance:bal.hasData?{diff:bal.diff,balanced:bal.balanced,override:store._manifoldOverride||null}:null
+  };
+  _closeDaySend(record);
   syncPush('DayClose',[{date:today,branch:branch,Operator:operator,Authoriser:(store._closeAuth||''),SignedOp:(sigSignedBy.sigOp||''),SignedMgr:(sigSignedBy.sigMgr||''),ManifoldBalance:(bal.hasData?bal.diff.toFixed(2):''),OverrideReason:(store._manifoldOverride||'')}]);
-  saveDayToHistory();
+  saveDayToHistory(); // local backup copy - the next task makes History reading prefer Supabase, falling back to this
   clearWorkingStore();
-  // zero this branch's captures now that the day is closed & saved
   ['count','manifold','refill','private','received'].forEach(function(k){store[k]=(store[k]||[]).filter(function(r){return r.branch&&r.branch!==branch;});});
   store._startedBy=null;store._startedAt=null;updateBadges();
   auditLog('Day closed','Day closed — '+branch+' ('+today+') · authorised by '+(store._closeAuth||'?')+' · signed: Op='+(sigSignedBy.sigOp||'?')+', Mgr='+(sigSignedBy.sigMgr||'?')+((bal.hasData&&!bal.balanced)?(' · manifold imbalance overridden ('+bal.diff.toFixed(2)+'kg): '+(store._manifoldOverride||'')):''));
@@ -5368,9 +5508,32 @@ function corrApply(){
   corrCfg=null;corrAuth=null;corrPick=null;
   setTimeout(function(){corrApplyBusy=false;},600);
 }
+// Pushes one applied correction into the shared day_closes.corrections array
+// (append-only under RLS + the immutable-guard trigger from Task 1 - only
+// `corrections`/`sync_status` may ever change on an existing row). No-ops
+// for a pre-migration day that only exists locally (no _sharedId) - that
+// day's corrections stay local-only, same as they do today.
+function _pushSharedCorrection(sharedId, correction){
+  if(!sharedId)return;
+  sb.from('day_closes').select('corrections').eq('id',sharedId).single().then(function(res){
+    if(res.error||!res.data){
+      toast('Correction saved locally, but could not sync to the shared record: '+(res.error?res.error.message:'record not found'),true);
+      return;
+    }
+    var updated=(res.data.corrections||[]).concat([correction]);
+    sb.from('day_closes').update({corrections:updated}).eq('id',sharedId).then(function(r2){
+      if(r2.error)toast('Correction saved locally, but could not sync to the shared record: '+r2.error.message,true);
+    }).catch(function(){
+      toast('Correction saved locally, but a network error stopped it syncing to the shared record',true);
+    });
+  }).catch(function(){
+    toast('Correction saved locally, but a network error stopped it syncing to the shared record',true);
+  });
+}
 function correctSavedLine(ds){
   if(!perm('edit')){toast('You do not have edit/correct rights',true);return;}
-  var rec=loadSavedDay(ds,branch);if(!rec){toast('Record not found',true);return;}
+  var rec=_currentSavedDayRec;
+  if(!rec||rec.date!==ds){toast('Record not found \u2014 reopen this day and try again',true);return;}
   if(!rec.closedTs || (Date.now()-rec.closedTs)>48*3600*1000){toast('48-hour window has closed',true);return;}
   openCorrection({
     title:'Correct '+ds+' - '+branch,
@@ -5378,7 +5541,9 @@ function correctSavedLine(ds){
     sections:['Opening','Closing','Received','Refills','Private','Manifold'],
     onApply:function(sel,oldVal,newVal,reason,auth){
       rec.corrections=rec.corrections||[];
-      rec.corrections.push({at:nowStamp(),by:auth.name+' ('+auth.level+')',line:sel.tag,from:oldVal,to:newVal,reason:reason});
+      var correctionEntry={at:nowStamp(),by:auth.name+' ('+auth.level+')',line:sel.tag,from:oldVal,to:newVal,reason:reason};
+      rec.corrections.push(correctionEntry);
+      _pushSharedCorrection(rec._sharedId, correctionEntry);
       syncPush('Adjustments',[{date:ds,branch:branch,Kind:'HistoricalCorrection',Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:auth.name+' ('+auth.level+')'}]);
       localStorage.setItem(histKey(ds,branch),JSON.stringify(rec));
       auditLog('Historical count corrected',ds+' '+sel.tag+': '+oldVal+' \u2192 '+newVal+' by '+auth.name+' - '+reason,{was:oldVal},{now:newVal});
@@ -5450,19 +5615,45 @@ function listSavedDays(){
   return out;
 }
 function loadSavedDay(date,br){try{var r=localStorage.getItem(histKey(date,br));return r?JSON.parse(r):null;}catch(e){return null;}}
+// Full record for the History screen: tries Supabase first (the shared,
+// cross-device copy), falls back to this device's local copy for days
+// closed before this migration (which never made it into day_closes).
+function loadSavedDayShared(date,br){
+  return sb.from('day_closes').select('*').eq('branch',br).eq('date',date).maybeSingle().then(function(res){
+    if(res.data){
+      var d=res.data;
+      return {
+        date:d.date, branch:d.branch, operator:d.authoriser_name, closedAt:d.closed_at, closedTs:new Date(d.closed_at).getTime(),
+        store:d.store_snapshot, sig:{op:d.signatures.op,mgr:d.signatures.mgr},
+        signedBy:{op:d.signatures.signedByOp,mgr:d.signatures.signedByMgr},
+        corrections:d.corrections||[], _sharedId:d.id
+      };
+    }
+    return loadSavedDay(date,br); // pre-migration day, local only
+  }).catch(function(){return loadSavedDay(date,br);});
+}
 // ===== history tabs + calendar =====
 var calYear,calMonth2,calSelDate=null;
+var _currentSavedDayRec=null;
 function setHistTab(which){
   document.getElementById('htab-today').classList.toggle('on',which==='today');
   document.getElementById('htab-past').classList.toggle('on',which==='past');
   document.getElementById('histTodayPane').style.display=(which==='today')?'block':'none';
   document.getElementById('histPastPane').style.display=(which==='past')?'block':'none';
   var _sb=document.getElementById('shareTodayBtn');if(_sb)_sb.style.display=FEATURES.share?'block':'none';
-  if(which==='past'){var d=new Date();if(calYear===undefined){calYear=d.getFullYear();calMonth2=d.getMonth();}renderCalendar();}
+  if(which==='past'){var d=new Date();if(calYear===undefined){calYear=d.getFullYear();calMonth2=d.getMonth();}refreshSharedSavedDates().then(renderCalendar);}
+}
+var _sharedSavedDates={};
+function refreshSharedSavedDates(){
+  return sb.from('day_closes').select('date').eq('branch',branch).then(function(res){
+    _sharedSavedDates={};
+    (res.data||[]).forEach(function(r){_sharedSavedDates[r.date]=true;});
+  }).catch(function(){});
 }
 function savedDatesForBranch(){
-  // map 'YYYY-MM-DD' -> record, for current session branch (managers: both? show current branch)
-  var m={};listSavedDays().forEach(function(r){if(r.branch===branch)m[r.date]=r;});return m;
+  var m={};listSavedDays().forEach(function(r){if(r.branch===branch)m[r.date]=r;});
+  Object.keys(_sharedSavedDates).forEach(function(d){if(!m[d])m[d]={date:d,branch:branch};});
+  return m;
 }
 function renderCalendar(){
   var saved=savedDatesForBranch();
@@ -5498,8 +5689,15 @@ function viewSavedDay(ds){
     return;
   }
   calSelDate=ds;renderCalendar();
-  var rec=loadSavedDay(ds,branch);
-  if(!rec){document.getElementById('pastDayBody').innerHTML='<div class="histEmpty">No saved count for that day.</div>';return;}
+  document.getElementById('pastDayBody').innerHTML='<div class="histEmpty" style="text-align:center;padding:20px">Loading…</div>';
+  loadSavedDayShared(ds,branch).then(function(rec){
+    if(ds!==calSelDate)return; // a different date was tapped before this one finished loading - stale, ignore it
+    if(!rec){document.getElementById('pastDayBody').innerHTML='<div class="histEmpty">No saved count for that day.</div>';return;}
+    _renderSavedDayBody(rec,ds);
+  });
+}
+function _renderSavedDayBody(rec,ds){
+  _currentSavedDayRec=rec;
   // render a read-only summary from the saved store
   var s=rec.store;
   var cnt={Opening:{Full:{},Empty:{}},Closing:{Full:{},Empty:{}}};
