@@ -5461,9 +5461,25 @@ function corrApply(){
   corrCfg=null;corrAuth=null;corrPick=null;
   setTimeout(function(){corrApplyBusy=false;},600);
 }
+// Pushes one applied correction into the shared day_closes.corrections array
+// (append-only under RLS + the immutable-guard trigger from Task 1 - only
+// `corrections`/`sync_status` may ever change on an existing row). No-ops
+// for a pre-migration day that only exists locally (no _sharedId) - that
+// day's corrections stay local-only, same as they do today.
+function _pushSharedCorrection(sharedId, correction){
+  if(!sharedId)return;
+  sb.from('day_closes').select('corrections').eq('id',sharedId).single().then(function(res){
+    if(res.error||!res.data)return;
+    var updated=(res.data.corrections||[]).concat([correction]);
+    sb.from('day_closes').update({corrections:updated}).eq('id',sharedId).then(function(r2){
+      if(r2.error)toast('Correction saved locally, but could not sync to the shared record: '+r2.error.message,true);
+    });
+  });
+}
 function correctSavedLine(ds){
   if(!perm('edit')){toast('You do not have edit/correct rights',true);return;}
-  var rec=loadSavedDay(ds,branch);if(!rec){toast('Record not found',true);return;}
+  var rec=_currentSavedDayRec;
+  if(!rec||rec.date!==ds){toast('Record not found \u2014 reopen this day and try again',true);return;}
   if(!rec.closedTs || (Date.now()-rec.closedTs)>48*3600*1000){toast('48-hour window has closed',true);return;}
   openCorrection({
     title:'Correct '+ds+' - '+branch,
@@ -5471,7 +5487,9 @@ function correctSavedLine(ds){
     sections:['Opening','Closing','Received','Refills','Private','Manifold'],
     onApply:function(sel,oldVal,newVal,reason,auth){
       rec.corrections=rec.corrections||[];
-      rec.corrections.push({at:nowStamp(),by:auth.name+' ('+auth.level+')',line:sel.tag,from:oldVal,to:newVal,reason:reason});
+      var correctionEntry={at:nowStamp(),by:auth.name+' ('+auth.level+')',line:sel.tag,from:oldVal,to:newVal,reason:reason};
+      rec.corrections.push(correctionEntry);
+      _pushSharedCorrection(rec._sharedId, correctionEntry);
       syncPush('Adjustments',[{date:ds,branch:branch,Kind:'HistoricalCorrection',Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:auth.name+' ('+auth.level+')'}]);
       localStorage.setItem(histKey(ds,branch),JSON.stringify(rec));
       auditLog('Historical count corrected',ds+' '+sel.tag+': '+oldVal+' \u2192 '+newVal+' by '+auth.name+' - '+reason,{was:oldVal},{now:newVal});
@@ -5562,6 +5580,7 @@ function loadSavedDayShared(date,br){
 }
 // ===== history tabs + calendar =====
 var calYear,calMonth2,calSelDate=null;
+var _currentSavedDayRec=null;
 function setHistTab(which){
   document.getElementById('htab-today').classList.toggle('on',which==='today');
   document.getElementById('htab-past').classList.toggle('on',which==='past');
@@ -5624,6 +5643,7 @@ function viewSavedDay(ds){
   });
 }
 function _renderSavedDayBody(rec,ds){
+  _currentSavedDayRec=rec;
   // render a read-only summary from the saved store
   var s=rec.store;
   var cnt={Opening:{Full:{},Empty:{}},Closing:{Full:{},Empty:{}}};
