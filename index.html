@@ -245,6 +245,7 @@
 <div id="landing" class="view">
   <div class="wrap">
     <div class="datebar"><label>Stock-take date</label><div class="val" id="dateVal">—</div></div>
+    <div id="closeDayPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div class="greet">Every entry uses today's date, your name and branch.</div>
     <div class="grid">
       <button class="tile t1" onclick="openCount()"><div class="ic">&#9638;</div><h3>Stock Count</h3><p>Opening / closing, full &amp; empty</p><span class="badge" id="b-count" style="display:none">0</span></button>
@@ -2475,6 +2476,8 @@ function _finishLogin(u,b){
   cLoadDraftIntoMemory();
   rLoadDraftIntoMemory();
   syncFlush();
+  _closeDayFlushQueue();
+  _updateCloseDayPendingBadge();
   refreshTestDateUI();
   // "Where was I" - resume the same section (with its data) this operator was on when this
   // device last left off, instead of always landing on the home screen. Falls back to home
@@ -4924,13 +4927,53 @@ function closeDay(){
 }
 // Split out so a retry (from the pending-sync queue, added in the next task)
 // can re-run the actual close without re-asking the two confirm() dialogs above.
-// TEMPORARY stub - Task 8 replaces this with the real offline-queue-aware version.
-// This minimal version does a plain insert with no retry/queue behavior yet.
+// ===== CLOSE DAY OFFLINE QUEUE =====
+// If the Supabase write fails (no signal, or Supabase briefly down), the day
+// still closes locally - queued here, retried automatically, and shown as
+// "waiting to sync" until confirmed. Never silently dropped, never assumed
+// successful.
+function _closeDayQueueKey(){return 'gs_closeday_pending';}
+function _closeDayQueueLoad(){try{return JSON.parse(localStorage.getItem(_closeDayQueueKey())||'[]');}catch(e){return [];}}
+function _closeDayQueueSave(q){try{localStorage.setItem(_closeDayQueueKey(),JSON.stringify(q));}catch(e){}}
 function _closeDaySend(record){
   sb.from('day_closes').insert(record).then(function(res){
-    if(res.error)console.error('day_closes insert failed:',res.error.message);
+    if(res.error){
+      console.error('day_closes insert failed, queuing:',res.error.message);
+      var q=_closeDayQueueLoad();q.push(record);_closeDayQueueSave(q);
+      _updateCloseDayPendingBadge();
+    }
+  }).catch(function(){
+    var q=_closeDayQueueLoad();q.push(record);_closeDayQueueSave(q);
+    _updateCloseDayPendingBadge();
   });
 }
+function _closeDayFlushQueue(){
+  var q=_closeDayQueueLoad();
+  if(!q.length)return;
+  var remaining=[];
+  var pending=q.length;
+  q.forEach(function(record){
+    sb.from('day_closes').insert(record).then(function(res){
+      pending--;
+      if(res.error && res.error.code!=='23505'){ // 23505 = unique violation (branch,date) - already landed from a prior attempt, safe to drop
+        remaining.push(record);
+      }
+      if(pending===0){_closeDayQueueSave(remaining);_updateCloseDayPendingBadge();}
+    }).catch(function(){
+      pending--;
+      remaining.push(record);
+      if(pending===0){_closeDayQueueSave(remaining);_updateCloseDayPendingBadge();}
+    });
+  });
+}
+function _updateCloseDayPendingBadge(){
+  var n=_closeDayQueueLoad().length;
+  var el=document.getElementById('closeDayPendingBadge');
+  if(!el)return;
+  el.style.display=n?'block':'none';
+  el.textContent=n?('⏳ '+n+' day(s) waiting to sync'):'';
+}
+window.addEventListener('online',_closeDayFlushQueue);
 function _closeDayFinalize(bal){
   dayClosed=true;
   var record={
