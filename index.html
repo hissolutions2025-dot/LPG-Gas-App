@@ -2116,8 +2116,16 @@ function voidSeal(branch, seal, dayIsClosed){
   });
 }
 // ===== HIGH-RISK SECOND PASSWORD (Owner-set; required for Close Day + Factory Reset) =====
-function getHighRiskPw(){try{return localStorage.getItem('gs_highrisk_pw')||'';}catch(e){return '';}}
-function setHighRiskPw(v){try{localStorage.setItem('gs_highrisk_pw',v||'');}catch(e){}}
+// Never stored client-side in any form (not even hashed) - verify-highrisk
+// owns the hash entirely server-side. See supabase/functions/verify-highrisk.
+function _callVerifyHighRisk(payload){
+  return sb.auth.getSession().then(function(sres){
+    var token=sres.data&&sres.data.session&&sres.data.session.access_token;
+    if(!token)return {error:'Not signed in'};
+    return fetch(SUPABASE_URL+'/functions/v1/verify-highrisk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.assign({},payload,{callerToken:token}))})
+      .then(function(res){return res.json();});
+  });
+}
 function saveSyncCfg(){
   if(!perm('users')){toast('Owner only',true);return;}
   var url=(document.getElementById('syncUrl').value||'').trim();
@@ -2141,22 +2149,27 @@ function loadSyncCfgUI(){
 function saveHighRiskPw(){
   if(!perm('users')){toast('Owner only',true);return;}
   var v=document.getElementById('highRiskPw').value;
-  setHighRiskPw(v);
-  auditLog('High-risk password '+(v?'set':'cleared'),'High-risk second password '+(v?'updated':'disabled'));
-  toast(v?'High-risk password saved ✓':'High-risk password disabled');
-  document.getElementById('highRiskPw').value='';
+  _callVerifyHighRisk({action:'set',value:v}).then(function(res){
+    if(res.error){toast('Could not save: '+res.error,true);return;}
+    auditLog('High-risk password '+(v?'set':'cleared'),'High-risk second password '+(v?'updated':'disabled'));
+    toast(v?'High-risk password saved ✓':'High-risk password disabled');
+    document.getElementById('highRiskPw').value='';
+  });
 }
 function checkHighRisk(actionLabel){
-  var hp=getHighRiskPw();
-  if(!hp){
-    // not set yet — allow but nudge owner to set one
-    if(perm('users'))toast('Tip: set a high-risk second password in Manage Users',false);
-    return true;
-  }
-  var pw=prompt('Second (high-risk) password required for '+actionLabel+':');
-  if(pw===null)return false;
-  if(pw!==hp){toast('Wrong high-risk password',true);return false;}
-  return true;
+  return _callVerifyHighRisk({action:'check',value:''}).then(function(setRes){
+    if(setRes.error)return true; // fail open on a network error, same as today's "not set" behavior - never block Close Day on a connectivity blip for this secondary check
+    if(!setRes.set){
+      if(perm('users'))toast('Tip: set a high-risk second password in Manage Users',false);
+      return true;
+    }
+    var pw=prompt('Second (high-risk) password required for '+actionLabel+':');
+    if(pw===null)return false;
+    return _callVerifyHighRisk({action:'check',value:pw}).then(function(res){
+      if(res.error||!res.match){toast('Wrong high-risk password',true);return false;}
+      return true;
+    });
+  });
 }
 function num(v){var n=parseFloat(v);return isNaN(n)?0:n;}
 function nowStamp(){var d=new Date();function p(n){return (n<10?'0':'')+n;}return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());}
@@ -4900,9 +4913,11 @@ function closeDay(){
     if(pw===null)return;
     _verifyPersonPassword(name, pw, function(p){return userPerms(p).closeday;}).then(function(auth){
       if(!auth){toast('A Close-Day-authorised password is required',true);return;}
-      if(!checkHighRisk('Close Day'))return;
-      store._closeAuth=auth.name+' ('+auth.level+')';
-      closeDay();
+      checkHighRisk('Close Day').then(function(ok){
+        if(!ok)return;
+        store._closeAuth=auth.name+' ('+auth.level+')';
+        closeDay();
+      });
     });
     return;
   }
