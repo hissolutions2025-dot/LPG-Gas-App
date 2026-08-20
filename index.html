@@ -2118,12 +2118,22 @@ function voidSeal(branch, seal, dayIsClosed){
 // ===== HIGH-RISK SECOND PASSWORD (Owner-set; required for Close Day + Factory Reset) =====
 // Never stored client-side in any form (not even hashed) - verify-highrisk
 // owns the hash entirely server-side. See supabase/functions/verify-highrisk.
+// Distinguishes a genuine network failure (couldn't reach the server at all -
+// networkOk:false) from a response the server actually sent, even an error
+// one (networkOk:true, error:'...') - callers need this distinction: Close Day
+// is deliberately designed to keep working offline (see the day_closes queue),
+// so a true network failure here should fail OPEN, but a live server actively
+// rejecting the request should NOT be treated the same way, or sending a bad
+// request would become a way to skip this check entirely.
 function _callVerifyHighRisk(payload){
   return sb.auth.getSession().then(function(sres){
     var token=sres.data&&sres.data.session&&sres.data.session.access_token;
-    if(!token)return {error:'Not signed in'};
+    if(!token)return {networkOk:true, error:'Not signed in'};
     return fetch(SUPABASE_URL+'/functions/v1/verify-highrisk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.assign({},payload,{callerToken:token}))})
-      .then(function(res){return res.json();});
+      .then(function(res){return res.json();})
+      .then(function(data){data.networkOk=true;return data;});
+  }).catch(function(){
+    return {networkOk:false, error:'Network error'};
   });
 }
 function saveSyncCfg(){
@@ -2150,6 +2160,7 @@ function saveHighRiskPw(){
   if(!perm('users')){toast('Owner only',true);return;}
   var v=document.getElementById('highRiskPw').value;
   _callVerifyHighRisk({action:'set',value:v}).then(function(res){
+    if(!res.networkOk){toast('Network error — could not save, check your connection',true);return;}
     if(res.error){toast('Could not save: '+res.error,true);return;}
     auditLog('High-risk password '+(v?'set':'cleared'),'High-risk second password '+(v?'updated':'disabled'));
     toast(v?'High-risk password saved ✓':'High-risk password disabled');
@@ -2158,7 +2169,20 @@ function saveHighRiskPw(){
 }
 function checkHighRisk(actionLabel){
   return _callVerifyHighRisk({action:'check',value:''}).then(function(setRes){
-    if(setRes.error)return true; // fail open on a network error, same as today's "not set" behavior - never block Close Day on a connectivity blip for this secondary check
+    if(!setRes.networkOk){
+      // genuinely couldn't reach the server - fail open, same offline-tolerant
+      // philosophy as the rest of Close Day (see the day_closes retry queue) -
+      // never block on a pure connectivity blip for this secondary check.
+      toast('Could not reach the server to check the high-risk password — continuing without it (no signal)',false);
+      return true;
+    }
+    if(setRes.error){
+      // reached the server, but it rejected the request for some other reason -
+      // fail CLOSED here, since this path is reachable by anyone signed in and
+      // must not become a way to bypass the check by sending a bad request.
+      toast('Could not verify the high-risk password: '+setRes.error,true);
+      return false;
+    }
     if(!setRes.set){
       if(perm('users'))toast('Tip: set a high-risk second password in Manage Users',false);
       return true;
@@ -2166,7 +2190,10 @@ function checkHighRisk(actionLabel){
     var pw=prompt('Second (high-risk) password required for '+actionLabel+':');
     if(pw===null)return false;
     return _callVerifyHighRisk({action:'check',value:pw}).then(function(res){
-      if(res.error||!res.match){toast('Wrong high-risk password',true);return false;}
+      if(!res.networkOk){toast('Could not verify the high-risk password — check your connection',true);return false;}
+      if(res.error){toast('Could not verify the high-risk password: '+res.error,true);return false;}
+      if(res.lockedOut){toast('Too many wrong attempts — wait 15 minutes and try again, or ask the Owner to reset it',true);return false;}
+      if(!res.match){toast('Wrong high-risk password',true);return false;}
       return true;
     });
   });
