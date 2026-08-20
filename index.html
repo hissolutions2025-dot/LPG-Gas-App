@@ -4844,16 +4844,15 @@ var sigSignedBy={sigOp:'',sigMgr:''};
 function unlockSig(id){
   var boxLabel=(id==='sigOp')?'Operator':'Manager';
   var wantLevel=(id==='sigOp')?'Operator':'Manager';
-  var name=prompt('Sign '+boxLabel+' box\n\nEnter the name of the person signing (an Owner may also sign either box):');
-  if(name===null)return;
-  askPassword('Sign '+boxLabel+' box','Enter '+name+"'s password:").then(function(pw){
-    if(pw===null)return;
-    _verifyPersonPassword(name, pw, function(p){return p.level==='Owner'||p.level===wantLevel;}).then(function(u){
-      if(!u){toast('Wrong password for '+boxLabel+' box',true);return;}
-      var signer=(u.level==='Owner')?(u.name+' (Owner override)'):u.name;
-      sigUnlocked[id]=true;sigSignedBy[id]=signer;
-      __unlockSigApply(id,signer);
-    });
+  var sigQualifies=function(p){return p.level==='Owner'||p.level===wantLevel;};
+  var sigAuthPromise=(currentProfile && sigQualifies(currentProfile))
+    ? _selfReauth('Sign the '+boxLabel+' box')
+    : _borrowAuth('the person signing (an Owner may also sign either box)','Sign the '+boxLabel+' box',sigQualifies);
+  sigAuthPromise.then(function(u){
+    if(!u){toast('Wrong password for '+boxLabel+' box',true);return;}
+    var signer=(u.level==='Owner'&&wantLevel!=='Owner')?(u.name+' (Owner override)'):u.name;
+    sigUnlocked[id]=true;sigSignedBy[id]=signer;
+    __unlockSigApply(id,signer);
   });
 }
 function __unlockSigApply(id,signer){
