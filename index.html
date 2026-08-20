@@ -3301,20 +3301,28 @@ function _cCommitReal(){
           var st=(side==='full'?'Full':'Empty');
           // Register the line's key even at qty 0 - this is what lets zeroing out an
           // already-committed brand (via the "×" button or Reset this size) actually
-          // remove it from the sheet on commit, instead of the merge logic seeing no
-          // touched key for it and leaving the old committed row untouched. Just don't
-          // push a zero-qty row into freshRows - there's nothing to write for it.
+          // update it on the sheet on commit, instead of the merge logic seeing no
+          // touched key for it and leaving the old committed row untouched.
+          //
+          // A zeroed line DOES still get pushed into freshRows (with qty:0), deliberately -
+          // it used to be skipped here on the assumption that simply leaving it OUT of the
+          // synced batch would be enough for the sheet to infer "this one's gone" via the
+          // replace-set below. That silently broke the one case where the zeroed line(s)
+          // were the ONLY thing committed for this branch today: with nothing left to push,
+          // syncPush's own "don't bother sending an empty batch" guard skipped the sync
+          // entirely, and the sheet never even received the instruction to clear anything -
+          // "Reset this size" would silently do nothing on the sheet. Sending an explicit
+          // Qty:0 row instead means the sheet is always told a real value, never asked to
+          // infer one from absence.
           touchedLineKeys[br+'|'+countType+'|'+sz+'|'+st+'|'+l.brand]=true;
-          if(num(l.qty)===0)return;
           freshRows.push({countType:countType,state:st,size:sz,brand:l.brand,qty:num(l.qty),note:l.note||'',branch:br,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});
         });
       });
     });
   });
-  // A pure reset (every touched line zeroed out) has an empty freshRows but a populated
-  // touchedLineKeys - that's real work (removing rows from the sheet), not "nothing to
-  // commit". Only bail out if genuinely neither has anything.
-  if(freshRows.length===0 && Object.keys(touchedLineKeys).length===0){toast('Nothing to commit',true);return;}
+  // freshRows and touchedLineKeys now always move together (every touched line produces
+  // exactly one freshRow, zero included) - only bail out if genuinely nothing was touched.
+  if(Object.keys(touchedLineKeys).length===0){toast('Nothing to commit',true);return;}
   // MERGE at the exact (branch, countType, size, state, brand) line level - this used to be
   // "store.count=[]; rebuild only from cData", which wiped out EVERY previously-committed
   // line for that branch+day that wasn't part of THIS commit. That silently deleted an
@@ -3353,8 +3361,12 @@ function _cCommitReal(){
   // left the old branch's counted lines sitting around and they'd get re-flushed/re-synced
   // on every future commit, including from an unrelated branch's session.
   cData={};cSaveDraft();
-  var removedCount=Object.keys(touchedLineKeys).length-freshRows.length;
-  saveWorkingStore();auditLog('Count committed',freshRows.length+' line(s)'+(removedCount>0?(' · '+removedCount+' removed'):'')+' — '+cBranch+' (Opening/Closing)'+(mm.length?(' · '+mm.length+' opening mismatch(es) flagged'):''));
+  // freshRows now always has exactly one row per touched line (zeroed ones included with
+  // qty:0, see above) - "zeroed" is tracked separately here rather than reusing the old
+  // touchedLineKeys-vs-freshRows length gap, which no longer exists now that nothing gets
+  // dropped from freshRows.
+  var zeroedCount=freshRows.filter(function(r){return r.qty===0;}).length;
+  saveWorkingStore();auditLog('Count committed',freshRows.length+' line(s)'+(zeroedCount>0?(' · '+zeroedCount+' reset to zero'):'')+' — '+cBranch+' (Opening/Closing)'+(mm.length?(' · '+mm.length+' opening mismatch(es) flagged'):''));
   updateBadges();
   if(mm.length){
     if(role==='Manager'||role==='Owner')toast('⚠ '+mm.length+' opening line(s) do not match previous close - see Count History',true);
