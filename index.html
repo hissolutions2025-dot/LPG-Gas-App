@@ -155,6 +155,12 @@
   .bAdd{width:100%;background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel);border-radius:12px;padding:14px;font-size:14px;font-weight:800;cursor:pointer;margin-bottom:10px;}
   .bTot{background:var(--navy-d);color:#fff;border-radius:12px;padding:14px 18px;display:flex;justify-content:space-between;align-items:center;font-size:15px;font-weight:800;margin-top:4px;} .bTot .n{font-size:22px;}
   .cFooter{position:fixed;bottom:0;left:0;right:0;max-width:520px;margin:0 auto;background:#fff;border-top:1px solid var(--line);padding:12px 16px;box-shadow:0 -4px 14px rgba(0,0,0,.08);display:flex;gap:10px;}
+  /* Screens with a truly fixed .cFooter (not the position:static in-flow variants used
+     elsewhere) need extra bottom padding on their content so the last row/section isn't
+     tucked underneath the footer bar - without this, whatever's last in the list ends up
+     partially hidden behind the footer once you scroll all the way down. 96px clears the
+     footer's own height (~79px measured) plus a bit of breathing room below the last item. */
+  #countGridView > .wrap, #countReviewView > .wrap, #recvGridView > .wrap, #recvReviewView > .wrap{padding-bottom:96px;}
   .cFooter button{flex:1;border:none;border-radius:12px;padding:15px;font-size:15px;font-weight:800;cursor:pointer;}
   .cbPrimary{background:var(--ok);color:#fff;} .cbGhost{background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel)!important;}
   .revSection{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:12px;}
