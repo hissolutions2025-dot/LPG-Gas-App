@@ -916,16 +916,22 @@ function _verifyPersonPassword(name, password, filterFn, failLabel){
   });
 }
 function _selfReauth(actionLabel){
-  var pw=prompt(actionLabel+'\n\nEnter YOUR password to authorise:');
-  if(pw===null)return Promise.resolve(null);
-  return _verifyPersonPassword(operator, pw, null, 'Authorisation failed');
+  // Password entry goes through the app's own masked modal (askPassword), never the
+  // native prompt() dialog - prompt() has no way to hide what's typed, so a password
+  // typed there is plainly visible to anyone glancing at the screen. The name-only
+  // prompt() below (in _borrowAuth) is fine to leave as-is since a name isn't secret.
+  return askPassword(actionLabel,'Enter YOUR password to authorise:').then(function(pw){
+    if(pw===null)return null;
+    return _verifyPersonPassword(operator, pw, null, 'Authorisation failed');
+  });
 }
 function _borrowAuth(roleHint, actionLabel, filterFn){
   var name=prompt(actionLabel+'\n\nEnter the '+roleHint+"'s name:");
   if(name===null)return Promise.resolve(null);
-  var pw=prompt('Enter '+name+"'s password:");
-  if(pw===null)return Promise.resolve(null);
-  return _verifyPersonPassword(name, pw, filterFn, 'Authorisation failed');
+  return askPassword("Enter "+name+"'s password",actionLabel).then(function(pw){
+    if(pw===null)return null;
+    return _verifyPersonPassword(name, pw, filterFn, 'Authorisation failed');
+  });
 }
 const BRANDS=['Afrox','Oryx','Easigas','Totalgas','Afrigas','Other'];
 const ALLSIZES=['5kg','9kg','12kg','14kg','19kg','48kg-SV','14kg-FLT','19kg-FLT','48kg-DV','8kg-Prop','18kg-Prop','45kg-Prop-SV','45kg-Prop-DV'];
@@ -2202,14 +2208,15 @@ function checkHighRisk(actionLabel){
       if(perm('users'))toast('Tip: set a high-risk second password in Manage Users',false);
       return true;
     }
-    var pw=prompt('Second (high-risk) password required for '+actionLabel+':');
-    if(pw===null)return false;
-    return _callVerifyHighRisk({action:'check',value:pw}).then(function(res){
-      if(!res.networkOk){toast('Could not verify the high-risk password — check your connection',true);return false;}
-      if(res.error){toast('Could not verify the high-risk password: '+res.error,true);return false;}
-      if(res.lockedOut){toast('Too many wrong attempts — please wait 15 minutes and try again',true);return false;}
-      if(!res.match){toast('Wrong high-risk password',true);return false;}
-      return true;
+    return askPassword('Second password required',actionLabel).then(function(pw){
+      if(pw===null)return false;
+      return _callVerifyHighRisk({action:'check',value:pw}).then(function(res){
+        if(!res.networkOk){toast('Could not verify the high-risk password — check your connection',true);return false;}
+        if(res.error){toast('Could not verify the high-risk password: '+res.error,true);return false;}
+        if(res.lockedOut){toast('Too many wrong attempts — please wait 15 minutes and try again',true);return false;}
+        if(!res.match){toast('Wrong high-risk password',true);return false;}
+        return true;
+      });
     });
   });
 }
@@ -2629,21 +2636,27 @@ document.addEventListener('click',function(ev){
   if(menu && menu.classList.contains('show') && !document.getElementById('who').contains(ev.target))closeUserMenu();
 });
 function changeMyPw(){
-  var cur=prompt('Enter your CURRENT password:');
-  if(cur===null)return;
-  var nw=prompt('Enter your NEW password (min 3 characters):');
-  if(nw===null)return;
-  if(!nw||nw.length<3){toast('New password too short',true);return;}
-  var nw2=prompt('Re-enter your NEW password:');
-  if(nw2===null)return;
-  if(nw!==nw2){toast('New passwords do not match',true);return;}
-  sb.auth.signInWithPassword({email:_fakeEmail(operator),password:cur}).then(function(chk){
-    if(chk.error){toast('Current password is wrong',true);return;}
-    sb.auth.updateUser({password:nw}).then(function(res){
-      if(res.error){toast('Could not change password: '+res.error.message,true);return;}
-      auditLog('Password change','Changed own password');toast('Your password was changed ✓');
-    }).catch(function(){toast('Network error — check your connection',true);});
-  }).catch(function(){toast('Network error — check your connection',true);});
+  // All three steps go through the masked askPassword() modal, not native prompt() -
+  // a password (current OR new) typed into a plain prompt() dialog is visible to
+  // anyone glancing at the screen, with no way to hide it.
+  askPassword('Change my password','Enter your CURRENT password:').then(function(cur){
+    if(cur===null)return;
+    askPassword('Change my password','Enter your NEW password (min 3 characters):').then(function(nw){
+      if(nw===null)return;
+      if(!nw||nw.length<3){toast('New password too short',true);return;}
+      askPassword('Change my password','Re-enter your NEW password:').then(function(nw2){
+        if(nw2===null)return;
+        if(nw!==nw2){toast('New passwords do not match',true);return;}
+        sb.auth.signInWithPassword({email:_fakeEmail(operator),password:cur}).then(function(chk){
+          if(chk.error){toast('Current password is wrong',true);return;}
+          sb.auth.updateUser({password:nw}).then(function(res){
+            if(res.error){toast('Could not change password: '+res.error.message,true);return;}
+            auditLog('Password change','Changed own password');toast('Your password was changed ✓');
+          }).catch(function(){toast('Network error — check your connection',true);});
+        }).catch(function(){toast('Network error — check your connection',true);});
+      });
+    });
+  });
 }
 function show(id){var vs=document.querySelectorAll('.view');for(var i=0;i<vs.length;i++)vs[i].classList.remove('active');document.getElementById(id).classList.add('active');
   syncHeader(id);}
