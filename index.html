@@ -5284,7 +5284,7 @@ function corrLines(st,section,br){
   var out=[];
   if(section==='Opening'||section==='Closing'){
     (st.count||[]).filter(function(r){return r.countType===section&&inBr(r);}).forEach(function(r){
-      out.push({label:r.size+' \u00b7 '+r.state+' \u00b7 '+r.brand+' = '+r.qty, get:function(){return r.qty;}, set:function(v){r.qty=v;}, tag:section+' '+r.state+' '+r.size+' '+r.brand});
+      out.push({label:r.size+' \u00b7 '+r.state+' \u00b7 '+r.brand+' = '+r.qty, get:function(){return r.qty;}, set:function(v){r.qty=v;}, tag:section+' '+r.state+' '+r.size+' '+r.brand, row:r});
     });
   } else if(section==='Received'){
     // Distinguish one delivery from another same-size/brand delivery by invoice #, delivery
@@ -5384,6 +5384,7 @@ function corrStepLines(section){
   var lines=corrLines(corrCfg.store,section,corrCfg.branch);
   corrCfg._section=section;corrCfg._lines=lines;
   if(section==='Received'){corrStepReceivedGroups();return;}
+  if(section==='Opening'||section==='Closing'){corrStepCountGroups(section);return;}
   var html='<div style="font-size:12px;color:var(--muted);margin-bottom:6px"><button class="sigClear" onclick="corrStepSection()">\u2039 Back</button> &nbsp; <b>'+section+'</b> \u2014 tap the line to correct:</div>';
   lines.forEach(function(l,i){
     html+='<button class="sigClear" style="width:100%;margin-bottom:6px;text-align:left" onclick="corrStepEdit('+i+')">'+l.label+'</button>';
@@ -5504,6 +5505,91 @@ function corrApplyReceivedGroup(){
   toast('Correction logged \u2713');
   setTimeout(function(){corrApplyBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}},600);
   corrStepReceivedGroups(); // rebuild+redisplay the list with the new values, modal stays open for further corrections
+}
+// Same grouped-by-size, edit-both-sides-together pattern as corrStepReceivedGroups above,
+// applied to Stock Count's Opening/Closing sections - reachable from both the same-day
+// adjust tool (openCountAdjust) and the 48-hour historical tool (correctSavedLine), since
+// both route through this same corrStepLines() dispatcher. Unlike Received, there's no
+// "delivery" concept to group by (no invoice/DN/supplier) - just size, with each side
+// (Full/Empty) possibly holding more than one brand, same as Received's per-side brand
+// list. No Full-vs-Empty balance check either - that's a Received-specific reconciliation
+// concept that doesn't apply to a stock count.
+function corrStepCountGroups(section){
+  var lines=corrCfg._lines;
+  var groups={},order=[];
+  lines.forEach(function(l,i){
+    var r=l.row;
+    var key=r.size;
+    if(!groups[key]){groups[key]={size:r.size,full:[],empty:[]};order.push(key);}
+    groups[key][r.state==='Full'?'full':'empty'].push({idx:i,brand:r.brand,val:l.get()});
+  });
+  corrCfg._countGroups=groups;
+  corrCfg._countGroupOrder=order;
+  corrCfg._countGroupSection=section;
+  var html='<div style="font-size:12px;color:var(--muted);margin-bottom:10px"><button class="sigClear" onclick="corrStepSection()">‹ Back</button> &nbsp; <b>'+section+'</b> — tap a size to correct:</div>';
+  if(!order.length)html+='<div class="histEmpty">No populated lines in this section.</div>';
+  function sideSummary(rows){return rows.length?rows.map(function(x){return x.brand+' '+x.val;}).join(', '):'—';}
+  order.forEach(function(key,gi){
+    var g=groups[key];
+    html+='<button class="sigClear" style="width:100%;margin-bottom:8px;text-align:left" onclick="corrStepCountGroupEdit('+gi+')">'+
+      '<div style="font-weight:800;color:var(--navy);font-size:13px">'+g.size+'</div>'+
+      '<div style="font-size:12px;margin-top:3px"><span style="color:var(--muted);font-weight:700">Full</span> '+sideSummary(g.full)+' &nbsp;·&nbsp; <span style="color:var(--muted);font-weight:700">Empty</span> '+sideSummary(g.empty)+'</div>'+
+      '</button>';
+  });
+  document.getElementById('corrBody').innerHTML=html;
+}
+function corrStepCountGroupEdit(gi){
+  var key=corrCfg._countGroupOrder[gi];
+  var g=corrCfg._countGroups[key];
+  corrCfg._countGroupActive=gi;
+  function colInputs(rows){
+    if(!rows.length)return '<div style="font-size:11px;color:var(--muted)">—</div>';
+    return rows.map(function(x){
+      return '<div style="margin-bottom:8px">'+
+        (rows.length>1?'<div style="font-size:11px;color:var(--muted);margin-bottom:3px">'+x.brand+'</div>':'')+
+        '<input class="mField" type="number" inputmode="numeric" min="0" data-idx="'+x.idx+'" data-orig="'+x.val+'" value="'+x.val+'" style="width:100%;margin:0">'+
+        '</div>';
+    }).join('');
+  }
+  var html='<div style="font-size:12px;color:var(--muted);margin-bottom:8px"><button class="sigClear" onclick="corrStepCountGroups(\''+corrCfg._countGroupSection+'\')">‹ Back</button></div>'+
+    '<div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:12px">'+corrCfg._countGroupSection+' '+g.size+'</div>'+
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">'+
+    '<div><div style="font-size:10px;font-weight:800;color:var(--muted);margin-bottom:6px">FULL</div>'+colInputs(g.full)+'</div>'+
+    '<div><div style="font-size:10px;font-weight:800;color:var(--muted);margin-bottom:6px">EMPTY</div>'+colInputs(g.empty)+'</div>'+
+    '</div>'+
+    '<textarea id="corrReason" placeholder="Reason for correction (required)" style="width:100%;min-height:60px;border:1px solid var(--line);border-radius:10px;padding:8px;font:inherit;box-sizing:border-box"></textarea>'+
+    '<button class="mDone" id="corrApplyBtn" style="margin-top:8px" onclick="corrApplyCountGroup()">Apply correction</button>';
+  document.getElementById('corrBody').innerHTML=html;
+}
+function corrApplyCountGroup(){
+  if(corrApplyBusy)return;
+  var gi=corrCfg._countGroupActive;
+  var key=corrCfg._countGroupOrder[gi];
+  var g=corrCfg._countGroups[key];
+  var inputs=Array.prototype.slice.call(document.querySelectorAll('#corrBody input[data-idx]'));
+  var changed=inputs.filter(function(el){return num(el.value)!==num(el.getAttribute('data-orig'));});
+  if(changed.length===0){toast('Nothing changed',true);return;}
+  var reasonEl=document.getElementById('corrReason');
+  var reason=(reasonEl.value||'').trim();
+  if(!reason){toast('A reason is required',true);return;}
+  corrApplyBusy=true;
+  var btn=document.getElementById('corrApplyBtn');if(btn){btn.disabled=true;btn.style.opacity='.6';}
+  // Reuses each entry point's own onApply exactly as the single-line path does (once per
+  // changed field) - openCountAdjust's onApply re-syncs the Counts sheet + audits, and
+  // correctSavedLine's onApply pushes into the shared day_closes.corrections + audits -
+  // both already handle being called this way, so the grouped UI is purely a presentation
+  // change, not a new code path for what "applying a correction" actually does.
+  changed.forEach(function(el){
+    var idx=Number(el.getAttribute('data-idx'));
+    var line=corrCfg._lines[idx];
+    var oldVal=num(el.getAttribute('data-orig')), newVal=num(el.value);
+    var sel={tag:line.tag,section:corrCfg._section,row:line.row};
+    line.set(newVal);
+    corrCfg.onApply(sel,oldVal,newVal,reason,corrAuth);
+  });
+  toast('Correction logged ✓');
+  setTimeout(function(){corrApplyBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}},600);
+  corrStepCountGroups(corrCfg._countGroupSection); // rebuild+redisplay the list with the new values, modal stays open for further corrections
 }
 function corrStepEdit(i){
   var l=corrCfg._lines[i];corrPick=l;
