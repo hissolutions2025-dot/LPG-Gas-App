@@ -4934,11 +4934,11 @@ function closeDay(){
   if(unresolved.length){toast('Cannot close: '+unresolved.length+' opening line(s) unmatched. Manager/Owner must adjust them in Count History.',true);openHistory();return;}
   // Close Day requires: an authoriser WITH close-day permission + the high-risk second password
   if(!store._closeAuth){
-    var name=prompt('Close Day — name of a person with Close-Day permission:');
-    if(name===null)return;
-    var pw=prompt("Enter "+name+"'s password:");
-    if(pw===null)return;
-    _verifyPersonPassword(name, pw, function(p){return userPerms(p).closeday;}).then(function(auth){
+    var closeQualifies=function(p){return userPerms(p).closeday;};
+    var closeAuthPromise=(currentProfile && closeQualifies(currentProfile))
+      ? _selfReauth('Close Day for '+branch+'?')
+      : _borrowAuth('a person with Close-Day permission','Close Day for '+branch+'?',closeQualifies);
+    closeAuthPromise.then(function(auth){
       if(!auth){toast('A Close-Day-authorised password is required',true);return;}
       checkHighRisk('Close Day').then(function(ok){
         if(!ok)return;
