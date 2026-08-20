@@ -4847,7 +4847,7 @@ function unlockSig(id){
   var sigQualifies=function(p){return p.level==='Owner'||p.level===wantLevel;};
   var sigAuthPromise=(currentProfile && sigQualifies(currentProfile))
     ? _selfReauth('Sign the '+boxLabel+' box')
-    : _borrowAuth('the person signing (an Owner may also sign either box)','Sign the '+boxLabel+' box',sigQualifies);
+    : _borrowAuth(boxLabel+' or Owner','Sign the '+boxLabel+' box',sigQualifies);
   sigAuthPromise.then(function(u){
     if(!u){toast('Wrong password for '+boxLabel+' box',true);return;}
     var signer=(u.level==='Owner'&&wantLevel!=='Owner')?(u.name+' (Owner override)'):u.name;
@@ -4936,7 +4936,7 @@ function closeDay(){
     var closeQualifies=function(p){return userPerms(p).closeday;};
     var closeAuthPromise=(currentProfile && closeQualifies(currentProfile))
       ? _selfReauth('Close Day for '+branch+'?')
-      : _borrowAuth('a person with Close-Day permission','Close Day for '+branch+'?',closeQualifies);
+      : _borrowAuth('Manager or Owner','Close Day for '+branch+'?',closeQualifies);
     closeAuthPromise.then(function(auth){
       if(!auth){toast('A Close-Day-authorised password is required',true);return;}
       checkHighRisk('Close Day').then(function(ok){
