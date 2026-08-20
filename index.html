@@ -2192,7 +2192,7 @@ function checkHighRisk(actionLabel){
     return _callVerifyHighRisk({action:'check',value:pw}).then(function(res){
       if(!res.networkOk){toast('Could not verify the high-risk password — check your connection',true);return false;}
       if(res.error){toast('Could not verify the high-risk password: '+res.error,true);return false;}
-      if(res.lockedOut){toast('Too many wrong attempts — wait 15 minutes and try again, or ask the Owner to reset it',true);return false;}
+      if(res.lockedOut){toast('Too many wrong attempts — please wait 15 minutes and try again',true);return false;}
       if(!res.match){toast('Wrong high-risk password',true);return false;}
       return true;
     });
