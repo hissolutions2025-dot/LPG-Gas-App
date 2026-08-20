@@ -5543,6 +5543,23 @@ function listSavedDays(){
   return out;
 }
 function loadSavedDay(date,br){try{var r=localStorage.getItem(histKey(date,br));return r?JSON.parse(r):null;}catch(e){return null;}}
+// Full record for the History screen: tries Supabase first (the shared,
+// cross-device copy), falls back to this device's local copy for days
+// closed before this migration (which never made it into day_closes).
+function loadSavedDayShared(date,br){
+  return sb.from('day_closes').select('*').eq('branch',br).eq('date',date).maybeSingle().then(function(res){
+    if(res.data){
+      var d=res.data;
+      return {
+        date:d.date, branch:d.branch, operator:d.authoriser_name, closedAt:d.closed_at, closedTs:new Date(d.closed_at).getTime(),
+        store:d.store_snapshot, sig:{op:d.signatures.op,mgr:d.signatures.mgr},
+        signedBy:{op:d.signatures.signedByOp,mgr:d.signatures.signedByMgr},
+        corrections:d.corrections||[], _sharedId:d.id
+      };
+    }
+    return loadSavedDay(date,br); // pre-migration day, local only
+  }).catch(function(){return loadSavedDay(date,br);});
+}
 // ===== history tabs + calendar =====
 var calYear,calMonth2,calSelDate=null;
 function setHistTab(which){
@@ -5551,11 +5568,19 @@ function setHistTab(which){
   document.getElementById('histTodayPane').style.display=(which==='today')?'block':'none';
   document.getElementById('histPastPane').style.display=(which==='past')?'block':'none';
   var _sb=document.getElementById('shareTodayBtn');if(_sb)_sb.style.display=FEATURES.share?'block':'none';
-  if(which==='past'){var d=new Date();if(calYear===undefined){calYear=d.getFullYear();calMonth2=d.getMonth();}renderCalendar();}
+  if(which==='past'){var d=new Date();if(calYear===undefined){calYear=d.getFullYear();calMonth2=d.getMonth();}refreshSharedSavedDates().then(renderCalendar);}
+}
+var _sharedSavedDates={};
+function refreshSharedSavedDates(){
+  return sb.from('day_closes').select('date').eq('branch',branch).then(function(res){
+    _sharedSavedDates={};
+    (res.data||[]).forEach(function(r){_sharedSavedDates[r.date]=true;});
+  }).catch(function(){});
 }
 function savedDatesForBranch(){
-  // map 'YYYY-MM-DD' -> record, for current session branch (managers: both? show current branch)
-  var m={};listSavedDays().forEach(function(r){if(r.branch===branch)m[r.date]=r;});return m;
+  var m={};listSavedDays().forEach(function(r){if(r.branch===branch)m[r.date]=r;});
+  Object.keys(_sharedSavedDates).forEach(function(d){if(!m[d])m[d]={date:d,branch:branch};});
+  return m;
 }
 function renderCalendar(){
   var saved=savedDatesForBranch();
@@ -5591,8 +5616,13 @@ function viewSavedDay(ds){
     return;
   }
   calSelDate=ds;renderCalendar();
-  var rec=loadSavedDay(ds,branch);
-  if(!rec){document.getElementById('pastDayBody').innerHTML='<div class="histEmpty">No saved count for that day.</div>';return;}
+  document.getElementById('pastDayBody').innerHTML='<div class="histEmpty" style="text-align:center;padding:20px">Loading…</div>';
+  loadSavedDayShared(ds,branch).then(function(rec){
+    if(!rec){document.getElementById('pastDayBody').innerHTML='<div class="histEmpty">No saved count for that day.</div>';return;}
+    _renderSavedDayBody(rec,ds);
+  });
+}
+function _renderSavedDayBody(rec,ds){
   // render a read-only summary from the saved store
   var s=rec.store;
   var cnt={Opening:{Full:{},Empty:{}},Closing:{Full:{},Empty:{}}};
