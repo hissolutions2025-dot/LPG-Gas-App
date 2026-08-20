@@ -4920,11 +4920,32 @@ function closeDay(){
     'Both signatures are on file. Once closed, the day is marked final for this demo.';
   if(!confirm(summary))return;
   if(!confirm('FINAL STEP — This will CLOSE and ZERO the day for '+branch+'. The count cannot be added to after this. Are you sure?'))return;
+  _closeDayFinalize(bal);
+}
+// Split out so a retry (from the pending-sync queue, added in the next task)
+// can re-run the actual close without re-asking the two confirm() dialogs above.
+// TEMPORARY stub - Task 8 replaces this with the real offline-queue-aware version.
+// This minimal version does a plain insert with no retry/queue behavior yet.
+function _closeDaySend(record){
+  sb.from('day_closes').insert(record).then(function(res){
+    if(res.error)console.error('day_closes insert failed:',res.error.message);
+  });
+}
+function _closeDayFinalize(bal){
   dayClosed=true;
+  var record={
+    branch:branch, date:today,
+    closed_by:currentProfile.id,
+    authoriser_name:(store._closeAuth||'?').split(' (')[0],
+    authoriser_level:(store._closeAuth||'').replace(/^.*\(([^)]+)\)$/,'$1')||role,
+    store_snapshot:JSON.parse(JSON.stringify(store)),
+    signatures:{op:sigData.sigOp,mgr:sigData.sigMgr,signedByOp:sigSignedBy.sigOp,signedByMgr:sigSignedBy.sigMgr},
+    manifold_balance:bal.hasData?{diff:bal.diff,balanced:bal.balanced,override:store._manifoldOverride||null}:null
+  };
+  _closeDaySend(record);
   syncPush('DayClose',[{date:today,branch:branch,Operator:operator,Authoriser:(store._closeAuth||''),SignedOp:(sigSignedBy.sigOp||''),SignedMgr:(sigSignedBy.sigMgr||''),ManifoldBalance:(bal.hasData?bal.diff.toFixed(2):''),OverrideReason:(store._manifoldOverride||'')}]);
-  saveDayToHistory();
+  saveDayToHistory(); // local backup copy - the next task makes History reading prefer Supabase, falling back to this
   clearWorkingStore();
-  // zero this branch's captures now that the day is closed & saved
   ['count','manifold','refill','private','received'].forEach(function(k){store[k]=(store[k]||[]).filter(function(r){return r.branch&&r.branch!==branch;});});
   store._startedBy=null;store._startedAt=null;updateBadges();
   auditLog('Day closed','Day closed — '+branch+' ('+today+') · authorised by '+(store._closeAuth||'?')+' · signed: Op='+(sigSignedBy.sigOp||'?')+', Mgr='+(sigSignedBy.sigMgr||'?')+((bal.hasData&&!bal.balanced)?(' · manifold imbalance overridden ('+bal.diff.toFixed(2)+'kg): '+(store._manifoldOverride||'')):''));
