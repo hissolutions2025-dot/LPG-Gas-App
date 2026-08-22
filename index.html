@@ -3434,17 +3434,27 @@ function _countQueueRemove(id){
   var idx=q.findIndex(function(e){return e.id===id;});
   if(idx>-1){q.splice(idx,1);_countQueueSave(q);}
 }
+var _countFlushInFlight=false;
 function _countFlushQueue(){
   var q=_countQueueLoad();
   if(!q.length)return;
-  q.forEach(function(entry){
-    sb.from('stock_counts').upsert(entry.rows,{onConflict:'branch,date,count_type,state,size,brand'}).then(function(res){
-      if(!res.error){_countQueueRemove(entry.id);_updateCountPendingBadge();}
-      // any error: leave it queued, already-current in localStorage - retried next flush.
-    }).catch(function(){
-      // network-level failure - leave it queued, try again next flush.
+  if(_countFlushInFlight)return;
+  _countFlushInFlight=true;
+  // Flushed sequentially (not q.forEach's parallel fire-and-forget) so an
+  // earlier-queued entry always resolves before a later one - needed because a
+  // device can commit/correct the same line more than once while offline, and
+  // firing both upserts in parallel would let whichever network response lands
+  // second silently win, possibly reverting a correction back to the stale value.
+  q.reduce(function(p,entry){
+    return p.then(function(){
+      return sb.from('stock_counts').upsert(entry.rows,{onConflict:'branch,date,count_type,state,size,brand'}).then(function(res){
+        if(!res.error){_countQueueRemove(entry.id);_updateCountPendingBadge();}
+        // any error: leave it queued, already-current in localStorage - retried next flush.
+      }).catch(function(){
+        // network-level failure - leave it queued, try again next flush.
+      });
     });
-  });
+  }, Promise.resolve()).then(function(){_countFlushInFlight=false;});
 }
 window.addEventListener('online',_countFlushQueue);
 // Defined here (not left until the badge-HTML task) because _countQueuePush and
