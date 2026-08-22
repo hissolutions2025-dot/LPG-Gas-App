@@ -3477,6 +3477,21 @@ function _updateCountPendingBadge(){
     el.textContent=text;
   });
 }
+// Upserts committed/corrected local rows into the shared stock_counts table.
+// Called from both _cCommitReal() (a normal commit) and openCountAdjust()'s onApply
+// (a correction) - same write path either way, offline-safe via the queue above.
+function _stockCountsUpsert(freshRows){
+  if(!freshRows||!freshRows.length)return;
+  var sharedRows=freshRows.map(_stockCountToSharedRow);
+  sb.from('stock_counts').upsert(sharedRows,{onConflict:'branch,date,count_type,state,size,brand'}).then(function(res){
+    if(res.error){
+      console.error('stock_counts upsert failed, queuing:',res.error.message);
+      _countQueuePush(sharedRows);
+    }
+  }).catch(function(){
+    _countQueuePush(sharedRows);
+  });
+}
 // Compare committed Opening lines against saved expected opening (prev close)
 function computeOpeningMismatches(br){
   var expWrap=loadExpectedOpening(br);
