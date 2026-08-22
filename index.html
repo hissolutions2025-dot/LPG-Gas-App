@@ -3411,6 +3411,56 @@ function _cCommitReal(){
   else toast('Count committed ✓');
   goHome();
 }
+function _countQueueKey(){return 'gs_stockcount_pending';}
+function _countQueueLoad(){
+  try{return JSON.parse(localStorage.getItem(_countQueueKey())||'[]');}
+  catch(e){console.error('Pending Stock Count sync queue was corrupted and could not be read:',e.message);return [];}
+}
+function _countQueueSave(q){
+  try{localStorage.setItem(_countQueueKey(),JSON.stringify(q));}
+  catch(e){
+    console.error('Could not save the pending Stock Count sync queue:',e.message);
+    toast('Could not save a pending sync record — device storage may be full. Free up space and reopen the app.',true);
+  }
+}
+function _countQueuePush(sharedRows){
+  var q=_countQueueLoad();
+  q.push({id:nowStamp()+'-'+Math.random().toString(36).slice(2,8), rows:sharedRows});
+  _countQueueSave(q);
+  _updateCountPendingBadge();
+}
+function _countQueueRemove(id){
+  var q=_countQueueLoad();
+  var idx=q.findIndex(function(e){return e.id===id;});
+  if(idx>-1){q.splice(idx,1);_countQueueSave(q);}
+}
+function _countFlushQueue(){
+  var q=_countQueueLoad();
+  if(!q.length)return;
+  q.forEach(function(entry){
+    sb.from('stock_counts').upsert(entry.rows,{onConflict:'branch,date,count_type,state,size,brand'}).then(function(res){
+      if(!res.error){_countQueueRemove(entry.id);_updateCountPendingBadge();}
+      // any error: leave it queued, already-current in localStorage - retried next flush.
+    }).catch(function(){
+      // network-level failure - leave it queued, try again next flush.
+    });
+  });
+}
+window.addEventListener('online',_countFlushQueue);
+// Defined here (not left until the badge-HTML task) because _countQueuePush and
+// _countFlushQueue above already call it - a later task only adds the HTML elements
+// this reads and wires the call sites; before that HTML exists, this is just a safe
+// no-op (getElementById returns null, the forEach body returns early).
+function _updateCountPendingBadge(){
+  var n=_countQueueLoad().length;
+  var text=n?('⏳ '+n+' count update(s) waiting to sync'):'';
+  ['countPendingBadge','countPendingBadgeHistory'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(!el)return;
+    el.style.display=n?'block':'none';
+    el.textContent=text;
+  });
+}
 // Compare committed Opening lines against saved expected opening (prev close)
 function computeOpeningMismatches(br){
   var expWrap=loadExpectedOpening(br);
