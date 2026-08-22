@@ -3049,8 +3049,11 @@ function cRenderGrid(){
   // (same pattern as Received/Manifold/Refill/Private's equivalent link).
   var _cal=document.getElementById('cAdjustLink');
   if(_cal){
-    var _hasCommittedToday=store.count.some(function(r){return r.branch===cBranch && (r._date||today)===today;});
-    _cal.style.display=(_hasCommittedToday && !loadSavedDay(today,cBranch))?'block':'none';
+    // Show whenever the day isn't closed yet - don't gate on local knowledge of what's
+    // committed. A device that hasn't committed anything itself today may still have
+    // something to adjust that another device committed; openCountAdjust() checks the
+    // shared truth itself and tells the user plainly if there's genuinely nothing yet.
+    _cal.style.display=(!loadSavedDay(today,cBranch))?'block':'none';
   }
   document.getElementById('cHint').innerHTML='Tap a <b>Full</b> or <b>Empty</b> cell to complete that size. Full brands: '+C_FULLBRANDS[cBranch].join(', ')+' · Empties: any.';
   var html='<div class="cgHead"><div class="gc sz">Size</div><div class="gc">Full</div><div class="gc">Empty</div></div>';
