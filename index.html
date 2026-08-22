@@ -3287,6 +3287,35 @@ function cCommit(){
   if(!_checkCountTimeWarning())return; // modal shown; it calls _cCommitReal() itself if continued
   _cCommitReal();
 }
+// Converts one local store.count-shaped row into the shape stock_counts expects
+// (snake_case columns, ISO date, current operator as the updater) - the write side
+// of the local <-> shared translation.
+function _stockCountToSharedRow(r){
+  return {branch:r.branch, date:r._date||today, count_type:r.countType, state:r.state,
+    size:r.size, brand:r.brand, qty:num(r.qty), note:r.note||'',
+    updated_by:(currentProfile&&currentProfile.id)||null,
+    updated_by_name_snapshot:operator||'', updated_at:new Date().toISOString()};
+}
+// Converts one stock_counts row (as returned by a Supabase select) back into the
+// local store.count row shape - the read side of the translation.
+function _stockCountFromSharedRow(d){
+  return {branch:d.branch, countType:d.count_type, state:d.state, size:d.size,
+    brand:d.brand, qty:d.qty, note:d.note||'', _date:d.date, _time:d.updated_at,
+    _operator:d.updated_by_name_snapshot||'', _role:''};
+}
+// Merges shared (Supabase) rows into local store.count by exact line key
+// (branch|countType|size|state|brand) - same merge-by-line-key logic _cCommitReal
+// uses for its own commits, reused here so a line committed by ANOTHER device
+// correctly overwrites/adds to this device's local copy without touching any
+// unrelated line.
+function _reconcileSharedCountRows(sharedRows){
+  var localRows=sharedRows.map(_stockCountFromSharedRow);
+  var touchedKeys={};
+  localRows.forEach(function(r){touchedKeys[r.branch+'|'+r.countType+'|'+r.size+'|'+r.state+'|'+r.brand]=true;});
+  store.count=store.count.filter(function(r){
+    return !touchedKeys[(r.branch||'')+'|'+r.countType+'|'+r.size+'|'+r.state+'|'+r.brand];
+  }).concat(localRows);
+}
 function _cCommitReal(){
   // Build this commit's fresh rows from cData, and remember exactly which lines (branch +
   // countType + size + state + brand) they cover.
