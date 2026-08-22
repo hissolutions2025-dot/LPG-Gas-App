@@ -3397,7 +3397,9 @@ function _cCommitReal(){
   });
   // New: push this commit's touched lines into the shared stock_counts table too,
   // so any device can see them - offline-safe via _stockCountsUpsert's own queue.
-  _stockCountsUpsert(freshRows);
+  // Wrapped defensively (matching syncPush's own try/catch one block above) so a
+  // synchronous throw here can never skip the draft-clear/audit-log/toast that follow.
+  try{_stockCountsUpsert(freshRows);}catch(e){console.error('_stockCountsUpsert threw synchronously:',e.message);}
   // Every bucket in cData was just flushed into store.count (merged, not wiped) and synced
   // above - nothing is left to preserve in the DRAFT, so clear it all. Previously cData was
   // never cleared here, so switching branch after a commit (e.g. Kleinmond -> Helderberg)
