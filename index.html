@@ -3498,22 +3498,22 @@ function _stockCountsUpsert(freshRows){
   // Chained onto a persistent promise (not just sequenced within one call) so ANY two
   // calls to this function - from a commit, from a correction, from two corrections
   // seconds apart - always resolve in the order they were submitted, never racing on
-  // network response order. Each link is wrapped so it can never itself reject (sync
-  // throw is caught, both success/error upsert outcomes resolve normally) - otherwise
-  // one bad call could permanently break every future call chained after it, the same
-  // class of bug already fixed for the offline queue's reentrancy flag.
+  // network response order. Every layer here (sync throw, upsert rejection, and any
+  // unexpected throw inside the handlers themselves) is caught so this chain link can
+  // truly never reject - a rejected link would permanently poison every future call.
   _stockCountsUpsertChain=_stockCountsUpsertChain.then(function(){
+    function queueAndSwallow(){_countQueuePush(sharedRows);}
     try{
       return sb.from('stock_counts').upsert(sharedRows,{onConflict:'branch,date,count_type,state,size,brand'}).then(function(res){
         if(res.error){
           console.error('stock_counts upsert failed, queuing:',res.error.message);
-          _countQueuePush(sharedRows);
+          queueAndSwallow();
         }
-      }, function(){
-        _countQueuePush(sharedRows);
+      }, queueAndSwallow).then(function(){}, function(e){
+        console.error('stock_counts upsert handler failed unexpectedly:',e&&e.message);
       });
     }catch(e){
-      _countQueuePush(sharedRows);
+      queueAndSwallow();
     }
   });
 }
