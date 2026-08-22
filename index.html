@@ -261,6 +261,7 @@
   <div class="wrap">
     <div class="datebar"><label>Stock-take date</label><div class="val" id="dateVal">—</div></div>
     <div id="closeDayPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
+    <div id="countPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div class="greet">Every entry uses today's date, your name and branch.</div>
     <div class="grid">
       <button class="tile t1" onclick="openCount()"><div class="ic">&#9638;</div><h3>Stock Count</h3><p>Opening / closing, full &amp; empty</p><span class="badge" id="b-count" style="display:none">0</span></button>
@@ -453,6 +454,7 @@
 <!-- COUNT HISTORY -->
 <div id="historyView" class="view"><div class="wrap">
   <div id="closeDayPendingBadgeHistory" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
+  <div id="countPendingBadgeHistory" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
   <div class="ctxbar" id="hCtx" style="margin-bottom:12px;"></div>
   <div class="histTabs">
     <button class="htab on" id="htab-today" onclick="setHistTab('today')">Today</button>
@@ -2541,6 +2543,8 @@ function _finishLogin(u,b){
   syncFlush();
   _closeDayFlushQueue();
   _updateCloseDayPendingBadge();
+  _countFlushQueue();
+  _updateCountPendingBadge();
   refreshTestDateUI();
   // "Where was I" - resume the same section (with its data) this operator was on when this
   // device last left off, instead of always landing on the home screen. Falls back to home
@@ -4878,6 +4882,7 @@ function histSetBranch(x){
 }
 function openHistory(){
   _updateCloseDayPendingBadge();
+  _updateCountPendingBadge();
   if(!histBranch||(role==='Operator'))histBranch=branch||'Helderberg';
   applyBranchLock('hbr-',histBranch);
   document.getElementById('hCtx').innerHTML='';document.getElementById('hCtx').style.display='none';
