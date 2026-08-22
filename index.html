@@ -3491,16 +3491,30 @@ function _updateCountPendingBadge(){
 // Upserts committed/corrected local rows into the shared stock_counts table.
 // Called from both _cCommitReal() (a normal commit) and openCountAdjust()'s onApply
 // (a correction) - same write path either way, offline-safe via the queue above.
+var _stockCountsUpsertChain=Promise.resolve();
 function _stockCountsUpsert(freshRows){
   if(!freshRows||!freshRows.length)return;
   var sharedRows=freshRows.map(_stockCountToSharedRow);
-  sb.from('stock_counts').upsert(sharedRows,{onConflict:'branch,date,count_type,state,size,brand'}).then(function(res){
-    if(res.error){
-      console.error('stock_counts upsert failed, queuing:',res.error.message);
+  // Chained onto a persistent promise (not just sequenced within one call) so ANY two
+  // calls to this function - from a commit, from a correction, from two corrections
+  // seconds apart - always resolve in the order they were submitted, never racing on
+  // network response order. Each link is wrapped so it can never itself reject (sync
+  // throw is caught, both success/error upsert outcomes resolve normally) - otherwise
+  // one bad call could permanently break every future call chained after it, the same
+  // class of bug already fixed for the offline queue's reentrancy flag.
+  _stockCountsUpsertChain=_stockCountsUpsertChain.then(function(){
+    try{
+      return sb.from('stock_counts').upsert(sharedRows,{onConflict:'branch,date,count_type,state,size,brand'}).then(function(res){
+        if(res.error){
+          console.error('stock_counts upsert failed, queuing:',res.error.message);
+          _countQueuePush(sharedRows);
+        }
+      }, function(){
+        _countQueuePush(sharedRows);
+      });
+    }catch(e){
       _countQueuePush(sharedRows);
     }
-  }, function(){
-    _countQueuePush(sharedRows);
   });
 }
 // Compare committed Opening lines against saved expected opening (prev close)
@@ -4339,11 +4353,12 @@ function openCountAdjust(){
         auditLog('Stock Count adjusted (same day)',cBranch+' '+sel.tag+': '+oldVal+' → '+newVal+' by '+auth.name+' - '+reason,{was:oldVal},{now:newVal});
         var rowsForBn=syncRowsCount(store.count.filter(function(r){return r.branch===cBranch;}),cBranch);
         syncPush('Counts', rowsForBn.map(function(x){x._replaceKey=(x.date+'|'+x.branch);return x;}));
-        // New: push the reconciled full current-day picture for this branch into the
-        // shared table too - same "send everything for the branch+day" idempotent
-        // philosophy as the Sheet replace-set line right above, offline-safe via
-        // _stockCountsUpsert's own queue.
-        try{_stockCountsUpsert(store.count.filter(function(r){return r.branch===cBranch && (r._date||today)===today;}));}catch(e){console.error('_stockCountsUpsert threw synchronously:',e.message);}
+        // Push just the corrected line, not the whole day - unlike the Sheets replace-set sync
+        // above (which structurally needs the full day to reflect deletions/absence), each
+        // stock_counts row is independently keyed, so only the actually-changed row needs
+        // resending. Sending the whole day would also re-stamp updated_by/updated_at on every
+        // untouched line as if this correction touched it too.
+        try{_stockCountsUpsert([sel.row]);}catch(e){console.error('_stockCountsUpsert threw synchronously:',e.message);}
       },
       afterClose:function(){
         cRenderGrid();
