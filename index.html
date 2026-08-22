@@ -3440,6 +3440,12 @@ function _countFlushQueue(){
   if(!q.length)return;
   if(_countFlushInFlight)return;
   _countFlushInFlight=true;
+  // Reset on both success AND failure (not just .then()) - if sb.from(...).upsert(...)
+  // ever throws synchronously instead of rejecting, that throw propagates past every
+  // .then() below (none has a rejection handler) and would otherwise leave this flag
+  // stuck true forever, silently disabling all future sync (the 'online' listener
+  // early-returns whenever it's set).
+  function reset(){_countFlushInFlight=false;}
   // Flushed sequentially (not q.forEach's parallel fire-and-forget) so an
   // earlier-queued entry always resolves before a later one - needed because a
   // device can commit/correct the same line more than once while offline, and
@@ -3454,7 +3460,7 @@ function _countFlushQueue(){
         // network-level failure - leave it queued, try again next flush.
       });
     });
-  }, Promise.resolve()).then(function(){_countFlushInFlight=false;});
+  }, Promise.resolve()).then(reset, reset);
 }
 window.addEventListener('online',_countFlushQueue);
 // Defined here (not left until the badge-HTML task) because _countQueuePush and
