@@ -3044,15 +3044,14 @@ function cRenderGrid(){
       _twb.style.display='none';
     }
   }
-  // Same-day adjustment link - see openCountAdjust(). Only offered while there's something
-  // committed today for this branch to actually adjust, and the day hasn't been closed yet
-  // (same pattern as Received/Manifold/Refill/Private's equivalent link).
+  // Same-day adjustment link - see openCountAdjust(). Shown whenever the day isn't closed
+  // yet - don't gate on local knowledge of what's committed. A device that hasn't committed
+  // anything itself today may still have something to adjust that another device committed;
+  // openCountAdjust() checks the shared truth itself and tells the user plainly if there's
+  // genuinely nothing yet. (Received/Manifold/Refill/Private's equivalent link still uses
+  // the older local-only-committed gate.)
   var _cal=document.getElementById('cAdjustLink');
   if(_cal){
-    // Show whenever the day isn't closed yet - don't gate on local knowledge of what's
-    // committed. A device that hasn't committed anything itself today may still have
-    // something to adjust that another device committed; openCountAdjust() checks the
-    // shared truth itself and tells the user plainly if there's genuinely nothing yet.
     _cal.style.display=(!loadSavedDay(today,cBranch))?'block':'none';
   }
   document.getElementById('cHint').innerHTML='Tap a <b>Full</b> or <b>Empty</b> cell to complete that size. Full brands: '+C_FULLBRANDS[cBranch].join(', ')+' · Empties: any.';
