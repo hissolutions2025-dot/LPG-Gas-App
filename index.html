@@ -3488,7 +3488,7 @@ function _stockCountsUpsert(freshRows){
       console.error('stock_counts upsert failed, queuing:',res.error.message);
       _countQueuePush(sharedRows);
     }
-  }).catch(function(){
+  }, function(){
     _countQueuePush(sharedRows);
   });
 }
