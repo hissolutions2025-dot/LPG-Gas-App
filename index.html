@@ -3299,8 +3299,15 @@ function _stockCountToSharedRow(r){
 // Converts one stock_counts row (as returned by a Supabase select) back into the
 // local store.count row shape - the read side of the translation.
 function _stockCountFromSharedRow(d){
+  // updated_at is an ISO 8601 string; _time elsewhere in this file is always
+  // nowStamp()'s local "YYYY-MM-DD HH:MM:SS" format (see nowStamp() above) - convert
+  // so mixed local/reconciled rows still sort and format consistently (e.g. in the
+  // day-close PDF's time-range lookup).
+  var dt=d.updated_at?new Date(d.updated_at):new Date();
+  function p(n){return (n<10?'0':'')+n;}
+  var localStamp=dt.getFullYear()+'-'+p(dt.getMonth()+1)+'-'+p(dt.getDate())+' '+p(dt.getHours())+':'+p(dt.getMinutes())+':'+p(dt.getSeconds());
   return {branch:d.branch, countType:d.count_type, state:d.state, size:d.size,
-    brand:d.brand, qty:d.qty, note:d.note||'', _date:d.date, _time:d.updated_at,
+    brand:d.brand, qty:num(d.qty), note:d.note||'', _date:d.date, _time:localStamp,
     _operator:d.updated_by_name_snapshot||'', _role:''};
 }
 // Merges shared (Supabase) rows into local store.count by exact line key
