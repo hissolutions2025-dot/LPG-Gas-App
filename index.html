@@ -3395,6 +3395,9 @@ function _cCommitReal(){
     // mark replace-set so the sheet clears old rows for this branch+date first
     syncPush('Counts', rowsForBn.map(function(x){x._replaceKey=(x.date+'|'+x.branch);return x;}));
   });
+  // New: push this commit's touched lines into the shared stock_counts table too,
+  // so any device can see them - offline-safe via _stockCountsUpsert's own queue.
+  _stockCountsUpsert(freshRows);
   // Every bucket in cData was just flushed into store.count (merged, not wiped) and synced
   // above - nothing is left to preserve in the DRAFT, so clear it all. Previously cData was
   // never cleared here, so switching branch after a commit (e.g. Kleinmond -> Helderberg)
