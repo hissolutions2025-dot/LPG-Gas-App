@@ -261,6 +261,7 @@
   <div class="wrap">
     <div class="datebar"><label>Stock-take date</label><div class="val" id="dateVal">—</div></div>
     <div id="closeDayPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
+    <div id="countPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div class="greet">Every entry uses today's date, your name and branch.</div>
     <div class="grid">
       <button class="tile t1" onclick="openCount()"><div class="ic">&#9638;</div><h3>Stock Count</h3><p>Opening / closing, full &amp; empty</p><span class="badge" id="b-count" style="display:none">0</span></button>
@@ -453,6 +454,7 @@
 <!-- COUNT HISTORY -->
 <div id="historyView" class="view"><div class="wrap">
   <div id="closeDayPendingBadgeHistory" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
+  <div id="countPendingBadgeHistory" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
   <div class="ctxbar" id="hCtx" style="margin-bottom:12px;"></div>
   <div class="histTabs">
     <button class="htab on" id="htab-today" onclick="setHistTab('today')">Today</button>
@@ -2541,6 +2543,8 @@ function _finishLogin(u,b){
   syncFlush();
   _closeDayFlushQueue();
   _updateCloseDayPendingBadge();
+  _countFlushQueue();
+  _updateCountPendingBadge();
   refreshTestDateUI();
   // "Where was I" - resume the same section (with its data) this operator was on when this
   // device last left off, instead of always landing on the home screen. Falls back to home
@@ -3040,13 +3044,15 @@ function cRenderGrid(){
       _twb.style.display='none';
     }
   }
-  // Same-day adjustment link - see openCountAdjust(). Only offered while there's something
-  // committed today for this branch to actually adjust, and the day hasn't been closed yet
-  // (same pattern as Received/Manifold/Refill/Private's equivalent link).
+  // Same-day adjustment link - see openCountAdjust(). Shown whenever the day isn't closed
+  // yet - don't gate on local knowledge of what's committed. A device that hasn't committed
+  // anything itself today may still have something to adjust that another device committed;
+  // openCountAdjust() checks the shared truth itself and tells the user plainly if there's
+  // genuinely nothing yet. (Received/Manifold/Refill/Private's equivalent link still uses
+  // the older local-only-committed gate.)
   var _cal=document.getElementById('cAdjustLink');
   if(_cal){
-    var _hasCommittedToday=store.count.some(function(r){return r.branch===cBranch && (r._date||today)===today;});
-    _cal.style.display=(_hasCommittedToday && !loadSavedDay(today,cBranch))?'block':'none';
+    _cal.style.display=(!loadSavedDay(today,cBranch))?'block':'none';
   }
   document.getElementById('cHint').innerHTML='Tap a <b>Full</b> or <b>Empty</b> cell to complete that size. Full brands: '+C_FULLBRANDS[cBranch].join(', ')+' · Empties: any.';
   var html='<div class="cgHead"><div class="gc sz">Size</div><div class="gc">Full</div><div class="gc">Empty</div></div>';
@@ -3287,6 +3293,42 @@ function cCommit(){
   if(!_checkCountTimeWarning())return; // modal shown; it calls _cCommitReal() itself if continued
   _cCommitReal();
 }
+// Converts one local store.count-shaped row into the shape stock_counts expects
+// (snake_case columns, ISO date, current operator as the updater) - the write side
+// of the local <-> shared translation.
+function _stockCountToSharedRow(r){
+  return {branch:r.branch, date:r._date||today, count_type:r.countType, state:r.state,
+    size:r.size, brand:r.brand, qty:num(r.qty), note:r.note||'',
+    updated_by:(currentProfile&&currentProfile.id)||null,
+    updated_by_name_snapshot:operator||'', updated_at:new Date().toISOString()};
+}
+// Converts one stock_counts row (as returned by a Supabase select) back into the
+// local store.count row shape - the read side of the translation.
+function _stockCountFromSharedRow(d){
+  // updated_at is an ISO 8601 string; _time elsewhere in this file is always
+  // nowStamp()'s local "YYYY-MM-DD HH:MM:SS" format (see nowStamp() above) - convert
+  // so mixed local/reconciled rows still sort and format consistently (e.g. in the
+  // day-close PDF's time-range lookup).
+  var dt=d.updated_at?new Date(d.updated_at):new Date();
+  function p(n){return (n<10?'0':'')+n;}
+  var localStamp=dt.getFullYear()+'-'+p(dt.getMonth()+1)+'-'+p(dt.getDate())+' '+p(dt.getHours())+':'+p(dt.getMinutes())+':'+p(dt.getSeconds());
+  return {branch:d.branch, countType:d.count_type, state:d.state, size:d.size,
+    brand:d.brand, qty:num(d.qty), note:d.note||'', _date:d.date, _time:localStamp,
+    _operator:d.updated_by_name_snapshot||'', _role:''};
+}
+// Merges shared (Supabase) rows into local store.count by exact line key
+// (branch|countType|size|state|brand) - same merge-by-line-key logic _cCommitReal
+// uses for its own commits, reused here so a line committed by ANOTHER device
+// correctly overwrites/adds to this device's local copy without touching any
+// unrelated line.
+function _reconcileSharedCountRows(sharedRows){
+  var localRows=sharedRows.map(_stockCountFromSharedRow);
+  var touchedKeys={};
+  localRows.forEach(function(r){touchedKeys[r.branch+'|'+r.countType+'|'+r.size+'|'+r.state+'|'+r.brand]=true;});
+  store.count=store.count.filter(function(r){
+    return !touchedKeys[(r.branch||'')+'|'+r.countType+'|'+r.size+'|'+r.state+'|'+r.brand];
+  }).concat(localRows);
+}
 function _cCommitReal(){
   // Build this commit's fresh rows from cData, and remember exactly which lines (branch +
   // countType + size + state + brand) they cover.
@@ -3355,6 +3397,11 @@ function _cCommitReal(){
     // mark replace-set so the sheet clears old rows for this branch+date first
     syncPush('Counts', rowsForBn.map(function(x){x._replaceKey=(x.date+'|'+x.branch);return x;}));
   });
+  // New: push this commit's touched lines into the shared stock_counts table too,
+  // so any device can see them - offline-safe via _stockCountsUpsert's own queue.
+  // Wrapped defensively (matching syncPush's own try/catch one block above) so a
+  // synchronous throw here can never skip the draft-clear/audit-log/toast that follow.
+  try{_stockCountsUpsert(freshRows);}catch(e){console.error('_stockCountsUpsert threw synchronously:',e.message);}
   // Every bucket in cData was just flushed into store.count (merged, not wiped) and synced
   // above - nothing is left to preserve in the DRAFT, so clear it all. Previously cData was
   // never cleared here, so switching branch after a commit (e.g. Kleinmond -> Helderberg)
@@ -3374,6 +3421,117 @@ function _cCommitReal(){
   }
   else toast('Count committed ✓');
   goHome();
+}
+function _countQueueKey(){return 'gs_stockcount_pending';}
+function _countQueueLoad(){
+  try{return JSON.parse(localStorage.getItem(_countQueueKey())||'[]');}
+  catch(e){console.error('Pending Stock Count sync queue was corrupted and could not be read:',e.message);return [];}
+}
+function _countQueueSave(q){
+  try{localStorage.setItem(_countQueueKey(),JSON.stringify(q));}
+  catch(e){
+    console.error('Could not save the pending Stock Count sync queue:',e.message);
+    toast('Could not save a pending sync record — device storage may be full. Free up space and reopen the app.',true);
+  }
+}
+function _countQueuePush(sharedRows){
+  var q=_countQueueLoad();
+  q.push({id:nowStamp()+'-'+Math.random().toString(36).slice(2,8), rows:sharedRows});
+  _countQueueSave(q);
+  _updateCountPendingBadge();
+}
+function _countQueueRemove(id){
+  var q=_countQueueLoad();
+  var idx=q.findIndex(function(e){return e.id===id;});
+  if(idx>-1){q.splice(idx,1);_countQueueSave(q);}
+}
+var _countFlushInFlight=false;
+function _countFlushQueue(){
+  var q=_countQueueLoad();
+  if(!q.length)return;
+  if(_countFlushInFlight)return;
+  _countFlushInFlight=true;
+  // Reset on both success AND failure (not just .then()) - if sb.from(...).upsert(...)
+  // ever throws synchronously instead of rejecting, that throw propagates past every
+  // .then() below (none has a rejection handler) and would otherwise leave this flag
+  // stuck true forever, silently disabling all future sync (the 'online' listener
+  // early-returns whenever it's set).
+  function reset(){_countFlushInFlight=false;}
+  // Flushed sequentially (not q.forEach's parallel fire-and-forget) so an
+  // earlier-queued entry always resolves before a later one - needed because a
+  // device can commit/correct the same line more than once while offline, and
+  // firing both upserts in parallel would let whichever network response lands
+  // second silently win, possibly reverting a correction back to the stale value.
+  q.reduce(function(p,entry){
+    return p.then(function(){
+      return sb.from('stock_counts').upsert(entry.rows,{onConflict:'branch,date,count_type,state,size,brand'}).then(function(res){
+        if(!res.error){_countQueueRemove(entry.id);_updateCountPendingBadge();}
+        // any error: leave it queued, already-current in localStorage - retried next flush.
+      }).catch(function(){
+        // network-level failure - leave it queued, try again next flush.
+      });
+    });
+  }, Promise.resolve()).then(reset, reset);
+}
+window.addEventListener('online',_countFlushQueue);
+// Defined here (not left until the badge-HTML task) because _countQueuePush and
+// _countFlushQueue above already call it - a later task only adds the HTML elements
+// this reads and wires the call sites; before that HTML exists, this is just a safe
+// no-op (getElementById returns null, the forEach body returns early).
+function _updateCountPendingBadge(){
+  var n=_countQueueLoad().length;
+  var text=n?('⏳ '+n+' count update(s) waiting to sync'):'';
+  ['countPendingBadge','countPendingBadgeHistory'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(!el)return;
+    el.style.display=n?'block':'none';
+    el.textContent=text;
+  });
+}
+// Upserts committed/corrected local rows into the shared stock_counts table.
+// Called from both _cCommitReal() (a normal commit) and openCountAdjust()'s onApply
+// (a correction) - same write path either way, offline-safe via the queue above.
+var _stockCountsUpsertChain=Promise.resolve();
+function _stockCountsUpsert(freshRows){
+  if(!freshRows||!freshRows.length)return;
+  var sharedRows;
+  try{
+    sharedRows=freshRows.map(_stockCountToSharedRow);
+  }catch(e){
+    // Never expected to throw (property access + num() only) - if it ever does there's
+    // nothing valid to queue, so surface it loudly via toast rather than let it vanish
+    // into a console nobody on a phone is ever watching (diagnostic hardening added
+    // after a live pilot test showed a commit succeeding locally with nothing reaching
+    // the shared table and no badge - this is the one call site that could explain
+    // that silently, even though no concrete trigger for it was found).
+    console.error('_stockCountToSharedRow failed, shared sync lost for this write:',e.message);
+    toast('Could not prepare shared sync for this count - please tell Freddie: '+e.message,true);
+    return;
+  }
+  // Chained onto a persistent promise (not just sequenced within one call) so ANY two
+  // calls to this function - from a commit, from a correction, from two corrections
+  // seconds apart - always resolve in the order they were submitted, never racing on
+  // network response order. Every layer here (sync throw, upsert rejection, and any
+  // unexpected throw inside the handlers themselves) is caught so this chain link can
+  // truly never reject - a rejected link would permanently poison every future call.
+  _stockCountsUpsertChain=_stockCountsUpsertChain.then(function(){
+    function queueAndSwallow(){_countQueuePush(sharedRows);}
+    try{
+      return sb.from('stock_counts').upsert(sharedRows,{onConflict:'branch,date,count_type,state,size,brand'}).then(function(res){
+        if(res.error){
+          console.error('stock_counts upsert failed, queuing:',res.error.message);
+          queueAndSwallow();
+        }
+      }, queueAndSwallow).then(function(){}, function(e){
+        // Genuinely unexpected (queueAndSwallow itself failing) - the badge can't be
+        // trusted to reflect this, so surface it directly instead of only console.error.
+        console.error('stock_counts upsert handler failed unexpectedly:',e&&e.message);
+        toast('Shared sync failed unexpectedly - please tell Freddie: '+(e&&e.message||'unknown error'),true);
+      });
+    }catch(e){
+      queueAndSwallow();
+    }
+  });
 }
 // Compare committed Opening lines against saved expected opening (prev close)
 function computeOpeningMismatches(br){
@@ -4191,21 +4349,38 @@ function openCapAdjust(){
 // corrected value actually reaches the backend sheet, not just the local Adjustments note.
 function openCountAdjust(){
   if(loadSavedDay(today,cBranch)){toast('Day already closed for '+cBranch+' - use the correction tool from Count History instead',true);return;}
-  var todaysStore={count:store.count.filter(function(r){return r.branch===cBranch && (r._date||today)===today;})};
-  openCorrection({
-    title:'Adjust Stock Count ('+cCT+') — '+cBranch+' (today, before close)',
-    store:todaysStore, branch:cBranch, sections:[cCT],
-    onApply:function(sel,oldVal,newVal,reason,auth){
-      syncPush('Adjustments',[{date:today,branch:cBranch,Kind:'SameDayCountAdjustment',Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:auth.name+' ('+auth.level+')'}]);
-      saveWorkingStore();
-      auditLog('Stock Count adjusted (same day)',cBranch+' '+sel.tag+': '+oldVal+' → '+newVal+' by '+auth.name+' - '+reason,{was:oldVal},{now:newVal});
-      var rowsForBn=syncRowsCount(store.count.filter(function(r){return r.branch===cBranch;}),cBranch);
-      syncPush('Counts', rowsForBn.map(function(x){x._replaceKey=(x.date+'|'+x.branch);return x;}));
-    },
-    afterClose:function(){
-      cRenderGrid();
-      if(document.querySelector('.view.active')&&document.querySelector('.view.active').id==='historyView')openHistory();
-    }
+  // Refresh-on-open: pull today's committed lines for this branch from the shared
+  // table first, merging anything found into local store.count, so the picker below
+  // shows what's been committed from ANY device today, not just this one. If the
+  // fetch fails (offline, etc.) the .catch swallows it and we proceed with whatever
+  // this device already knows locally - same graceful-degradation approach Close Day
+  // uses, never blocking the tool from opening.
+  sb.from('stock_counts').select('*').eq('branch',cBranch).eq('date',today).then(function(res){
+    if(res.data && res.data.length)_reconcileSharedCountRows(res.data);
+  }).catch(function(){}).then(function(){
+    var todaysStore={count:store.count.filter(function(r){return r.branch===cBranch && (r._date||today)===today;})};
+    if(!todaysStore.count.length){toast('Nothing committed yet today for '+cBranch,true);return;}
+    openCorrection({
+      title:'Adjust Stock Count ('+cCT+') — '+cBranch+' (today, before close)',
+      store:todaysStore, branch:cBranch, sections:[cCT],
+      onApply:function(sel,oldVal,newVal,reason,auth){
+        syncPush('Adjustments',[{date:today,branch:cBranch,Kind:'SameDayCountAdjustment',Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:auth.name+' ('+auth.level+')'}]);
+        saveWorkingStore();
+        auditLog('Stock Count adjusted (same day)',cBranch+' '+sel.tag+': '+oldVal+' → '+newVal+' by '+auth.name+' - '+reason,{was:oldVal},{now:newVal});
+        var rowsForBn=syncRowsCount(store.count.filter(function(r){return r.branch===cBranch;}),cBranch);
+        syncPush('Counts', rowsForBn.map(function(x){x._replaceKey=(x.date+'|'+x.branch);return x;}));
+        // Push just the corrected line, not the whole day - unlike the Sheets replace-set sync
+        // above (which structurally needs the full day to reflect deletions/absence), each
+        // stock_counts row is independently keyed, so only the actually-changed row needs
+        // resending. Sending the whole day would also re-stamp updated_by/updated_at on every
+        // untouched line as if this correction touched it too.
+        try{_stockCountsUpsert([sel.row]);}catch(e){console.error('_stockCountsUpsert threw synchronously:',e.message);}
+      },
+      afterClose:function(){
+        cRenderGrid();
+        if(document.querySelector('.view.active')&&document.querySelector('.view.active').id==='historyView')openHistory();
+      }
+    });
   });
 }
 function capSummary(c,lines){
@@ -4761,6 +4936,7 @@ function histSetBranch(x){
 }
 function openHistory(){
   _updateCloseDayPendingBadge();
+  _updateCountPendingBadge();
   if(!histBranch||(role==='Operator'))histBranch=branch||'Helderberg';
   applyBranchLock('hbr-',histBranch);
   document.getElementById('hCtx').innerHTML='';document.getElementById('hCtx').style.display='none';
