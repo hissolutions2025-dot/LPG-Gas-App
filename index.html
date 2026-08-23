@@ -3075,7 +3075,8 @@ function cOpenDetail(sz,side){
     // rather than an empty form that looks like nothing's been counted.
     var _committedNow=cCommittedLines(sz,side);
     if(_committedNow.length){
-      c[side]=_committedNow.map(function(r){return {brand:r.brand,qty:num(r.qty),note:r.note||'',_fromCommitted:true};});
+      c[side]=_committedNow.map(function(r){return {brand:r.brand,qty:num(r.qty),note:r.note||'',_fromCommitted:true,
+        _operator:r._operator,_time:r._time,_correctedFrom:r._correctedFrom};});
     } else {
       c[side].push({brand:cBrands(side)[0],qty:''});
     }
@@ -3086,6 +3087,18 @@ function cOpenDetail(sz,side){
   document.getElementById('cDetTitle').textContent=sz+' · '+(side==='full'?'FULL':'EMPTY');
   document.getElementById('cDetSub').textContent=(side==='full'?'Full brands for '+cBranch:'Empties — any brand returned');
   cShow('countDetailView');cRenderDetail();window.scrollTo(0,0);
+}
+// Shared byline text for a committed Stock Count line: who captured it and when, or
+// if it was corrected, who corrected it/when/what it changed from-to. Used by both
+// the grid's detail view (cRenderDetail) and the Adjust picker
+// (corrStepCountGroupEdit) - same underlying fields (_operator/_time/_correctedFrom),
+// same wording, one place to keep them consistent.
+function _stockCountByline(l){
+  if(!l._operator||!l._time)return '';
+  var hasCorr=(l._correctedFrom!==undefined && l._correctedFrom!==null);
+  return hasCorr
+    ? ('Adjusted by '+l._operator+' · '+l._time+': '+l._correctedFrom+' → '+num(l.qty))
+    : ('Captured by '+l._operator+' · '+l._time);
 }
 function cRenderDetail(){
   var arr=cCell(cDet.size)[cDet.side];var brands=cBrands(cDet.side);
@@ -3103,6 +3116,7 @@ function cRenderDetail(){
       '<button class="del" onclick="cDelLine('+i+')"'+dis+'>×</button></div>'+
       (locked?'<div style="font-size:11px;color:#C0392B;font-weight:800;margin-top:4px">🔒 This count is incorrect — locked. Manager/Owner must correct in Count History.</div>':
         (wrong?'<div style="font-size:11px;color:#C0392B;font-weight:800;margin-top:4px">⚠ This count is incorrect</div>':''))+
+      (_stockCountByline(l)?'<div style="font-size:10px;color:var(--muted);margin-top:4px">'+_stockCountByline(l)+'</div>':'')+
       (l.brand==='Other'?'<div class="bNote"><input type="text" value="'+(l.note||'')+'" placeholder="Which supplier brand? (e.g. Easigas)" oninput="cSetNote('+i+',this.value)"'+dis+'></div>':'')+
       '</div>';
   }).join('');
@@ -3297,10 +3311,15 @@ function cCommit(){
 // (snake_case columns, ISO date, current operator as the updater) - the write side
 // of the local <-> shared translation.
 function _stockCountToSharedRow(r){
+  // corrected_from is only ever present on r right after a correction just stamped it
+  // (see corrApplyCountGroup) - a normal capture/recount never sets it, so it's null
+  // here, which is exactly right: null means "not the result of a correction."
+  var hasCorr=(r._correctedFrom!==undefined && r._correctedFrom!==null);
   return {branch:r.branch, date:r._date||today, count_type:r.countType, state:r.state,
     size:r.size, brand:r.brand, qty:num(r.qty), note:r.note||'',
     updated_by:(currentProfile&&currentProfile.id)||null,
-    updated_by_name_snapshot:operator||'', updated_at:new Date().toISOString()};
+    updated_by_name_snapshot:operator||'', updated_at:new Date().toISOString(),
+    corrected_from:hasCorr?num(r._correctedFrom):null};
 }
 // Converts one stock_counts row (as returned by a Supabase select) back into the
 // local store.count row shape - the read side of the translation.
@@ -3312,9 +3331,11 @@ function _stockCountFromSharedRow(d){
   var dt=d.updated_at?new Date(d.updated_at):new Date();
   function p(n){return (n<10?'0':'')+n;}
   var localStamp=dt.getFullYear()+'-'+p(dt.getMonth()+1)+'-'+p(dt.getDate())+' '+p(dt.getHours())+':'+p(dt.getMinutes())+':'+p(dt.getSeconds());
+  var hasCorr=(d.corrected_from!==undefined && d.corrected_from!==null);
   return {branch:d.branch, countType:d.count_type, state:d.state, size:d.size,
     brand:d.brand, qty:num(d.qty), note:d.note||'', _date:d.date, _time:localStamp,
-    _operator:d.updated_by_name_snapshot||'', _role:''};
+    _operator:d.updated_by_name_snapshot||'', _role:'',
+    _correctedFrom:hasCorr?num(d.corrected_from):undefined};
 }
 // Merges shared (Supabase) rows into local store.count by exact line key
 // (branch|countType|size|state|brand) - same merge-by-line-key logic _cCommitReal
@@ -5722,7 +5743,8 @@ function corrStepCountGroups(section){
     var r=l.row;
     var key=r.size;
     if(!groups[key]){groups[key]={size:r.size,full:[],empty:[]};order.push(key);}
-    groups[key][r.state==='Full'?'full':'empty'].push({idx:i,brand:r.brand,val:l.get()});
+    groups[key][r.state==='Full'?'full':'empty'].push({idx:i,brand:r.brand,val:l.get(),
+      _operator:r._operator,_time:r._time,_correctedFrom:r._correctedFrom});
   });
   corrCfg._countGroups=groups;
   corrCfg._countGroupOrder=order;
@@ -5746,9 +5768,11 @@ function corrStepCountGroupEdit(gi){
   function colInputs(rows){
     if(!rows.length)return '<div style="font-size:11px;color:var(--muted)">—</div>';
     return rows.map(function(x){
+      var byline=_stockCountByline({_operator:x._operator,_time:x._time,_correctedFrom:x._correctedFrom,qty:x.val});
       return '<div style="margin-bottom:8px">'+
         (rows.length>1?'<div style="font-size:11px;color:var(--muted);margin-bottom:3px">'+x.brand+'</div>':'')+
         '<input class="mField" type="number" inputmode="numeric" min="0" data-idx="'+x.idx+'" data-orig="'+x.val+'" value="'+x.val+'" style="width:100%;margin:0">'+
+        (byline?'<div style="font-size:10px;color:var(--muted);margin-top:3px">'+byline+'</div>':'')+
         '</div>';
     }).join('');
   }
@@ -5785,6 +5809,11 @@ function corrApplyCountGroup(){
     var line=corrCfg._lines[idx];
     var oldVal=num(el.getAttribute('data-orig')), newVal=num(el.value);
     var sel={tag:line.tag,section:corrCfg._section,row:line.row};
+    // Stamp the correction's byline directly onto the row - oldVal/newVal/who/when are
+    // all already known right here, no extra fetch needed. Harmless when line.row isn't
+    // a live store.count row (e.g. the 48-hour historical tool's cloned snapshot) since
+    // nothing else reads these fields off that path.
+    line.row._correctedFrom=oldVal;line.row._operator=corrAuth.name;line.row._time=nowStamp();
     line.set(newVal);
     corrCfg.onApply(sel,oldVal,newVal,reason,corrAuth);
   });
