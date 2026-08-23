@@ -4352,12 +4352,25 @@ function openCountAdjust(){
   // Refresh-on-open: pull today's committed lines for this branch from the shared
   // table first, merging anything found into local store.count, so the picker below
   // shows what's been committed from ANY device today, not just this one. If the
-  // fetch fails (offline, etc.) the .catch swallows it and we proceed with whatever
-  // this device already knows locally - same graceful-degradation approach Close Day
-  // uses, never blocking the tool from opening.
+  // fetch fails (offline, etc.) we proceed with whatever this device already knows
+  // locally - same graceful-degradation approach Close Day uses, never blocking the
+  // tool from opening - but now visibly, via toast, instead of silently: a live test
+  // showed an Owner seeing only their own committed lines with zero indication the
+  // cross-device fetch had failed rather than genuinely finding nothing else. Supabase
+  // query failures normally RESOLVE with res.error set (not a rejected promise), so
+  // res.error must be checked explicitly - the .catch alone only ever caught a
+  // network-level failure, never a query-level one, which is the more common case.
   sb.from('stock_counts').select('*').eq('branch',cBranch).eq('date',today).then(function(res){
-    if(res.data && res.data.length)_reconcileSharedCountRows(res.data);
-  }).catch(function(){}).then(function(){
+    if(res.error){
+      console.error('stock_counts fetch failed:',res.error.message);
+      toast('Could not check other devices’ counts (' +res.error.message+ ') - showing this device’s own data only.',true);
+    } else if(res.data && res.data.length){
+      _reconcileSharedCountRows(res.data);
+    }
+  }).catch(function(e){
+    console.error('stock_counts fetch failed:',e&&e.message);
+    toast('Could not check other devices’ counts (no connection?) - showing this device’s own data only.',true);
+  }).then(function(){
     var todaysStore={count:store.count.filter(function(r){return r.branch===cBranch && (r._date||today)===today;})};
     if(!todaysStore.count.length){toast('Nothing committed yet today for '+cBranch,true);return;}
     openCorrection({
