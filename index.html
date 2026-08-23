@@ -3494,7 +3494,20 @@ function _updateCountPendingBadge(){
 var _stockCountsUpsertChain=Promise.resolve();
 function _stockCountsUpsert(freshRows){
   if(!freshRows||!freshRows.length)return;
-  var sharedRows=freshRows.map(_stockCountToSharedRow);
+  var sharedRows;
+  try{
+    sharedRows=freshRows.map(_stockCountToSharedRow);
+  }catch(e){
+    // Never expected to throw (property access + num() only) - if it ever does there's
+    // nothing valid to queue, so surface it loudly via toast rather than let it vanish
+    // into a console nobody on a phone is ever watching (diagnostic hardening added
+    // after a live pilot test showed a commit succeeding locally with nothing reaching
+    // the shared table and no badge - this is the one call site that could explain
+    // that silently, even though no concrete trigger for it was found).
+    console.error('_stockCountToSharedRow failed, shared sync lost for this write:',e.message);
+    toast('Could not prepare shared sync for this count - please tell Freddie: '+e.message,true);
+    return;
+  }
   // Chained onto a persistent promise (not just sequenced within one call) so ANY two
   // calls to this function - from a commit, from a correction, from two corrections
   // seconds apart - always resolve in the order they were submitted, never racing on
@@ -3510,7 +3523,10 @@ function _stockCountsUpsert(freshRows){
           queueAndSwallow();
         }
       }, queueAndSwallow).then(function(){}, function(e){
+        // Genuinely unexpected (queueAndSwallow itself failing) - the badge can't be
+        // trusted to reflect this, so surface it directly instead of only console.error.
         console.error('stock_counts upsert handler failed unexpectedly:',e&&e.message);
+        toast('Shared sync failed unexpectedly - please tell Freddie: '+(e&&e.message||'unknown error'),true);
       });
     }catch(e){
       queueAndSwallow();
