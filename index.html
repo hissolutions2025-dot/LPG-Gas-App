@@ -3076,7 +3076,8 @@ function cOpenDetail(sz,side){
     var _committedNow=cCommittedLines(sz,side);
     if(_committedNow.length){
       c[side]=_committedNow.map(function(r){return {brand:r.brand,qty:num(r.qty),note:r.note||'',_fromCommitted:true,
-        _operator:r._operator,_time:r._time,_correctedFrom:r._correctedFrom};});
+        _operator:r._operator,_time:r._time,_correctedFrom:r._correctedFrom,
+        _correctedBy:r._correctedBy,_correctedTime:r._correctedTime};});
     } else {
       c[side].push({brand:cBrands(side)[0],qty:''});
     }
@@ -3094,11 +3095,12 @@ function cOpenDetail(sz,side){
 // (corrStepCountGroupEdit) - same underlying fields (_operator/_time/_correctedFrom),
 // same wording, one place to keep them consistent.
 function _stockCountByline(l){
-  if(!l._operator||!l._time)return '';
-  var hasCorr=(l._correctedFrom!==undefined && l._correctedFrom!==null);
-  return hasCorr
-    ? ('Adjusted by '+l._operator+' · '+l._time+': '+l._correctedFrom+' → '+num(l.qty))
-    : ('Captured by '+l._operator+' · '+l._time);
+  var lines=[];
+  if(l._operator&&l._time)lines.push('Captured by '+l._operator+' · '+l._time);
+  if(l._correctedFrom!==undefined && l._correctedFrom!==null && l._correctedBy && l._correctedTime){
+    lines.push('Adjusted by '+l._correctedBy+' · '+l._correctedTime+': '+l._correctedFrom+' → '+num(l.qty));
+  }
+  return lines.join('<br>');
 }
 function cRenderDetail(){
   var arr=cCell(cDet.size)[cDet.side];var brands=cBrands(cDet.side);
@@ -3311,15 +3313,31 @@ function cCommit(){
 // (snake_case columns, ISO date, current operator as the updater) - the write side
 // of the local <-> shared translation.
 function _stockCountToSharedRow(r){
-  // corrected_from is only ever present on r right after a correction just stamped it
-  // (see corrApplyCountGroup) - a normal capture/recount never sets it, so it's null
-  // here, which is exactly right: null means "not the result of a correction."
+  // _correctedFrom/_correctedBy/_correctedTime are only ever present on r right after
+  // corrApplyCountGroup stamps them, and _stockCountsUpsert always sends a correction
+  // as its own single-row call (never batched with a normal commit's freshRows) - see
+  // openCountAdjust's onApply. That matters here: when this IS a correction, the
+  // payload deliberately OMITS updated_by/updated_by_name_snapshot/updated_at
+  // entirely, rather than overwriting them with the corrector's identity - Postgres's
+  // upsert only touches columns actually present in the request, so the ORIGINAL
+  // capture's who/when survives untouched in the DB, while corrected_from/by/at
+  // record the correction as its own separate fact alongside it. A normal
+  // capture/recount goes the other way: it sets captured identity fresh AND
+  // explicitly nulls the corrected_* columns, since a plain recount establishes a
+  // brand-new baseline (see corrApplyCountGroup's comment on why this is deliberate).
   var hasCorr=(r._correctedFrom!==undefined && r._correctedFrom!==null);
+  if(hasCorr){
+    return {branch:r.branch, date:r._date||today, count_type:r.countType, state:r.state,
+      size:r.size, brand:r.brand, qty:num(r.qty), note:r.note||'',
+      corrected_from:num(r._correctedFrom),
+      corrected_by_name_snapshot:r._correctedBy||operator||'',
+      corrected_at:new Date().toISOString()};
+  }
   return {branch:r.branch, date:r._date||today, count_type:r.countType, state:r.state,
     size:r.size, brand:r.brand, qty:num(r.qty), note:r.note||'',
     updated_by:(currentProfile&&currentProfile.id)||null,
     updated_by_name_snapshot:operator||'', updated_at:new Date().toISOString(),
-    corrected_from:hasCorr?num(r._correctedFrom):null};
+    corrected_from:null, corrected_by_name_snapshot:null, corrected_at:null};
 }
 // Converts one stock_counts row (as returned by a Supabase select) back into the
 // local store.count row shape - the read side of the translation.
@@ -3328,14 +3346,18 @@ function _stockCountFromSharedRow(d){
   // nowStamp()'s local "YYYY-MM-DD HH:MM:SS" format (see nowStamp() above) - convert
   // so mixed local/reconciled rows still sort and format consistently (e.g. in the
   // day-close PDF's time-range lookup).
-  var dt=d.updated_at?new Date(d.updated_at):new Date();
   function p(n){return (n<10?'0':'')+n;}
-  var localStamp=dt.getFullYear()+'-'+p(dt.getMonth()+1)+'-'+p(dt.getDate())+' '+p(dt.getHours())+':'+p(dt.getMinutes())+':'+p(dt.getSeconds());
+  function localStampOf(iso){
+    var dt=iso?new Date(iso):new Date();
+    return dt.getFullYear()+'-'+p(dt.getMonth()+1)+'-'+p(dt.getDate())+' '+p(dt.getHours())+':'+p(dt.getMinutes())+':'+p(dt.getSeconds());
+  }
   var hasCorr=(d.corrected_from!==undefined && d.corrected_from!==null);
   return {branch:d.branch, countType:d.count_type, state:d.state, size:d.size,
-    brand:d.brand, qty:num(d.qty), note:d.note||'', _date:d.date, _time:localStamp,
+    brand:d.brand, qty:num(d.qty), note:d.note||'', _date:d.date, _time:localStampOf(d.updated_at),
     _operator:d.updated_by_name_snapshot||'', _role:'',
-    _correctedFrom:hasCorr?num(d.corrected_from):undefined};
+    _correctedFrom:hasCorr?num(d.corrected_from):undefined,
+    _correctedBy:hasCorr?(d.corrected_by_name_snapshot||''):undefined,
+    _correctedTime:hasCorr?localStampOf(d.corrected_at):undefined};
 }
 // Merges shared (Supabase) rows into local store.count by exact line key
 // (branch|countType|size|state|brand) - same merge-by-line-key logic _cCommitReal
@@ -5744,7 +5766,8 @@ function corrStepCountGroups(section){
     var key=r.size;
     if(!groups[key]){groups[key]={size:r.size,full:[],empty:[]};order.push(key);}
     groups[key][r.state==='Full'?'full':'empty'].push({idx:i,brand:r.brand,val:l.get(),
-      _operator:r._operator,_time:r._time,_correctedFrom:r._correctedFrom});
+      _operator:r._operator,_time:r._time,_correctedFrom:r._correctedFrom,
+      _correctedBy:r._correctedBy,_correctedTime:r._correctedTime});
   });
   corrCfg._countGroups=groups;
   corrCfg._countGroupOrder=order;
@@ -5768,7 +5791,8 @@ function corrStepCountGroupEdit(gi){
   function colInputs(rows){
     if(!rows.length)return '<div style="font-size:11px;color:var(--muted)">—</div>';
     return rows.map(function(x){
-      var byline=_stockCountByline({_operator:x._operator,_time:x._time,_correctedFrom:x._correctedFrom,qty:x.val});
+      var byline=_stockCountByline({_operator:x._operator,_time:x._time,_correctedFrom:x._correctedFrom,
+        _correctedBy:x._correctedBy,_correctedTime:x._correctedTime,qty:x.val});
       return '<div style="margin-bottom:8px">'+
         (rows.length>1?'<div style="font-size:11px;color:var(--muted);margin-bottom:3px">'+x.brand+'</div>':'')+
         '<input class="mField" type="number" inputmode="numeric" min="0" data-idx="'+x.idx+'" data-orig="'+x.val+'" value="'+x.val+'" style="width:100%;margin:0">'+
@@ -5812,8 +5836,12 @@ function corrApplyCountGroup(){
     // Stamp the correction's byline directly onto the row - oldVal/newVal/who/when are
     // all already known right here, no extra fetch needed. Harmless when line.row isn't
     // a live store.count row (e.g. the 48-hour historical tool's cloned snapshot) since
-    // nothing else reads these fields off that path.
-    line.row._correctedFrom=oldVal;line.row._operator=corrAuth.name;line.row._time=nowStamp();
+    // nothing else reads these fields off that path. Deliberately does NOT touch
+    // _operator/_time (who/when originally captured this line) - the correction is
+    // recorded as its own separate fact via _correctedBy/_correctedTime/_correctedFrom,
+    // so both "captured by" and "adjusted by" can be shown together, not one replacing
+    // the other.
+    line.row._correctedFrom=oldVal;line.row._correctedBy=corrAuth.name;line.row._correctedTime=nowStamp();
     line.set(newVal);
     corrCfg.onApply(sel,oldVal,newVal,reason,corrAuth);
   });
