@@ -249,7 +249,7 @@
       <label class="mLabel">User</label>
       <select class="mField" id="loginUser" onchange="loginUserChanged()"><option value="">Select your name…</option></select>
       <label class="mLabel">Password</label>
-      <div class="pwWrap"><input type="password" class="mField" id="loginPin" placeholder="Your password"><button type="button" class="pwToggle" onclick="_togglePwVisibility(this)">👁</button></div>
+      <div class="pwWrap"><input type="password" class="mField" id="loginPin" placeholder="Your password"><button type="button" class="pwToggle" onmousedown="_pwPeekStart(event,this)" onmouseup="_pwPeekEnd(this)" onmouseleave="_pwPeekEnd(this)" ontouchstart="_pwPeekStart(event,this)" ontouchend="_pwPeekEnd(this)" ontouchcancel="_pwPeekEnd(this)">👁</button></div>
       <label class="mLabel">Branch</label>
       <select class="mField" id="loginBranch"><option value="">Select name first…</option></select>
       <div class="mNote" id="branchNote" style="margin-top:4px;"></div>
@@ -516,7 +516,7 @@
   <div id="usersGate">
     <div class="detBanner full" style="margin-bottom:14px"><div class="big">Manage Users</div><div class="small">Owner access only</div></div>
     <label class="mLabel">Enter your Owner password to open</label>
-    <div class="pwWrap"><input type="password" class="mField" id="usersPw" placeholder="Owner password"><button type="button" class="pwToggle" onclick="_togglePwVisibility(this)">👁</button></div>
+    <div class="pwWrap"><input type="password" class="mField" id="usersPw" placeholder="Owner password"><button type="button" class="pwToggle" onmousedown="_pwPeekStart(event,this)" onmouseup="_pwPeekEnd(this)" onmouseleave="_pwPeekEnd(this)" ontouchstart="_pwPeekStart(event,this)" ontouchend="_pwPeekEnd(this)" ontouchcancel="_pwPeekEnd(this)">👁</button></div>
     <button class="saveBtn" id="usersUnlockBtn" onclick="usersUnlock()" style="margin-top:12px">Unlock user management</button>
   </div>
   <!-- user list (after unlock) -->
@@ -526,7 +526,7 @@
     <div style="margin-top:14px;border:1.5px dashed var(--steel);border-radius:12px;padding:12px;background:#EEF3F8">
       <div style="font-size:11px;font-weight:800;color:var(--navy);text-transform:uppercase;letter-spacing:.4px">High-risk second password</div>
       <div style="font-size:11px;color:var(--muted);margin:4px 0 8px">Required IN ADDITION to the authoriser's password for Close Day. Leave blank to disable.</div>
-      <div class="pwWrap"><input type="password" class="mField" id="highRiskPw" placeholder="Set high-risk password"><button type="button" class="pwToggle" onclick="_togglePwVisibility(this)">👁</button></div>
+      <div class="pwWrap"><input type="password" class="mField" id="highRiskPw" placeholder="Set high-risk password"><button type="button" class="pwToggle" onmousedown="_pwPeekStart(event,this)" onmouseup="_pwPeekEnd(this)" onmouseleave="_pwPeekEnd(this)" ontouchstart="_pwPeekStart(event,this)" ontouchend="_pwPeekEnd(this)" ontouchcancel="_pwPeekEnd(this)">👁</button></div>
       <button class="sigClear" style="width:100%;margin-top:8px" onclick="saveHighRiskPw()">Save high-risk password</button>
     </div>
     <div style="margin-top:14px;border:1.5px dashed var(--ok);border-radius:12px;padding:12px;background:#EDF7F0">
@@ -556,7 +556,7 @@
     <div class="mNote" id="ueBranchNote"></div>
   </div>
   <label class="mLabel">Password</label>
-  <div class="pwWrap"><input type="password" class="mField" id="uePw" placeholder="Set / change password"><button type="button" class="pwToggle" onclick="_togglePwVisibility(this)">👁</button></div>
+  <div class="pwWrap"><input type="password" class="mField" id="uePw" placeholder="Set / change password"><button type="button" class="pwToggle" onmousedown="_pwPeekStart(event,this)" onmouseup="_pwPeekEnd(this)" onmouseleave="_pwPeekEnd(this)" ontouchstart="_pwPeekStart(event,this)" ontouchend="_pwPeekEnd(this)" ontouchcancel="_pwPeekEnd(this)">👁</button></div>
   <div class="mNote" id="uePwNote" style="margin-top:4px;">Owner override: setting a password here replaces the user's password without needing their old one.</div>
   <label id="ueLockoutWrap" style="display:flex;align-items:center;gap:8px;margin-top:14px;padding:10px;border:1.5px solid var(--line);border-radius:10px;background:#FFFBF2">
     <input type="checkbox" id="ueLockout" style="width:18px;height:18px;flex:none">
@@ -794,7 +794,7 @@
   <div id="auditGate">
     <div class="detBanner full" style="margin-bottom:14px"><div class="big">Audit Report</div><div class="small">Owner access only</div></div>
     <label class="mLabel">Enter your Owner password to open</label>
-    <div class="pwWrap"><input type="password" class="mField" id="auditPw" placeholder="Owner password"><button type="button" class="pwToggle" onclick="_togglePwVisibility(this)">👁</button></div>
+    <div class="pwWrap"><input type="password" class="mField" id="auditPw" placeholder="Owner password"><button type="button" class="pwToggle" onmousedown="_pwPeekStart(event,this)" onmouseup="_pwPeekEnd(this)" onmouseleave="_pwPeekEnd(this)" ontouchstart="_pwPeekStart(event,this)" ontouchend="_pwPeekEnd(this)" ontouchcancel="_pwPeekEnd(this)">👁</button></div>
     <button class="saveBtn" onclick="auditUnlock()" style="margin-top:12px">Unlock audit report</button>
   </div>
   <!-- date list (after unlock) -->
@@ -840,7 +840,7 @@
 <div id="pwModal" class="modal"><div class="modalCard">
   <div class="modalHead"><span id="pwTitle">Enter password</span><button onclick="pwCancel()" class="mClose">&#10005;</button></div>
   <div style="padding:4px 0 10px"><div id="pwMsg" style="font-size:13px;color:var(--navy);white-space:pre-line;margin-bottom:10px"></div>
-    <div class="pwWrap"><input type="password" class="mField" id="pwInput" placeholder="Password" autocomplete="off" onkeydown="if(event.key==='Enter')pwOk()"><button type="button" class="pwToggle" onclick="_togglePwVisibility(this)">👁</button></div>
+    <div class="pwWrap"><input type="password" class="mField" id="pwInput" placeholder="Password" autocomplete="off" onkeydown="if(event.key==='Enter')pwOk()"><button type="button" class="pwToggle" onmousedown="_pwPeekStart(event,this)" onmouseup="_pwPeekEnd(this)" onmouseleave="_pwPeekEnd(this)" ontouchstart="_pwPeekStart(event,this)" ontouchend="_pwPeekEnd(this)" ontouchcancel="_pwPeekEnd(this)">👁</button></div>
   </div>
   <button class="saveBtn" onclick="pwOk()">Confirm</button>
   <button class="sigClear" style="width:100%;margin-top:8px" onclick="pwCancel()">Cancel</button>
@@ -862,7 +862,7 @@
   <h2 style="color:#fff;margin:0 0 4px;font-size:20px">App locked</h2>
   <div style="color:#B4C1CC;font-size:13px;margin-bottom:4px">Locked after a few minutes of inactivity</div>
   <div id="idleLockWho" style="color:#fff;font-weight:700;font-size:14px;margin-bottom:20px"></div>
-  <div class="pwWrap" style="max-width:260px;width:100%"><input type="password" class="mField" id="idleLockPw" placeholder="Your password" autocomplete="off" style="text-align:center" onkeydown="if(event.key==='Enter')idleUnlock()"><button type="button" class="pwToggle" onclick="_togglePwVisibility(this)">👁</button></div>
+  <div class="pwWrap" style="max-width:260px;width:100%"><input type="password" class="mField" id="idleLockPw" placeholder="Your password" autocomplete="off" style="text-align:center" onkeydown="if(event.key==='Enter')idleUnlock()"><button type="button" class="pwToggle" onmousedown="_pwPeekStart(event,this)" onmouseup="_pwPeekEnd(this)" onmouseleave="_pwPeekEnd(this)" ontouchstart="_pwPeekStart(event,this)" ontouchend="_pwPeekEnd(this)" ontouchcancel="_pwPeekEnd(this)">👁</button></div>
   <button class="saveBtn" style="max-width:260px;margin-top:12px" onclick="idleUnlock()">Unlock</button>
   <button class="sigClear" style="max-width:260px;margin-top:10px;background:transparent;color:#B4C1CC;border-color:#465A6B" onclick="idleSignOutInstead()">Not you? Sign out instead</button>
 </div>
@@ -2226,15 +2226,21 @@ function checkHighRisk(actionLabel){
   });
 }
 function num(v){var n=parseFloat(v);return isNaN(n)?0:n;}
-// Toggles a password field between masked and visible - the button is always the
-// input's own previous sibling (see .pwWrap markup), so this one handler covers
-// every password field in the app instead of a separate function per field.
-function _togglePwVisibility(btn){
+// Press-and-hold to peek at a password field - visible only while the icon is
+// actively pressed, masked again the instant it's released (mouse up, finger lift,
+// or the pointer sliding off the button). The button is always the input's own
+// previous sibling (see .pwWrap markup), so these two handlers cover every password
+// field in the app instead of a separate pair per field. preventDefault on the
+// press keeps focus on whatever the user was already doing (typing in the field)
+// instead of the button stealing it.
+function _pwPeekStart(e,btn){
+  if(e&&e.preventDefault)e.preventDefault();
   var input=btn.previousElementSibling;
-  if(!input)return;
-  var show=(input.type==='password');
-  input.type=show?'text':'password';
-  btn.textContent=show?'🙈':'👁';
+  if(input)input.type='text';
+}
+function _pwPeekEnd(btn){
+  var input=btn.previousElementSibling;
+  if(input)input.type='password';
 }
 function nowStamp(){var d=new Date();function p(n){return (n<10?'0':'')+n;}return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());}
 
