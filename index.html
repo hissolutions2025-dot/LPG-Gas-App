@@ -5962,7 +5962,16 @@ function adjustMismatch(i){
   if(!perm('adjust')){toast('You do not have adjust rights',true);return;}
   var mmList=(store._openMismatch||[]).filter(function(m){return m.branch===histBranch;});
   var m=mmList[i];if(!m)return;
-  _borrowAuth('Manager or Owner','Log this adjustment?',function(p){return userPerms(p).adjust;}).then(function(auth){
+  // Same fix as Close Day's authoriser step, signature unlock, and same-day
+  // corrections: someone who already qualifies (e.g. a Manager adjusting their own
+  // branch's mismatch) gets a single password prompt for their own account, instead
+  // of the two-step "someone else must step in" flow, which is what was producing
+  // the "double password, doesn't work" bug here too.
+  var qualifiesAdjust=function(p){return userPerms(p).adjust;};
+  var authPromise=(currentProfile && qualifiesAdjust(currentProfile))
+    ? _selfReauth('Log this adjustment?')
+    : _borrowAuth('Manager or Owner','Log this adjustment?',qualifiesAdjust);
+  authPromise.then(function(auth){
     if(!auth){toast('An adjust-authorised password is required',true);return;}
     var bc=m.branch, oldVal, correct, itemLabel;
     if(m.kind==='manifold'){
