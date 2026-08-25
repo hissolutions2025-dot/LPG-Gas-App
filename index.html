@@ -3595,6 +3595,24 @@ function _stockCountsUpsert(freshRows){
     }
   });
 }
+// Converts one local store._openMismatch-shaped entry into the shape count_mismatches
+// expects. Only ever called for Stock-Count-kind entries (kind==='manifold' entries stay
+// local-only this phase, per the design doc's explicit scope).
+function _countMismatchToShared(m){
+  return {branch:m.branch, date:today, size:m.size, state:m.state, brand:m.brand,
+    expected:num(m.expected), counted:num(m.counted)};
+}
+// Converts one count_mismatches row (as returned by a Supabase select) back into the
+// local store._openMismatch entry shape used by openHistory()'s existing render and by
+// adjustMismatch().
+function _countMismatchFromShared(d){
+  return {branch:d.branch, size:d.size, state:d.state, brand:d.brand,
+    expected:num(d.expected), counted:num(d.counted), resolved:!!d.resolved,
+    adjustedTo:(d.corrected_to!==undefined && d.corrected_to!==null)?num(d.corrected_to):undefined,
+    adjustedBy:d.resolved_by_name_snapshot||undefined,
+    adjustedAt:d.resolved_at||undefined,
+    adjustNote:d.resolved?('Adj by '+(d.resolved_by_name_snapshot||'?')+' → '+d.corrected_to+': '+(d.resolution_reason||'')):''};
+}
 // Compare committed Opening lines against saved expected opening (prev close)
 function computeOpeningMismatches(br){
   var expWrap=loadExpectedOpening(br);
