@@ -6011,6 +6011,12 @@ function adjustMismatch(i){
       m.adjustedBy=auth.name;m.adjustedAt=nowStamp();
       auditLog('Manifold mismatch adjusted',m.cyl+' — prev close '+m.expected+'kg, counted '+oldVal+'kg, corrected to '+correct+'kg · '+reason.trim(),
         {prevClose:m.expected,counted:oldVal},{correctedOpening:correct,reason:reason.trim()});
+      // Previously this branch never touched the sheet at all - no Adjustments entry, no
+      // Manifold tab update. Fixed to match every other correction tool: log the change to
+      // Adjustments, and correct the ORIGINAL Manifold sheet row in place via its _rid (same
+      // mechanism openCapAdjust already uses for Manifold's own same-day corrections).
+      syncPush('Adjustments',[{date:today,branch:bc,Kind:'OpeningMismatch',Line:'Manifold '+m.cyl,From:oldVal,To:correct,Reason:reason.trim(),By:auth.name+' ('+auth.level+')'}]);
+      if(mrow)adjustSheetRow('Manifold',mrow._rid,{GasLeft:correct,Scale:mrow.scale});
     } else {
       var st=m.state, sz=m.size, br=m.brand;
       itemLabel=sz+' '+st+' '+br;
@@ -6022,7 +6028,7 @@ function adjustMismatch(i){
       var row=store.count.filter(function(r){return r.countType==='Opening'&&r.state===st&&r.size===sz&&r.brand===br&&(!r.branch||r.branch===bc);})[0];
       oldVal=row?row.qty:m.counted;
       if(row){row.qty=correct;row._adjusted=true;}
-      else{store.count.push({countType:'Opening',state:st,size:sz,brand:br,qty:correct,branch:bc,_adjusted:true,_date:today});}
+      else{row={countType:'Opening',state:st,size:sz,brand:br,qty:correct,branch:bc,_adjusted:true,_date:today};store.count.push(row);}
       m.resolved=true;m.counted=correct;m.adjustedTo=correct;
       m.adjustNote='Adj by '+auth.name+' ('+auth.level+') → '+correct+': '+reason2.trim();
       m.adjustedBy=auth.name;m.adjustedAt=nowStamp();
@@ -6031,6 +6037,13 @@ function adjustMismatch(i){
       auditLog('Opening mismatch adjusted',sz+' '+st+' '+br+' — prev close '+m.expected+', counted '+oldVal+', corrected to '+correct+' · '+reason2.trim(),
         {prevClose:m.expected,counted:oldVal},{correctedOpening:correct,reason:reason2.trim()});
       syncPush('Adjustments',[{date:today,branch:bc,Kind:'OpeningMismatch',Line:sz+' '+st+' '+br,From:oldVal,To:correct,Reason:reason2.trim(),By:auth.name+' ('+auth.level+')'}]);
+      // Previously this stopped at the Adjustments-tab log - the Counts tab itself, and the
+      // shared stock_counts table the pilot Adjust tool now reads from, both silently kept
+      // the wrong original figure. Fixed to match openCountAdjust's onApply exactly.
+      row._correctedFrom=oldVal;row._correctedBy=auth.name;row._correctedTime=nowStamp();
+      var rowsForBn=syncRowsCount(store.count.filter(function(r){return r.branch===bc;}),bc);
+      syncPush('Counts', rowsForBn.map(function(x){x._replaceKey=(x.date+'|'+x.branch);return x;}));
+      try{_stockCountsUpsert([row]);}catch(e){console.error('_stockCountsUpsert threw synchronously:',e.message);}
     }
     saveWorkingStore();
     toast(itemLabel+' corrected to '+correct+' ✓');
