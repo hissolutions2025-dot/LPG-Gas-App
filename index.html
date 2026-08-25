@@ -3623,6 +3623,9 @@ function _countMismatchFromShared(d){
     adjustedAt:localStampOf(d.resolved_at),
     adjustNote:d.resolved?('Adj by '+(d.resolved_by_name_snapshot||'?')+' → '+d.corrected_to+': '+(d.resolution_reason||'')):''};
 }
+// One calendar day before the given YYYY-MM-DD string, computed in UTC so it's not
+// sensitive to the browser's own timezone - matches computeToday()'s own use of
+// toISOString() for the same reason.
 function _dayBefore(dateStr){
   var d=new Date(dateStr+'T00:00:00Z');
   d.setUTCDate(d.getUTCDate()-1);
