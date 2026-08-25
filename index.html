@@ -3441,25 +3441,35 @@ function _cCommitReal(){
   store.count=store.count.filter(function(r){
     return !touchedLineKeys[(r.branch||'')+'|'+r.countType+'|'+r.size+'|'+r.state+'|'+r.brand];
   }).concat(freshRows);
+  // Built from touchedLineKeys, not freshRows - a pure reset has real branches to sync
+  // (rows need to disappear from the sheet) despite freshRows being empty. Computed here
+  // (before the mismatch check below) since a single commit CAN touch more than one
+  // branch - a Manager/Owner can draft Opening lines for two branches before committing
+  // just one action - and both the mismatch check and the sheet sync need every touched
+  // branch, not just cBranch.
+  var branchesInCommit={};
+  Object.keys(touchedLineKeys).forEach(function(k){branchesInCommit[k.split('|')[0]]=true;});
   // #4 OPENING vs previous-day CLOSE (expected opening). Per size+brand+state exact match.
-  // computeOpeningMismatches() still runs synchronously first (unchanged) so THIS commit's
-  // own toast below has an answer immediately, without waiting on a network round trip.
-  // _refreshCountMismatches() then does the same comparison against the shared, live
-  // day_closes baseline and upserts the durable, cross-device record - fire-and-forget,
-  // offline-safe (see its own comment), never blocks this commit from completing.
-  computeOpeningMismatches(cBranch);
+  // Runs for every branch this commit touched, not just cBranch - checking only cBranch
+  // would silently skip the mismatch check (and Close Day's block on it) for any OTHER
+  // branch committed in the same action. computeOpeningMismatches() still runs
+  // synchronously first for each branch (unchanged) so THIS commit's own toast below has
+  // an answer immediately for cBranch specifically, without waiting on a network round
+  // trip. _refreshCountMismatches() then does the same comparison against the shared,
+  // live day_closes baseline and upserts the durable, cross-device record for each
+  // branch - fire-and-forget, offline-safe (see its own comment), never blocks this
+  // commit from completing.
+  Object.keys(branchesInCommit).forEach(function(bn){
+    computeOpeningMismatches(bn);
+    _refreshCountMismatches(bn, freshRows.filter(function(r){return r.countType==='Opening' && r.branch===bn;}));
+  });
   var mm=(store._openMismatch||[]).filter(function(m){return m.branch===cBranch;});
-  _refreshCountMismatches(cBranch, freshRows.filter(function(r){return r.countType==='Opening' && r.branch===cBranch;}));
   // Sync only the branch(es) THIS commit actually touched (from freshRows, not the whole
   // merged store.count) - each push carries that branch's COMPLETE current-day picture
   // (every countType, old lines plus new), so the sheet's replace-set (still whole
   // branch+date, unchanged) always ends up matching the full local truth. Never re-sync a
   // branch this commit didn't touch - its local copy could be stale versus another device's
   // newer entries, and a replace-set push would clobber them.
-  // Built from touchedLineKeys, not freshRows - a pure reset has real branches to sync
-  // (rows need to disappear from the sheet) despite freshRows being empty.
-  var branchesInCommit={};
-  Object.keys(touchedLineKeys).forEach(function(k){branchesInCommit[k.split('|')[0]]=true;});
   Object.keys(branchesInCommit).forEach(function(bn){
     var rowsForBn=syncRowsCount(store.count.filter(function(r){return r.branch===bn;}),bn);
     // mark replace-set so the sheet clears old rows for this branch+date first
@@ -3699,7 +3709,7 @@ function _refreshCountMismatches(br, localOverlayRows){
       // the live fetch as normal; this only guarantees THIS device never has to win a
       // race against its own write.
       (localOverlayRows||[]).forEach(function(r){
-        if(r.branch!==br)return;
+        if(r.branch!==br){console.warn('_refreshCountMismatches: dropped overlay row for wrong branch',r.branch,br);return;}
         var st=(r.state==='Empty')?'Empty':'Full';
         if(!op[r.size])op[r.size]={Full:{},Empty:{}};
         op[r.size][st][r.brand]=num(r.qty);
