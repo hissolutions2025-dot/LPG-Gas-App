@@ -265,6 +265,7 @@
     <div class="datebar"><label>Stock-take date</label><div class="val" id="dateVal">—</div></div>
     <div id="closeDayPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div id="countPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
+    <div id="mismatchPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div class="greet">Every entry uses today's date, your name and branch.</div>
     <div class="grid">
       <button class="tile t1" onclick="openCount()"><div class="ic">&#9638;</div><h3>Stock Count</h3><p>Opening / closing, full &amp; empty</p><span class="badge" id="b-count" style="display:none">0</span></button>
@@ -458,6 +459,7 @@
 <div id="historyView" class="view"><div class="wrap">
   <div id="closeDayPendingBadgeHistory" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
   <div id="countPendingBadgeHistory" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
+  <div id="mismatchPendingBadgeHistory" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
   <div class="ctxbar" id="hCtx" style="margin-bottom:12px;"></div>
   <div class="histTabs">
     <button class="htab on" id="htab-today" onclick="setHistTab('today')">Today</button>
@@ -2564,6 +2566,7 @@ function _finishLogin(u,b){
   _updateCloseDayPendingBadge();
   _countFlushQueue();
   _updateCountPendingBadge();
+  _updateMismatchPendingBadge();
   refreshTestDateUI();
   // "Where was I" - resume the same section (with its data) this operator was on when this
   // device last left off, instead of always landing on the home screen. Falls back to home
@@ -3560,6 +3563,22 @@ function _updateCountPendingBadge(){
   var n=_countQueueLoad().length;
   var text=n?('⏳ '+n+' count update(s) waiting to sync'):'';
   ['countPendingBadge','countPendingBadgeHistory'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(!el)return;
+    el.style.display=n?'block':'none';
+    el.textContent=text;
+  });
+}
+// Manager/Owner-only, unlike the sync-pending badges above - an Operator seeing "N
+// mismatches" with no detail attached would just be noise; the one-line "this count is
+// incorrect" tile/toast already tells them everything they're meant to know. Reads
+// store._openMismatch directly rather than querying Supabase itself - whichever of
+// _refreshCountMismatches's call sites ran most recently already populated it.
+function _updateMismatchPendingBadge(){
+  var isMgr=(role==='Manager'||role==='Owner');
+  var n=isMgr?(store._openMismatch||[]).filter(function(m){return !m.resolved;}).length:0;
+  var text=n?('⚠ '+n+' opening mismatch(es) need review'):'';
+  ['mismatchPendingBadge','mismatchPendingBadgeHistory'].forEach(function(id){
     var el=document.getElementById(id);
     if(!el)return;
     el.style.display=n?'block':'none';
@@ -5260,6 +5279,7 @@ function _refreshMismatchPanel(branch){
     var container=document.getElementById('mmPanelContainer');
     var stillOnHistory=document.querySelector('.view.active') && document.querySelector('.view.active').id==='historyView';
     if(container && stillOnHistory && histBranch===branch)container.outerHTML='<div id="mmPanelContainer">'+_mismatchPanelHtml(branch)+'</div>';
+    _updateMismatchPendingBadge();
   });
 }
 function openHistory(){
