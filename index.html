@@ -3442,8 +3442,14 @@ function _cCommitReal(){
     return !touchedLineKeys[(r.branch||'')+'|'+r.countType+'|'+r.size+'|'+r.state+'|'+r.brand];
   }).concat(freshRows);
   // #4 OPENING vs previous-day CLOSE (expected opening). Per size+brand+state exact match.
+  // computeOpeningMismatches() still runs synchronously first (unchanged) so THIS commit's
+  // own toast below has an answer immediately, without waiting on a network round trip.
+  // _refreshCountMismatches() then does the same comparison against the shared, live
+  // day_closes baseline and upserts the durable, cross-device record - fire-and-forget,
+  // offline-safe (see its own comment), never blocks this commit from completing.
   computeOpeningMismatches(cBranch);
   var mm=(store._openMismatch||[]).filter(function(m){return m.branch===cBranch;});
+  _refreshCountMismatches(cBranch);
   // Sync only the branch(es) THIS commit actually touched (from freshRows, not the whole
   // merged store.count) - each push carries that branch's COMPLETE current-day picture
   // (every countType, old lines plus new), so the sheet's replace-set (still whole
@@ -5143,6 +5149,49 @@ function histSetBranch(x){
   if(role==='Operator' && x!==branch){toast('You are locked to '+branch,true);return;}
   histBranch=x;applyBranchLock('hbr-',x);openHistory();
 }
+// Pure render of the mismatch panel for one branch - identical logic to what openHistory()
+// used to build inline, just callable twice (once for the initial synchronous paint from
+// whatever's already in store._openMismatch, once again after the async shared refresh
+// resolves).
+function _mismatchPanelHtml(branch){
+  var mmList=(store._openMismatch||[]).filter(function(m){return m.branch===branch;});
+  if(!mmList.length)return '';
+  var isMgr=(role==='Manager'||role==='Owner');
+  var html='<div class="histSection" style="border:2px solid #C0392B"><h4 style="color:#C0392B">⚠ Opening count incorrect</h4>';
+  if(isMgr){
+    html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px">These lines block Close Day until a Manager or Owner logs an adjustment (note required). The signed close is not changed - only today opening.</div>';
+    html+='<table class="htable"><tr><th>Item</th><th>Prev close</th><th>Counted</th><th>Status</th></tr>';
+    mmList.forEach(function(m,i){
+      var item=(m.kind==='manifold')?('Manifold · '+m.cyl):(m.size+' · '+m.state+' · '+m.brand);
+      html+='<tr'+(m.resolved?'':' style="background:#FBE9E7"')+'><td>'+item+'</td><td class="n">'+m.expected+'</td><td class="n">'+m.counted+'</td><td>'+
+        (m.resolved?('<span style="color:var(--ok)">✓ corrected to '+(m.adjustedTo!==undefined?m.adjustedTo:m.counted)+'</span><div style="font-size:10px;color:var(--muted)">'+(m.adjustNote||'')+'</div>'):'<button class="sigClear" style="background:#C0392B;color:#fff" onclick="adjustMismatch('+i+')">Enter correct count</button>')+
+        '</td></tr>';
+    });
+    html+='</table>';
+  } else {
+    html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px">This count is incorrect. A Manager or Owner must review before the day can be closed.</div>';
+    html+='<table class="htable"><tr><th>Item</th><th>Status</th></tr>';
+    mmList.forEach(function(m){
+      var item=(m.kind==='manifold')?('Manifold · '+m.cyl):(m.size+' · '+m.state+' · '+m.brand);
+      html+='<tr'+(m.resolved?'':' style="background:#FBE9E7"')+'><td>'+item+'</td><td>'+
+        (m.resolved?'<span style="color:var(--ok)">✓ reviewed</span>':'<span style="color:#C0392B;font-weight:800">This count is incorrect</span>')+'</td></tr>';
+    });
+    html+='</table>';
+  }
+  html+='</div>';
+  return html;
+}
+// Kicks off the shared refresh and, if it finds anything different, re-renders just the
+// mismatch panel container - not the whole Count History screen (avoids any risk of
+// clobbering something else the user is mid-interacting with elsewhere on the page), and
+// only if the user hasn't navigated away from History in the meantime.
+function _refreshMismatchPanel(branch){
+  _refreshCountMismatches(branch).then(function(){
+    var container=document.getElementById('mmPanelContainer');
+    var stillOnHistory=document.querySelector('.view.active') && document.querySelector('.view.active').id==='historyView';
+    if(container && stillOnHistory && histBranch===branch)container.outerHTML='<div id="mmPanelContainer">'+_mismatchPanelHtml(branch)+'</div>';
+  });
+}
 function openHistory(){
   _updateCloseDayPendingBadge();
   _updateCountPendingBadge();
@@ -5157,33 +5206,11 @@ function openHistory(){
   function _br(r){return !r.branch||!branch||r.branch===branch;}
   var refillB=store.refill.filter(_br);
   var privateB=store.private.filter(_br);
-  // #4 OPENING MISMATCH ALERTS (vs previous day close) - role-aware
-  var mmList=(store._openMismatch||[]).filter(function(m){return m.branch===branch;});
-  if(mmList.length){
-    var isMgr=(role==='Manager'||role==='Owner');
-    html+='<div class="histSection" style="border:2px solid #C0392B"><h4 style="color:#C0392B">⚠ Opening count incorrect</h4>';
-    if(isMgr){
-      html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px">These lines block Close Day until a Manager or Owner logs an adjustment (note required). The signed close is not changed - only today opening.</div>';
-      html+='<table class="htable"><tr><th>Item</th><th>Prev close</th><th>Counted</th><th>Status</th></tr>';
-      mmList.forEach(function(m,i){
-        var item=(m.kind==='manifold')?('Manifold · '+m.cyl):(m.size+' · '+m.state+' · '+m.brand);
-        html+='<tr'+(m.resolved?'':' style="background:#FBE9E7"')+'><td>'+item+'</td><td class="n">'+m.expected+'</td><td class="n">'+m.counted+'</td><td>'+
-          (m.resolved?('<span style="color:var(--ok)">✓ corrected to '+(m.adjustedTo!==undefined?m.adjustedTo:m.counted)+'</span><div style="font-size:10px;color:var(--muted)">'+(m.adjustNote||'')+'</div>'):'<button class="sigClear" style="background:#C0392B;color:#fff" onclick="adjustMismatch('+i+')">Enter correct count</button>')+
-          '</td></tr>';
-      });
-      html+='</table>';
-    } else {
-      html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px">This count is incorrect. A Manager or Owner must review before the day can be closed.</div>';
-      html+='<table class="htable"><tr><th>Item</th><th>Status</th></tr>';
-      mmList.forEach(function(m){
-        var item=(m.kind==='manifold')?('Manifold · '+m.cyl):(m.size+' · '+m.state+' · '+m.brand);
-        html+='<tr'+(m.resolved?'':' style="background:#FBE9E7"')+'><td>'+item+'</td><td>'+
-          (m.resolved?'<span style="color:var(--ok)">✓ reviewed</span>':'<span style="color:#C0392B;font-weight:800">This count is incorrect</span>')+'</td></tr>';
-      });
-      html+='</table>';
-    }
-    html+='</div>';
-  }
+  // #4 OPENING MISMATCH ALERTS (vs previous day close) - role-aware. Rendered into its own
+  // container (not inlined into the surrounding html string) so _refreshCountMismatches'
+  // async result can update just this panel afterward, without re-rendering the rest of
+  // Count History (refills, private, etc. - all synchronous and unaffected by this).
+  html+='<div id="mmPanelContainer">'+_mismatchPanelHtml(branch)+'</div>';
   // combined count — Opening and Closing kept separate
   var counts=liveCounts();
   var sizesWith=ALLSIZES.filter(function(sz){return counts.Opening.Full[sz]||counts.Opening.Empty[sz]||counts.Closing.Full[sz]||counts.Closing.Empty[sz];});
@@ -5272,6 +5299,7 @@ function openHistory(){
   }
   html+='</div>';
   document.getElementById('histBody').innerHTML=html;
+  _refreshMismatchPanel(branch);
   document.getElementById('sigOpName').textContent=operator?('· '+operator.replace(' (Manager)','')):'';
   show('historyView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);
   setHistTab('today');
