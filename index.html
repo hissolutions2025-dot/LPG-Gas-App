@@ -3606,11 +3606,21 @@ function _countMismatchToShared(m){
 // local store._openMismatch entry shape used by openHistory()'s existing render and by
 // adjustMismatch().
 function _countMismatchFromShared(d){
+  // resolved_at is an ISO 8601 string; adjustedAt elsewhere in this file is always
+  // nowStamp()'s local "YYYY-MM-DD HH:MM:SS" format (see nowStamp() above) - convert
+  // so mixed local/reconciled entries still sort and format consistently, same
+  // conversion as _stockCountFromSharedRow's localStampOf above.
+  function p(n){return (n<10?'0':'')+n;}
+  function localStampOf(iso){
+    if(!iso)return undefined;
+    var dt=new Date(iso);
+    return dt.getFullYear()+'-'+p(dt.getMonth()+1)+'-'+p(dt.getDate())+' '+p(dt.getHours())+':'+p(dt.getMinutes())+':'+p(dt.getSeconds());
+  }
   return {branch:d.branch, size:d.size, state:d.state, brand:d.brand,
     expected:num(d.expected), counted:num(d.counted), resolved:!!d.resolved,
     adjustedTo:(d.corrected_to!==undefined && d.corrected_to!==null)?num(d.corrected_to):undefined,
     adjustedBy:d.resolved_by_name_snapshot||undefined,
-    adjustedAt:d.resolved_at||undefined,
+    adjustedAt:localStampOf(d.resolved_at),
     adjustNote:d.resolved?('Adj by '+(d.resolved_by_name_snapshot||'?')+' → '+d.corrected_to+': '+(d.resolution_reason||'')):''};
 }
 // Compare committed Opening lines against saved expected opening (prev close)
