@@ -3681,24 +3681,52 @@ function _refreshCountMismatches(br){
       });
       var sizes={};Object.keys(exp).forEach(function(s){sizes[s]=1;});Object.keys(op).forEach(function(s){sizes[s]=1;});
       var freshMismatches=[];
-      Object.keys(sizes).forEach(function(sz){
-        ['Full','Empty'].forEach(function(st){
-          var eB=(exp[sz]&&exp[sz][st])||{};var oB=(op[sz]&&op[sz][st])||{};
-          var brands={};Object.keys(eB).forEach(function(b){brands[b]=1;});Object.keys(oB).forEach(function(b){brands[b]=1;});
-          Object.keys(brands).forEach(function(b){
-            var expected=eB[b]||0, counted=oB[b]||0;
-            if(expected!==counted)freshMismatches.push({branch:br,size:sz,state:st,brand:b,expected:expected,counted:counted});
+      // Only look for mismatches at all if something's actually been counted for Opening
+      // today - an empty op means "hasn't started yet," not "counted zero of everything,"
+      // and treating the two the same would flag every line closed yesterday as wrong the
+      // moment anyone opens Count History before Opening is even done.
+      if(Object.keys(op).length){
+        Object.keys(sizes).forEach(function(sz){
+          ['Full','Empty'].forEach(function(st){
+            var eB=(exp[sz]&&exp[sz][st])||{};var oB=(op[sz]&&op[sz][st])||{};
+            var brands={};Object.keys(eB).forEach(function(b){brands[b]=1;});Object.keys(oB).forEach(function(b){brands[b]=1;});
+            Object.keys(brands).forEach(function(b){
+              var expected=eB[b]||0, counted=oB[b]||0;
+              if(expected!==counted)freshMismatches.push({branch:br,size:sz,state:st,brand:b,expected:expected,counted:counted});
+            });
           });
         });
-      });
-      var upsertPromise=freshMismatches.length
-        ? sb.from('count_mismatches').upsert(freshMismatches.map(_countMismatchToShared),{onConflict:'branch,date,size,state,brand'}).then(function(upRes){
-            if(upRes.error)console.error('count_mismatches upsert failed:',upRes.error.message);
-          }, function(e){
-            console.error('count_mismatches upsert failed:',e&&e.message);
-          })
-        : Promise.resolve();
-      return upsertPromise.then(function(){
+      }
+      var freshKeys={};
+      freshMismatches.forEach(function(fm){freshKeys[fm.size+'|'+fm.state+'|'+fm.brand]=true;});
+      // Self-healing: a line flagged mismatched earlier today but no longer actually
+      // different (counted correctly since, or simply hadn't been counted yet when an
+      // earlier refresh ran) must not stay flagged forever - unlike the old local
+      // computeOpeningMismatches (rebuilt from scratch every call), this shared table only
+      // ever grows via upsert, so anything still marked unresolved that's no longer in the
+      // fresh diff needs to be explicitly auto-resolved here.
+      return sb.from('count_mismatches').select('*').eq('branch',br).eq('date',today).eq('resolved',false).then(function(existingRes){
+        if(existingRes.error)throw new Error('count_mismatches existing-check failed: '+existingRes.error.message);
+        var staleRows=(existingRes.data||[]).filter(function(d){return !freshKeys[d.size+'|'+d.state+'|'+d.brand];});
+        var autoResolvePromise=staleRows.length
+          ? sb.from('count_mismatches').upsert(staleRows.map(function(d){
+              var nowCounted=(op[d.size]&&op[d.size][d.state]&&op[d.size][d.state][d.brand])||0;
+              return {branch:d.branch,date:d.date,size:d.size,state:d.state,brand:d.brand,
+                expected:num(d.expected),counted:nowCounted,resolved:true,
+                corrected_to:nowCounted,resolution_reason:'Automatically cleared - count no longer differs from previous close'};
+            }),{onConflict:'branch,date,size,state,brand'}).then(function(arRes){
+              if(arRes.error)console.error('count_mismatches auto-resolve failed:',arRes.error.message);
+            },function(e){console.error('count_mismatches auto-resolve failed:',e&&e.message);})
+          : Promise.resolve();
+        var upsertPromise=freshMismatches.length
+          ? sb.from('count_mismatches').upsert(freshMismatches.map(_countMismatchToShared),{onConflict:'branch,date,size,state,brand'}).then(function(upRes){
+              if(upRes.error)console.error('count_mismatches upsert failed:',upRes.error.message);
+            }, function(e){
+              console.error('count_mismatches upsert failed:',e&&e.message);
+            })
+          : Promise.resolve();
+        return Promise.all([autoResolvePromise,upsertPromise]);
+      }).then(function(){
         return sb.from('count_mismatches').select('*').eq('branch',br).eq('date',today);
       });
     }).then(function(res){
