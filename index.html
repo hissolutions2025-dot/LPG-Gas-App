@@ -3623,9 +3623,6 @@ function _countMismatchFromShared(d){
     adjustedAt:localStampOf(d.resolved_at),
     adjustNote:d.resolved?('Adj by '+(d.resolved_by_name_snapshot||'?')+' → '+d.corrected_to+': '+(d.resolution_reason||'')):''};
 }
-// One calendar day before the given YYYY-MM-DD string, computed in UTC so it's not
-// sensitive to the browser's own timezone - matches computeToday()'s own use of
-// toISOString() for the same reason.
 function _dayBefore(dateStr){
   var d=new Date(dateStr+'T00:00:00Z');
   d.setUTCDate(d.getUTCDate()-1);
@@ -3639,50 +3636,73 @@ function _dayBefore(dateStr){
 // the diffing itself (e.g. just opened Count History) still sees what another device
 // already found. Merges everything into store._openMismatch, replacing only this
 // branch's Stock-Count-kind entries - manifold-kind entries (still local-only this
-// phase) are left untouched. Every step degrades gracefully offline: on any failure,
-// whatever store._openMismatch already had stays as-is, nothing throws, nothing blocks
-// the caller.
+// phase) are left untouched. Every step degrades gracefully offline: on any failure -
+// including a Supabase query resolving with res.error set rather than rejecting, which
+// is the normal Supabase failure shape - store._openMismatch is left exactly as it was,
+// nothing is written to the shared table from stale/wrong data, nothing throws out of
+// this function. Chained per-branch (like _stockCountsUpsertChain) so two calls for the
+// same branch always resolve in the order they were issued, never letting a
+// slower-but-earlier call's stale result clobber a faster-but-later one's fresher result.
+var _refreshCountMismatchesChains={};
 function _refreshCountMismatches(br){
-  return sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',_dayBefore(today)).maybeSingle().then(function(dcRes){
-    var exp={};
-    if(dcRes.data && dcRes.data.store_snapshot && dcRes.data.store_snapshot.count){
-      dcRes.data.store_snapshot.count.filter(function(r){return r.countType==='Closing';}).forEach(function(r){
-        var st=(r.state==='Empty')?'Empty':'Full';
-        if(!exp[r.size])exp[r.size]={Full:{},Empty:{}};
-        exp[r.size][st][r.brand]=(exp[r.size][st][r.brand]||0)+num(r.qty);
-      });
+  var prior=_refreshCountMismatchesChains[br]||Promise.resolve();
+  var chained=prior.then(function(){
+    var yDate;
+    try{
+      yDate=_dayBefore(today);
+    }catch(e){
+      console.error('_refreshCountMismatches: could not compute yesterday\'s date:',e.message);
+      return;
     }
-    var op={};
-    store.count.filter(function(r){return (!r.branch||r.branch===br)&&r.countType==='Opening'&&(r._date||today)===today;}).forEach(function(r){
-      var st=(r.state==='Empty')?'Empty':'Full';
-      if(!op[r.size])op[r.size]={Full:{},Empty:{}};
-      op[r.size][st][r.brand]=(op[r.size][st][r.brand]||0)+num(r.qty);
-    });
-    var sizes={};Object.keys(exp).forEach(function(s){sizes[s]=1;});Object.keys(op).forEach(function(s){sizes[s]=1;});
-    var freshMismatches=[];
-    Object.keys(sizes).forEach(function(sz){
-      ['Full','Empty'].forEach(function(st){
-        var eB=(exp[sz]&&exp[sz][st])||{};var oB=(op[sz]&&op[sz][st])||{};
-        var brands={};Object.keys(eB).forEach(function(b){brands[b]=1;});Object.keys(oB).forEach(function(b){brands[b]=1;});
-        Object.keys(brands).forEach(function(b){
-          var expected=eB[b]||0, counted=oB[b]||0;
-          if(expected!==counted)freshMismatches.push({branch:br,size:sz,state:st,brand:b,expected:expected,counted:counted});
+    return sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(dcRes){
+      if(dcRes.error)throw new Error('day_closes fetch failed: '+dcRes.error.message);
+      var exp={};
+      if(dcRes.data && dcRes.data.store_snapshot && dcRes.data.store_snapshot.count){
+        dcRes.data.store_snapshot.count.filter(function(r){return r.countType==='Closing';}).forEach(function(r){
+          var st=(r.state==='Empty')?'Empty':'Full';
+          if(!exp[r.size])exp[r.size]={Full:{},Empty:{}};
+          exp[r.size][st][r.brand]=(exp[r.size][st][r.brand]||0)+num(r.qty);
+        });
+      }
+      var op={};
+      store.count.filter(function(r){return (!r.branch||r.branch===br)&&r.countType==='Opening'&&(r._date||today)===today;}).forEach(function(r){
+        var st=(r.state==='Empty')?'Empty':'Full';
+        if(!op[r.size])op[r.size]={Full:{},Empty:{}};
+        op[r.size][st][r.brand]=(op[r.size][st][r.brand]||0)+num(r.qty);
+      });
+      var sizes={};Object.keys(exp).forEach(function(s){sizes[s]=1;});Object.keys(op).forEach(function(s){sizes[s]=1;});
+      var freshMismatches=[];
+      Object.keys(sizes).forEach(function(sz){
+        ['Full','Empty'].forEach(function(st){
+          var eB=(exp[sz]&&exp[sz][st])||{};var oB=(op[sz]&&op[sz][st])||{};
+          var brands={};Object.keys(eB).forEach(function(b){brands[b]=1;});Object.keys(oB).forEach(function(b){brands[b]=1;});
+          Object.keys(brands).forEach(function(b){
+            var expected=eB[b]||0, counted=oB[b]||0;
+            if(expected!==counted)freshMismatches.push({branch:br,size:sz,state:st,brand:b,expected:expected,counted:counted});
+          });
         });
       });
+      var upsertPromise=freshMismatches.length
+        ? sb.from('count_mismatches').upsert(freshMismatches.map(_countMismatchToShared),{onConflict:'branch,date,size,state,brand'}).then(function(upRes){
+            if(upRes.error)console.error('count_mismatches upsert failed:',upRes.error.message);
+          }, function(e){
+            console.error('count_mismatches upsert failed:',e&&e.message);
+          })
+        : Promise.resolve();
+      return upsertPromise.then(function(){
+        return sb.from('count_mismatches').select('*').eq('branch',br).eq('date',today);
+      });
+    }).then(function(res){
+      if(res.error)throw new Error('count_mismatches fetch failed: '+res.error.message);
+      var rows=res.data||[];
+      store._openMismatch=(store._openMismatch||[]).filter(function(m){return m.branch!==br||m.kind==='manifold';});
+      rows.forEach(function(d){store._openMismatch.push(_countMismatchFromShared(d));});
     });
-    var upsertPromise=freshMismatches.length
-      ? sb.from('count_mismatches').upsert(freshMismatches.map(_countMismatchToShared),{onConflict:'branch,date,size,state,brand'}).catch(function(){})
-      : Promise.resolve();
-    return upsertPromise.then(function(){
-      return sb.from('count_mismatches').select('*').eq('branch',br).eq('date',today);
-    });
-  }).then(function(res){
-    var rows=(res&&res.data)||[];
-    store._openMismatch=(store._openMismatch||[]).filter(function(m){return m.branch!==br||m.kind==='manifold';});
-    rows.forEach(function(d){store._openMismatch.push(_countMismatchFromShared(d));});
-  }).catch(function(){
-    // offline or fetch failed - whatever store._openMismatch already had stays as-is.
+  }).catch(function(e){
+    console.error('_refreshCountMismatches failed for '+br+':',e&&e.message);
   });
+  _refreshCountMismatchesChains[br]=chained;
+  return chained;
 }
 // Compare committed Opening lines against saved expected opening (prev close)
 function computeOpeningMismatches(br){
