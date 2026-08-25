@@ -3449,7 +3449,7 @@ function _cCommitReal(){
   // offline-safe (see its own comment), never blocks this commit from completing.
   computeOpeningMismatches(cBranch);
   var mm=(store._openMismatch||[]).filter(function(m){return m.branch===cBranch;});
-  _refreshCountMismatches(cBranch, freshRows.filter(function(r){return r.countType==='Opening';}));
+  _refreshCountMismatches(cBranch, freshRows.filter(function(r){return r.countType==='Opening' && r.branch===cBranch;}));
   // Sync only the branch(es) THIS commit actually touched (from freshRows, not the whole
   // merged store.count) - each push carries that branch's COMPLETE current-day picture
   // (every countType, old lines plus new), so the sheet's replace-set (still whole
@@ -3699,6 +3699,7 @@ function _refreshCountMismatches(br, localOverlayRows){
       // the live fetch as normal; this only guarantees THIS device never has to win a
       // race against its own write.
       (localOverlayRows||[]).forEach(function(r){
+        if(r.branch!==br)return;
         var st=(r.state==='Empty')?'Empty':'Full';
         if(!op[r.size])op[r.size]={Full:{},Empty:{}};
         op[r.size][st][r.brand]=num(r.qty);
