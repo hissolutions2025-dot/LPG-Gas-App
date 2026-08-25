@@ -3697,11 +3697,31 @@ function rSupplierFor(br){return rSupplierState[br]||(rSupplierState[br]={suppli
 // for this branch's session (per explicit requirement - previously only supplier was required,
 // and only when a Full In line already existed; now all three gate entry itself).
 function rSupplierComplete(br){var s=rSupplierFor(br);return !!(s.supplier && s.deliveryNote && s.invoiceNo);}
-function rLoadSuppliers(){
+// Fetches the supplier list from the (slow, occasionally flaky) Apps Script backend.
+// Previously this fired once with a silently-swallowed .catch(){} - a slow response
+// or a genuine failure left the dropdown showing only "Select…/Other…" forever, with
+// no loading indicator and no retry, until the user backed out and re-entered
+// Received (giving it another cold try) - which is exactly the "only works after a
+// couple tries" symptom this fixes. Now: shows a visible loading state immediately,
+// retries automatically with backoff on failure, and shows a visible
+// failed-with-retry state (not silence) if every attempt fails.
+function rLoadSuppliers(attempt){
+  attempt=attempt||1;
+  var sel=document.getElementById('rSupplierSelect');
+  if(sel && !rSuppliersList.length)sel.innerHTML='<option value="">Loading suppliers…</option>';
   apiPost('suppliersList',{}).then(function(res){
-    if(res&&res.ok)rSuppliersList=res.suppliers||[];
+    if(!res||!res.ok)throw new Error((res&&res.error)||'Unexpected response loading suppliers');
+    rSuppliersList=res.suppliers||[];
     rRenderSupplierSelect();rRestoreSupplierFields();
-  }).catch(function(){});
+  }).catch(function(e){
+    console.error('suppliersList fetch failed (attempt '+attempt+'):',e&&e.message);
+    if(attempt<3){
+      setTimeout(function(){rLoadSuppliers(attempt+1);},1200*attempt);
+    } else {
+      var sel2=document.getElementById('rSupplierSelect');
+      if(sel2)sel2.innerHTML='<option value="">Could not load suppliers</option><option value="__retry__">↻ Tap to retry</option>';
+    }
+  });
 }
 function rRenderSupplierSelect(){
   var sel=document.getElementById('rSupplierSelect');if(!sel)return;
@@ -3709,7 +3729,9 @@ function rRenderSupplierSelect(){
   sel.innerHTML='<option value="">Select…</option>'+opts.map(function(s){return '<option value="'+s.name+'">'+s.name+'</option>';}).join('')+'<option value="__other__">Other…</option>';
 }
 function rSupplierChanged(){
-  var sel=document.getElementById('rSupplierSelect');var isOther=(sel.value==='__other__');
+  var sel=document.getElementById('rSupplierSelect');
+  if(sel.value==='__retry__'){sel.value='';rLoadSuppliers();return;}
+  var isOther=(sel.value==='__other__');
   document.getElementById('rSupplierOtherRow').style.display=isOther?'flex':'none';
   var st=rSupplierFor(rBranch);
   st.isOther=isOther;
