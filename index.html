@@ -3623,6 +3623,67 @@ function _countMismatchFromShared(d){
     adjustedAt:localStampOf(d.resolved_at),
     adjustNote:d.resolved?('Adj by '+(d.resolved_by_name_snapshot||'?')+' → '+d.corrected_to+': '+(d.resolution_reason||'')):''};
 }
+// One calendar day before the given YYYY-MM-DD string, computed in UTC so it's not
+// sensitive to the browser's own timezone - matches computeToday()'s own use of
+// toISOString() for the same reason.
+function _dayBefore(dateStr){
+  var d=new Date(dateStr+'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate()-1);
+  return d.toISOString().slice(0,10);
+}
+// Reads yesterday's Closing figures live from the shared day_closes snapshot (never
+// stored separately - see the design doc's rejection of a redundant expected_opening
+// table), diffs them against today's committed Opening stock_counts rows for this
+// branch, and upserts any discrepancy into the shared count_mismatches table. Also
+// fetches whatever's already in count_mismatches for today, so a device that didn't do
+// the diffing itself (e.g. just opened Count History) still sees what another device
+// already found. Merges everything into store._openMismatch, replacing only this
+// branch's Stock-Count-kind entries - manifold-kind entries (still local-only this
+// phase) are left untouched. Every step degrades gracefully offline: on any failure,
+// whatever store._openMismatch already had stays as-is, nothing throws, nothing blocks
+// the caller.
+function _refreshCountMismatches(br){
+  return sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',_dayBefore(today)).maybeSingle().then(function(dcRes){
+    var exp={};
+    if(dcRes.data && dcRes.data.store_snapshot && dcRes.data.store_snapshot.count){
+      dcRes.data.store_snapshot.count.filter(function(r){return r.countType==='Closing';}).forEach(function(r){
+        var st=(r.state==='Empty')?'Empty':'Full';
+        if(!exp[r.size])exp[r.size]={Full:{},Empty:{}};
+        exp[r.size][st][r.brand]=(exp[r.size][st][r.brand]||0)+num(r.qty);
+      });
+    }
+    var op={};
+    store.count.filter(function(r){return (!r.branch||r.branch===br)&&r.countType==='Opening'&&(r._date||today)===today;}).forEach(function(r){
+      var st=(r.state==='Empty')?'Empty':'Full';
+      if(!op[r.size])op[r.size]={Full:{},Empty:{}};
+      op[r.size][st][r.brand]=(op[r.size][st][r.brand]||0)+num(r.qty);
+    });
+    var sizes={};Object.keys(exp).forEach(function(s){sizes[s]=1;});Object.keys(op).forEach(function(s){sizes[s]=1;});
+    var freshMismatches=[];
+    Object.keys(sizes).forEach(function(sz){
+      ['Full','Empty'].forEach(function(st){
+        var eB=(exp[sz]&&exp[sz][st])||{};var oB=(op[sz]&&op[sz][st])||{};
+        var brands={};Object.keys(eB).forEach(function(b){brands[b]=1;});Object.keys(oB).forEach(function(b){brands[b]=1;});
+        Object.keys(brands).forEach(function(b){
+          var expected=eB[b]||0, counted=oB[b]||0;
+          if(expected!==counted)freshMismatches.push({branch:br,size:sz,state:st,brand:b,expected:expected,counted:counted});
+        });
+      });
+    });
+    var upsertPromise=freshMismatches.length
+      ? sb.from('count_mismatches').upsert(freshMismatches.map(_countMismatchToShared),{onConflict:'branch,date,size,state,brand'}).catch(function(){})
+      : Promise.resolve();
+    return upsertPromise.then(function(){
+      return sb.from('count_mismatches').select('*').eq('branch',br).eq('date',today);
+    });
+  }).then(function(res){
+    var rows=(res&&res.data)||[];
+    store._openMismatch=(store._openMismatch||[]).filter(function(m){return m.branch!==br||m.kind==='manifold';});
+    rows.forEach(function(d){store._openMismatch.push(_countMismatchFromShared(d));});
+  }).catch(function(){
+    // offline or fetch failed - whatever store._openMismatch already had stays as-is.
+  });
+}
 // Compare committed Opening lines against saved expected opening (prev close)
 function computeOpeningMismatches(br){
   var expWrap=loadExpectedOpening(br);
