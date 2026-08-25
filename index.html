@@ -3449,7 +3449,7 @@ function _cCommitReal(){
   // offline-safe (see its own comment), never blocks this commit from completing.
   computeOpeningMismatches(cBranch);
   var mm=(store._openMismatch||[]).filter(function(m){return m.branch===cBranch;});
-  _refreshCountMismatches(cBranch);
+  _refreshCountMismatches(cBranch, freshRows.filter(function(r){return r.countType==='Opening';}));
   // Sync only the branch(es) THIS commit actually touched (from freshRows, not the whole
   // merged store.count) - each push carries that branch's COMPLETE current-day picture
   // (every countType, old lines plus new), so the sheet's replace-set (still whole
@@ -3653,7 +3653,7 @@ function _dayBefore(dateStr){
 // same branch always resolve in the order they were issued, never letting a
 // slower-but-earlier call's stale result clobber a faster-but-later one's fresher result.
 var _refreshCountMismatchesChains={};
-function _refreshCountMismatches(br){
+function _refreshCountMismatches(br, localOverlayRows){
   var prior=_refreshCountMismatchesChains[br]||Promise.resolve();
   var chained=prior.then(function(){
     var yDate;
@@ -3690,6 +3690,18 @@ function _refreshCountMismatches(br){
         var st=(r.state==='Empty')?'Empty':'Full';
         if(!op[r.size])op[r.size]={Full:{},Empty:{}};
         op[r.size][st][r.brand]=(op[r.size][st][r.brand]||0)+num(r.qty);
+      });
+      // Overlay this device's own just-committed Opening rows (if any were passed in) on
+      // top of the live fetch, one authoritative value per key (replace, not add) - this
+      // is what makes a commit's own mismatch check correct on the very commit that found
+      // it, regardless of whether _stockCountsUpsert's write has actually landed on the
+      // server yet by the time this fetch runs. Cross-device visibility still relies on
+      // the live fetch as normal; this only guarantees THIS device never has to win a
+      // race against its own write.
+      (localOverlayRows||[]).forEach(function(r){
+        var st=(r.state==='Empty')?'Empty':'Full';
+        if(!op[r.size])op[r.size]={Full:{},Empty:{}};
+        op[r.size][st][r.brand]=num(r.qty);
       });
 
       var freshMismatches=[];
@@ -3736,6 +3748,7 @@ function _refreshCountMismatches(br){
             row.resolved=false; // explicit: a line re-mismatching after being resolved
                                  // (manually or auto) must correctly un-resolve, never
                                  // stay stuck showing "resolved" over a real mismatch.
+            row.resolved_at=null;row.resolved_by_name_snapshot=null;row.corrected_to=null;row.resolution_reason=null;
             return row;
           }),{onConflict:'branch,date,size,state,brand'}).then(function(upRes){
             if(upRes.error)console.error('count_mismatches upsert failed:',upRes.error.message);
