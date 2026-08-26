@@ -3784,45 +3784,68 @@ function _refreshCountMismatches(br, localOverlayRows){
       // these two writes themselves take.
       if(_sessionGen!==myGen)return;
 
-      // Self-healing only runs when op reflects a genuine shared-truth fetch that found
-      // SOMETHING counted (Object.keys(op).length) - if truly nobody has counted Opening
-      // for this branch today anywhere, there's nothing to compare against, so existing
-      // unresolved rows are left exactly as they are rather than guessed at.
-      var reconcilePromise=Object.keys(op).length
-        ? sb.from('count_mismatches').select('*').eq('branch',br).eq('date',myToday).eq('resolved',false).then(function(existingRes){
+      // Self-healing (and the already-resolved guard just below) only run when op
+      // reflects a genuine shared-truth fetch that found SOMETHING counted
+      // (Object.keys(op).length) - if truly nobody has counted Opening for this branch
+      // today anywhere, there's nothing to compare against, so existing rows are left
+      // exactly as they are rather than guessed at (freshMismatches is empty in that
+      // case too, by construction above, so there's nothing to upsert either).
+      var reconcileAndUpsertPromise=Object.keys(op).length
+        ? sb.from('count_mismatches').select('*').eq('branch',br).eq('date',myToday).then(function(existingRes){
             if(existingRes.error)throw new Error('count_mismatches existing-check failed: '+existingRes.error.message);
-            var staleRows=(existingRes.data||[]).filter(function(d){return !freshKeys[d.size+'|'+d.state+'|'+d.brand];});
-            if(!staleRows.length)return;
-            return sb.from('count_mismatches').upsert(staleRows.map(function(d){
-              var liveExpected=(exp[d.size]&&exp[d.size][d.state]&&exp[d.size][d.state][d.brand])||0;
-              var liveCounted=(op[d.size]&&op[d.size][d.state]&&op[d.size][d.state][d.brand])||0;
-              return {branch:d.branch,date:d.date,size:d.size,state:d.state,brand:d.brand,
-                expected:liveExpected,counted:liveCounted,resolved:true,
-                corrected_to:liveCounted,resolution_reason:'Automatically cleared - count no longer differs from previous close'};
-            }),{onConflict:'branch,date,size,state,brand'}).then(function(arRes){
-              if(arRes.error)console.error('count_mismatches auto-resolve failed:',arRes.error.message);
-            },function(e){console.error('count_mismatches auto-resolve failed:',e&&e.message);});
+            var existingRows=existingRes.data||[];
+
+            var staleRows=existingRows.filter(function(d){return !d.resolved && !freshKeys[d.size+'|'+d.state+'|'+d.brand];});
+            var reconcilePromise=staleRows.length
+              ? sb.from('count_mismatches').upsert(staleRows.map(function(d){
+                  var liveExpected=(exp[d.size]&&exp[d.size][d.state]&&exp[d.size][d.state][d.brand])||0;
+                  var liveCounted=(op[d.size]&&op[d.size][d.state]&&op[d.size][d.state][d.brand])||0;
+                  return {branch:d.branch,date:d.date,size:d.size,state:d.state,brand:d.brand,
+                    expected:liveExpected,counted:liveCounted,resolved:true,
+                    corrected_to:liveCounted,resolution_reason:'Automatically cleared - count no longer differs from previous close'};
+                }),{onConflict:'branch,date,size,state,brand'}).then(function(arRes){
+                  if(arRes.error)console.error('count_mismatches auto-resolve failed:',arRes.error.message);
+                },function(e){console.error('count_mismatches auto-resolve failed:',e&&e.message);})
+              : Promise.resolve();
+
+            // A key that's already resolved (a Manager/Owner corrected it via
+            // adjustMismatch()) must stay resolved even though its live counted value
+            // still differs from `expected` - that's the whole point of a correction:
+            // the count really is different from yesterday's close, and the corrected
+            // figure is the new source of truth, not something that has to match
+            // `expected` exactly. Re-upserting resolved:false here would silently undo
+            // the resolution the very next time this runs (e.g. adjustMismatch()'s own
+            // trailing openHistory() call). Only keys with no existing resolved row get
+            // (re-)upserted as a fresh, unresolved mismatch - a key that was never
+            // resolved keeps behaving exactly as before.
+            var resolvedKeys={};
+            existingRows.forEach(function(d){if(d.resolved)resolvedKeys[d.size+'|'+d.state+'|'+d.brand]=true;});
+            var toUpsert=freshMismatches.filter(function(fm){return !resolvedKeys[fm.size+'|'+fm.state+'|'+fm.brand];});
+            var upsertPromise=toUpsert.length
+              ? sb.from('count_mismatches').upsert(toUpsert.map(function(fm){
+                  var row=_countMismatchToShared(fm);
+                  row.date=myToday; // _countMismatchToShared stamps the live global `today` -
+                                     // override with the date this call was actually issued for.
+                  row.resolved=false; // explicit: a line re-mismatching after being resolved
+                                       // AND SELF-HEALED (never manually resolved - see the
+                                       // resolvedKeys filter above, which keeps a manually
+                                       // resolved row out of toUpsert entirely) must correctly
+                                       // un-resolve, never stay stuck showing "resolved" over a
+                                       // real mismatch.
+                  row.resolved_at=null;row.resolved_by_name_snapshot=null;row.corrected_to=null;row.resolution_reason=null;
+                  return row;
+                }),{onConflict:'branch,date,size,state,brand'}).then(function(upRes){
+                  if(upRes.error)console.error('count_mismatches upsert failed:',upRes.error.message);
+                }, function(e){
+                  console.error('count_mismatches upsert failed:',e&&e.message);
+                })
+              : Promise.resolve();
+
+            return Promise.all([reconcilePromise,upsertPromise]);
           })
         : Promise.resolve();
 
-      var upsertPromise=freshMismatches.length
-        ? sb.from('count_mismatches').upsert(freshMismatches.map(function(fm){
-            var row=_countMismatchToShared(fm);
-            row.date=myToday; // _countMismatchToShared stamps the live global `today` -
-                               // override with the date this call was actually issued for.
-            row.resolved=false; // explicit: a line re-mismatching after being resolved
-                                 // (manually or auto) must correctly un-resolve, never
-                                 // stay stuck showing "resolved" over a real mismatch.
-            row.resolved_at=null;row.resolved_by_name_snapshot=null;row.corrected_to=null;row.resolution_reason=null;
-            return row;
-          }),{onConflict:'branch,date,size,state,brand'}).then(function(upRes){
-            if(upRes.error)console.error('count_mismatches upsert failed:',upRes.error.message);
-          }, function(e){
-            console.error('count_mismatches upsert failed:',e&&e.message);
-          })
-        : Promise.resolve();
-
-      return Promise.all([reconcilePromise,upsertPromise]);
+      return reconcileAndUpsertPromise;
     }).then(function(){
       return sb.from('count_mismatches').select('*').eq('branch',br).eq('date',myToday);
     }).then(function(res){
