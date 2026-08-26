@@ -3884,7 +3884,12 @@ function _refreshCountMismatches(br, localOverlayRows){
 // Compare committed Opening lines against saved expected opening (prev close)
 function computeOpeningMismatches(br){
   var expWrap=loadExpectedOpening(br);
-  store._openMismatch=(store._openMismatch||[]).filter(function(m){return m.branch!==br;});
+  // ||m.kind==='manifold' guard matches _refreshCountMismatches's own merge (~3875) and
+  // computeManifoldMismatches's own merge (~3296) - without it, this replace-filter dropped
+  // this branch's local-only manifold mismatch entries too (kind is unset on a Stock-Count
+  // entry, so a plain m.branch!==br check can't tell them apart), even though this function
+  // only ever computes/replaces Stock-Count-kind entries.
+  store._openMismatch=(store._openMismatch||[]).filter(function(m){return m.branch!==br||m.kind==='manifold';});
   if(!expWrap||!expWrap.exp)return; // no prior close to compare against
   var exp=expWrap.exp;
   // build this morning's opening per size+state+brand
@@ -3904,7 +3909,16 @@ function computeOpeningMismatches(br){
       Object.keys(brands).forEach(function(b){
         var expected=eB[b]||0, counted=oB[b]||0;
         if(expected!==counted){
-          mism.push({branch:br,size:sz,state:st,brand:b,expected:expected,counted:counted,resolved:false,adjustNote:''});
+          // date:today - this function is synchronous end-to-end (no async gap to drift
+          // across), so the live global here is already "captured at push time". Without
+          // this, an entry pushed here was indistinguishable from a real
+          // _countMismatchFromShared-sourced entry (kind unset on both), so adjustMismatch()
+          // could be invoked on one of these (openHistory() renders synchronously from
+          // whatever's already in store._openMismatch, before _refreshCountMismatches's
+          // async fetch overwrites it) and its `m.date||today` fallback would then read
+          // whatever `today` had drifted to by the time Adjust was clicked, not the date
+          // this mismatch was actually computed under.
+          mism.push({branch:br,size:sz,state:st,brand:b,expected:expected,counted:counted,resolved:false,adjustNote:'',date:today});
         }
       });
     });
@@ -5353,15 +5367,15 @@ function _mismatchPanelHtml(branch){
 // mismatch panel container - not the whole Count History screen (avoids any risk of
 // clobbering something else the user is mid-interacting with elsewhere on the page), and
 // only if the user hasn't navigated away from History in the meantime.
-function _refreshMismatchPanel(branch){
-  _refreshCountMismatches(branch).then(function(){
+function _refreshMismatchPanel(branch,overlayRows){
+  _refreshCountMismatches(branch,overlayRows).then(function(){
     var container=document.getElementById('mmPanelContainer');
     var stillOnHistory=document.querySelector('.view.active') && document.querySelector('.view.active').id==='historyView';
     if(container && stillOnHistory && histBranch===branch)container.outerHTML='<div id="mmPanelContainer">'+_mismatchPanelHtml(branch)+'</div>';
     _updateMismatchPendingBadge();
   });
 }
-function openHistory(){
+function openHistory(mismatchOverlayRows){
   _updateCloseDayPendingBadge();
   _updateCountPendingBadge();
   if(!histBranch||(role==='Operator'))histBranch=branch||'Helderberg';
@@ -5468,7 +5482,11 @@ function openHistory(){
   }
   html+='</div>';
   document.getElementById('histBody').innerHTML=html;
-  _refreshMismatchPanel(branch);
+  // mismatchOverlayRows: optional, passed through from adjustMismatch()'s trailing
+  // openHistory() call so the _refreshCountMismatches(bc) this triggers sees the
+  // just-corrected value immediately, exactly like _cCommitReal's own overlay use
+  // (~3472) - see adjustMismatch()'s comment on _mismatchOverlayForRefresh for why.
+  _refreshMismatchPanel(branch,mismatchOverlayRows);
   document.getElementById('sigOpName').textContent=operator?('· '+operator.replace(' (Manager)','')):'';
   show('historyView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);
   setHistTab('today');
@@ -6329,6 +6347,16 @@ function adjustMismatch(i){
       return;
     }
     var bc=m.branch, oldVal, correct, itemLabel;
+    // Stays undefined for a manifold-kind adjustment (that branch below never sets it) -
+    // only the Stock-Count branch below assigns it, right after `correct`/sz/st/br are
+    // known. Passed through openHistory()->_refreshMismatchPanel() into the
+    // _refreshCountMismatches(bc) call that follows this resolve, as the localOverlayRows
+    // overlay that call already accepts (same mechanism _cCommitReal uses at ~3472). Without
+    // it, that refresh's live stock_counts read could still see the pre-correction value if
+    // _stockCountsUpsert's write (kicked off moments ago, on its own separate chain) hasn't
+    // landed yet, find it still differing from resolvedTo[key], and re-upsert the row
+    // resolved:false - silently reverting the correction just made, in front of the user.
+    var _mismatchOverlayForRefresh;
     if(m.kind==='manifold'){
       itemLabel='Manifold '+m.cyl;
       var nv=prompt('Correct OPENING gas-left (kg) for '+m.cyl+'\n(previous close was '+m.expected+'kg, counted '+m.counted+'kg):', String(m.counted));
@@ -6362,6 +6390,10 @@ function adjustMismatch(i){
       oldVal=row?row.qty:m.counted;
       if(row){row.qty=correct;row._adjusted=true;}
       else{row={countType:'Opening',state:st,size:sz,brand:br,qty:correct,branch:bc,_adjusted:true,_date:today};store.count.push(row);}
+      // Minimal shape _refreshCountMismatches's overlay loop reads (branch/size/state/
+      // brand/qty) - see the comment on this variable's declaration above for why it's
+      // needed at all.
+      _mismatchOverlayForRefresh=[{branch:bc,size:sz,state:st,brand:br,qty:correct}];
       m.resolved=true;m.counted=correct;m.adjustedTo=correct;
       m.adjustNote='Adj by '+auth.name+' ('+auth.level+') → '+correct+': '+reason2.trim();
       m.adjustedBy=auth.name;m.adjustedAt=nowStamp();
@@ -6428,14 +6460,14 @@ function adjustMismatch(i){
           m.resolved=false;m.adjustedTo=undefined;m.adjustNote='';m.adjustedBy=undefined;m.adjustedAt=undefined;
           saveWorkingStore();
           toast('Counts corrected, but the shared mismatch record could not be marked resolved - please tell Freddie: '+res.error.message,true);
-          openHistory();
+          openHistory(_mismatchOverlayForRefresh);
         }
       },function(e){
         console.error('count_mismatches resolve upsert failed unexpectedly:',e&&e.message);
         m.resolved=false;m.adjustedTo=undefined;m.adjustNote='';m.adjustedBy=undefined;m.adjustedAt=undefined;
         saveWorkingStore();
         toast('Counts corrected, but the shared mismatch record could not be marked resolved - please tell Freddie: '+(e&&e.message||'unknown error'),true);
-        openHistory();
+        openHistory(_mismatchOverlayForRefresh);
       }).catch(function(e){
         // Should be unreachable (both branches above already catch their own promise) -
         // defensive only, so a truly unexpected throw here can never poison every future
@@ -6447,7 +6479,7 @@ function adjustMismatch(i){
     }
     saveWorkingStore();
     toast(itemLabel+' corrected to '+correct+' ✓');
-    openHistory();
+    openHistory(_mismatchOverlayForRefresh);
   });
 }
 function listSavedDays(){
