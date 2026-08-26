@@ -3696,11 +3696,17 @@ var _refreshCountMismatchesChains={};
 var _sessionGen=0;
 function _refreshCountMismatches(br, localOverlayRows){
   var myGen=_sessionGen;
+  // Captured at entry, alongside myGen, rather than read live off the global throughout -
+  // _finishLogin reassigns the global `today` on every login (computeToday(), which also
+  // depends on the operator's own test-date offset), so a stale call resolving after a new
+  // session has logged in must keep querying/writing under the date it was originally
+  // issued for, never silently drift onto the new session's date.
+  var myToday=today;
   var prior=_refreshCountMismatchesChains[br]||Promise.resolve();
   var chained=prior.then(function(){
     var yDate;
     try{
-      yDate=_dayBefore(today);
+      yDate=_dayBefore(myToday);
     }catch(e){
       console.error('_refreshCountMismatches: could not compute yesterday\'s date:',e.message);
       return;
@@ -3713,7 +3719,7 @@ function _refreshCountMismatches(br, localOverlayRows){
     // know about locally. Reading both baselines live is the whole point of this design
     // (see the spec's rejection of a redundant expected_opening table) - op deserved the
     // exact same treatment exp already got, and originally didn't.
-    var opPromise=sb.from('stock_counts').select('*').eq('branch',br).eq('date',today).eq('count_type','Opening');
+    var opPromise=sb.from('stock_counts').select('*').eq('branch',br).eq('date',myToday).eq('count_type','Opening');
     return Promise.all([dcPromise,opPromise]).then(function(results){
       var dcRes=results[0], opRes=results[1];
       if(dcRes.error)throw new Error('day_closes fetch failed: '+dcRes.error.message);
@@ -3764,12 +3770,21 @@ function _refreshCountMismatches(br, localOverlayRows){
       var freshKeys={};
       freshMismatches.forEach(function(fm){freshKeys[fm.size+'|'+fm.state+'|'+fm.brand]=true;});
 
+      // Guarded here too (not just before the final local merge below) - this must run
+      // BEFORE reconcilePromise/upsertPromise are kicked off, since both write to the
+      // shared count_mismatches table: a stale call from a superseded session must never
+      // be allowed to upsert another user/branch's data into it, even if nothing from
+      // that write would ever show up on THIS device's screen. The check before the final
+      // merge stays too, as defense-in-depth for a session change during the round-trip
+      // these two writes themselves take.
+      if(_sessionGen!==myGen)return;
+
       // Self-healing only runs when op reflects a genuine shared-truth fetch that found
       // SOMETHING counted (Object.keys(op).length) - if truly nobody has counted Opening
       // for this branch today anywhere, there's nothing to compare against, so existing
       // unresolved rows are left exactly as they are rather than guessed at.
       var reconcilePromise=Object.keys(op).length
-        ? sb.from('count_mismatches').select('*').eq('branch',br).eq('date',today).eq('resolved',false).then(function(existingRes){
+        ? sb.from('count_mismatches').select('*').eq('branch',br).eq('date',myToday).eq('resolved',false).then(function(existingRes){
             if(existingRes.error)throw new Error('count_mismatches existing-check failed: '+existingRes.error.message);
             var staleRows=(existingRes.data||[]).filter(function(d){return !freshKeys[d.size+'|'+d.state+'|'+d.brand];});
             if(!staleRows.length)return;
@@ -3788,6 +3803,8 @@ function _refreshCountMismatches(br, localOverlayRows){
       var upsertPromise=freshMismatches.length
         ? sb.from('count_mismatches').upsert(freshMismatches.map(function(fm){
             var row=_countMismatchToShared(fm);
+            row.date=myToday; // _countMismatchToShared stamps the live global `today` -
+                               // override with the date this call was actually issued for.
             row.resolved=false; // explicit: a line re-mismatching after being resolved
                                  // (manually or auto) must correctly un-resolve, never
                                  // stay stuck showing "resolved" over a real mismatch.
@@ -3802,7 +3819,7 @@ function _refreshCountMismatches(br, localOverlayRows){
 
       return Promise.all([reconcilePromise,upsertPromise]);
     }).then(function(){
-      return sb.from('count_mismatches').select('*').eq('branch',br).eq('date',today);
+      return sb.from('count_mismatches').select('*').eq('branch',br).eq('date',myToday);
     }).then(function(res){
       if(res.error)throw new Error('count_mismatches fetch failed: '+res.error.message);
       if(_sessionGen!==myGen)return; // a different session has started since this call began - discard, matching the offline-safe "never write stale data" contract
