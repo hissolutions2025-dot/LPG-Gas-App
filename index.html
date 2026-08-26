@@ -3652,7 +3652,11 @@ function _countMismatchToShared(m){
 }
 // Converts one count_mismatches row (as returned by a Supabase select) back into the
 // local store._openMismatch entry shape used by openHistory()'s existing render and by
-// adjustMismatch().
+// adjustMismatch(). `date` is carried straight off the row (the actual date this
+// mismatch was flagged/stored under) so adjustMismatch() can resolve-upsert against the
+// row's real natural key even if the live `today` global has since moved on (e.g.
+// shiftTestDate(), a real midnight rollover) since this panel was last refreshed -
+// see adjustMismatch()'s own comment on myMismatchDate for the failure this prevents.
 function _countMismatchFromShared(d){
   // resolved_at is an ISO 8601 string; adjustedAt elsewhere in this file is always
   // nowStamp()'s local "YYYY-MM-DD HH:MM:SS" format (see nowStamp() above) - convert
@@ -3664,7 +3668,7 @@ function _countMismatchFromShared(d){
     var dt=new Date(iso);
     return dt.getFullYear()+'-'+p(dt.getMonth()+1)+'-'+p(dt.getDate())+' '+p(dt.getHours())+':'+p(dt.getMinutes())+':'+p(dt.getSeconds());
   }
-  return {branch:d.branch, size:d.size, state:d.state, brand:d.brand,
+  return {branch:d.branch, date:d.date, size:d.size, state:d.state, brand:d.brand,
     expected:num(d.expected), counted:num(d.counted), resolved:!!d.resolved,
     adjustedTo:(d.corrected_to!==undefined && d.corrected_to!==null)?num(d.corrected_to):undefined,
     adjustedBy:d.resolved_by_name_snapshot||undefined,
@@ -3809,30 +3813,46 @@ function _refreshCountMismatches(br, localOverlayRows){
               : Promise.resolve();
 
             // A key that's already resolved (a Manager/Owner corrected it via
-            // adjustMismatch()) must stay resolved even though its live counted value
-            // still differs from `expected` - that's the whole point of a correction:
-            // the count really is different from yesterday's close, and the corrected
-            // figure is the new source of truth, not something that has to match
-            // `expected` exactly. Re-upserting resolved:false here would silently undo
-            // the resolution the very next time this runs (e.g. adjustMismatch()'s own
-            // trailing openHistory() call). Only keys with no existing resolved row get
-            // (re-)upserted as a fresh, unresolved mismatch - a key that was never
-            // resolved keeps behaving exactly as before.
-            var resolvedKeys={};
-            existingRows.forEach(function(d){if(d.resolved)resolvedKeys[d.size+'|'+d.state+'|'+d.brand]=true;});
-            var toUpsert=freshMismatches.filter(function(fm){return !resolvedKeys[fm.size+'|'+fm.state+'|'+fm.brand];});
+            // adjustMismatch()) must stay resolved for as long as the live counted value
+            // still matches what it was resolved TO - that's the whole point of a
+            // correction: the count really is different from yesterday's close, and the
+            // corrected figure is the new source of truth, not something that has to
+            // match `expected` exactly. Re-upserting resolved:false here would silently
+            // undo the resolution the very next time this runs (e.g. adjustMismatch()'s
+            // own trailing openHistory() call).
+            // BUT a resolved key must NOT be excluded forever regardless of what the live
+            // count later becomes - adjustMismatch() explicitly clears cLocked/cTries so
+            // an operator CAN recommit that line to a genuinely different value, and a
+            // self-healed row (resolved automatically, no corrected_to) can drift again
+            // later too. So resolvedTo tracks the value each resolved key was resolved
+            // to (corrected_to for a manual correction; falls back to its own `expected`
+            // for an older self-healed row saved before corrected_to was always set) -
+            // only a live count that STILL equals that value stays suppressed; anything
+            // else is a genuinely new mismatch and must fall back into toUpsert to be
+            // correctly re-flagged unresolved, exactly like a key that was never resolved.
+            var resolvedTo={};
+            existingRows.forEach(function(d){
+              if(d.resolved){
+                resolvedTo[d.size+'|'+d.state+'|'+d.brand]=(d.corrected_to!==undefined && d.corrected_to!==null)?num(d.corrected_to):num(d.expected);
+              }
+            });
+            var toUpsert=freshMismatches.filter(function(fm){
+              var key=fm.size+'|'+fm.state+'|'+fm.brand;
+              return !(key in resolvedTo) || num(fm.counted)!==resolvedTo[key];
+            });
             var upsertPromise=toUpsert.length
               ? sb.from('count_mismatches').upsert(toUpsert.map(function(fm){
                   var row=_countMismatchToShared(fm);
                   row.date=myToday; // _countMismatchToShared stamps the live global `today` -
                                      // override with the date this call was actually issued for.
                   row.resolved=false; // explicit: a line re-mismatching after being resolved
-                                       // AND SELF-HEALED (never manually resolved - see the
-                                       // resolvedKeys filter above, which keeps a manually
-                                       // resolved row out of toUpsert entirely) must correctly
-                                       // un-resolve, never stay stuck showing "resolved" over a
-                                       // real mismatch.
-                  row.resolved_at=null;row.resolved_by_name_snapshot=null;row.corrected_to=null;row.resolution_reason=null;
+                                       // (whether manually via adjustMismatch(), or
+                                       // self-healed, and whether now genuinely re-mismatching
+                                       // or never resolved in the first place - see the
+                                       // resolvedTo filter above) must correctly un-resolve,
+                                       // never stay stuck showing "resolved" over a real
+                                       // mismatch.
+                  row.resolved_at=null;row.resolved_by=null;row.resolved_by_name_snapshot=null;row.corrected_to=null;row.resolution_reason=null;
                   return row;
                 }),{onConflict:'branch,date,size,state,brand'}).then(function(upRes){
                   if(upRes.error)console.error('count_mismatches upsert failed:',upRes.error.message);
@@ -6273,14 +6293,22 @@ function adjustMismatch(i){
   if(!perm('adjust')){toast('You do not have adjust rights',true);return;}
   var mmList=(store._openMismatch||[]).filter(function(m){return m.branch===histBranch;});
   var m=mmList[i];if(!m)return;
-  // Captured before authPromise below (the only async gap in this function - the
-  // reason/quantity prompts after it are native blocking prompt() calls, not async) so
-  // the shared count_mismatches resolve-upsert targets the same date this mismatch was
-  // actually flagged/displayed under, same defensive reasoning as _refreshCountMismatches's
-  // own myToday - a slow password entry must not let the resolve silently drift onto a
-  // different day's row (test-date shift, or a real midnight rollover) and upsert a brand
-  // new row instead of resolving the one on screen.
-  var myToday=today;
+  // Captured before authPromise below (the real async gap in this function -
+  // _selfReauth()/_borrowAuth() await an async askPassword() modal, not a blocking
+  // native prompt() - the reason/quantity prompts after it ARE blocking prompt() calls,
+  // so nothing else in this function can race against them).
+  // myMismatchDate is `m`'s own real date (carried onto it by _countMismatchFromShared,
+  // straight off the shared row) rather than the live `today` global, so the resolve-
+  // upsert below always targets the exact row this mismatch was flagged/displayed under -
+  // even if an Owner's shiftTestDate() has moved `today` since this panel was last
+  // refreshed (shiftTestDate() doesn't itself refresh the mismatch panel/badge). Falls
+  // back to `today` only for a legacy/local-only entry with no `date` (a manifold-kind
+  // entry - still local-only this phase - or an older row saved before this field
+  // existed).
+  // mySessionGen guards the same async gap against a logout()/fresh-login genuinely
+  // happening mid-prompt - same pattern _refreshCountMismatches uses twice, same reason.
+  var myMismatchDate=m.date||today;
+  var mySessionGen=_sessionGen;
   // Same fix as Close Day's authoriser step, signature unlock, and same-day
   // corrections: someone who already qualifies (e.g. a Manager adjusting their own
   // branch's mismatch) gets a single password prompt for their own account, instead
@@ -6292,6 +6320,14 @@ function adjustMismatch(i){
     : _borrowAuth('Manager or Owner','Log this adjustment?',qualifiesAdjust);
   authPromise.then(function(auth){
     if(!auth){toast('An adjust-authorised password is required',true);return;}
+    if(_sessionGen!==mySessionGen){
+      // A logout() (bumps _sessionGen, resets store._openMismatch) or a fresh login
+      // genuinely happened during the async askPassword() gap above - `m`/`bc` may now
+      // belong to a session that's no longer active. Bail without writing, matching
+      // _refreshCountMismatches's own "never write stale data" contract.
+      toast('Session changed - adjustment not saved, please try again',true);
+      return;
+    }
     var bc=m.branch, oldVal, correct, itemLabel;
     if(m.kind==='manifold'){
       itemLabel='Manifold '+m.cyl;
@@ -6352,8 +6388,10 @@ function adjustMismatch(i){
       // shared table never actually got the correction - a console.error alone would never
       // be seen on a phone.
       // Natural key uses bc/sz/st/br (== m.branch/m.size/m.state/m.brand, copied verbatim
-      // off the shared row this mismatch was read from) plus myToday (captured above), so
-      // this upsert resolves the SAME row _refreshCountMismatches wrote, never a duplicate.
+      // off the shared row this mismatch was read from) plus myMismatchDate (captured
+      // above, off `m.date` - the row's own real date), so this upsert resolves the SAME
+      // row _refreshCountMismatches wrote, never a duplicate, and never a wrong-date row
+      // if shiftTestDate() has moved the live `today` since this panel was refreshed.
       // `counted` is deliberately oldVal (what the operator actually committed), not
       // `correct` - count_mismatches.counted is the historical "what was counted" fact,
       // distinct from corrected_to; m.counted itself was already overwritten to `correct`
@@ -6365,13 +6403,26 @@ function adjustMismatch(i){
       // non-qualifying person when _borrowAuth was used, and stock_counts' own correction
       // path (_stockCountToSharedRow's hasCorr branch) deliberately avoids stamping a UUID
       // for that same reason.
-      sb.from('count_mismatches').upsert([{
-        branch:bc, date:myToday, size:sz, state:st, brand:br,
-        expected:num(m.expected), counted:num(oldVal),
-        resolved:true, resolved_by:(auth&&auth.id)||null,
-        resolved_by_name_snapshot:auth.name, resolved_at:new Date().toISOString(),
-        corrected_to:correct, resolution_reason:reason2.trim()
-      }],{onConflict:'branch,date,size,state,brand'}).then(function(res){
+      // Chained onto _refreshCountMismatchesChains[bc] - the SAME per-branch chain
+      // _refreshCountMismatches() itself uses for every read/write to this table -
+      // rather than fired as an independent, un-sequenced call. Without this, this
+      // resolve-upsert and a concurrent _refreshCountMismatches(bc) (e.g. the one
+      // openHistory() below is about to kick off via _refreshMismatchPanel()) are two
+      // independent read-then-write paths to the same table with no ordering guarantee:
+      // if a refresh's existing-row select ran before this resolve-upsert landed, it
+      // would re-flag this exact row resolved:false, undoing the resolution just made.
+      // Chaining here guarantees this write always runs strictly before or after any
+      // concurrent refresh for this branch, never interleaved with one.
+      var _priorMismatchChain=_refreshCountMismatchesChains[bc]||Promise.resolve();
+      var _resolveUpsertChain=_priorMismatchChain.then(function(){
+        return sb.from('count_mismatches').upsert([{
+          branch:bc, date:myMismatchDate, size:sz, state:st, brand:br,
+          expected:num(m.expected), counted:num(oldVal),
+          resolved:true, resolved_by:(auth&&auth.id)||null,
+          resolved_by_name_snapshot:auth.name, resolved_at:new Date().toISOString(),
+          corrected_to:correct, resolution_reason:reason2.trim()
+        }],{onConflict:'branch,date,size,state,brand'});
+      }).then(function(res){
         if(res.error){
           console.error('count_mismatches resolve upsert failed:',res.error.message);
           m.resolved=false;m.adjustedTo=undefined;m.adjustNote='';m.adjustedBy=undefined;m.adjustedAt=undefined;
@@ -6385,7 +6436,14 @@ function adjustMismatch(i){
         saveWorkingStore();
         toast('Counts corrected, but the shared mismatch record could not be marked resolved - please tell Freddie: '+(e&&e.message||'unknown error'),true);
         openHistory();
+      }).catch(function(e){
+        // Should be unreachable (both branches above already catch their own promise) -
+        // defensive only, so a truly unexpected throw here can never poison every future
+        // call chained onto this branch's slot, mirroring _refreshCountMismatches's own
+        // outer .catch on `chained`.
+        console.error('count_mismatches resolve-upsert chain link failed unexpectedly:',e&&e.message);
       });
+      _refreshCountMismatchesChains[bc]=_resolveUpsertChain;
     }
     saveWorkingStore();
     toast(itemLabel+' corrected to '+correct+' ✓');
