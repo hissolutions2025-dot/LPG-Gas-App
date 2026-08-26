@@ -3641,6 +3641,11 @@ function _stockCountsUpsert(freshRows){
 // Converts one local store._openMismatch-shaped entry into the shape count_mismatches
 // expects. Only ever called for Stock-Count-kind entries (kind==='manifold' entries stay
 // local-only this phase, per the design doc's explicit scope).
+// NOTE: stamps `date` from the live global `today`, not a captured value. Every current
+// caller (_refreshCountMismatches) overrides `row.date` immediately after calling this,
+// using its own captured `myToday`, to stay correct if a stale async call resolves after
+// a new login changes `today`. Any NEW caller must do the same override, or pass a
+// captured date in instead of relying on this default.
 function _countMismatchToShared(m){
   return {branch:m.branch, date:today, size:m.size, state:m.state, brand:m.brand,
     expected:num(m.expected), counted:num(m.counted)};
