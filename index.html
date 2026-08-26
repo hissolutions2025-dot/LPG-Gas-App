@@ -2567,6 +2567,7 @@ function _finishLogin(u,b){
   _countFlushQueue();
   _updateCountPendingBadge();
   _updateMismatchPendingBadge();
+  _refreshCountMismatches(branch).then(_updateMismatchPendingBadge);
   refreshTestDateUI();
   // "Where was I" - resume the same section (with its data) this operator was on when this
   // device last left off, instead of always landing on the home screen. Falls back to home
@@ -2578,7 +2579,7 @@ function _finishLogin(u,b){
 function logout(){
   if(operator)auditLog('Logout','Signed out');
   sb.auth.signOut();
-  operator=null;branch=null;role=null;currentProfile=null;
+  operator=null;branch=null;role=null;currentProfile=null;store._openMismatch=[];
   // idle lock must not be able to outlive its own session - clear it unconditionally on
   // every logout, whether that's a normal sign-out or the lock screen's own "Not you? Sign
   // out instead" escape hatch (which just calls this function directly).
@@ -3576,11 +3577,14 @@ function _updateCountPendingBadge(){
 // _refreshCountMismatches's call sites ran most recently already populated it.
 function _updateMismatchPendingBadge(){
   var isMgr=(role==='Manager'||role==='Owner');
-  var n=isMgr?(store._openMismatch||[]).filter(function(m){return !m.resolved;}).length:0;
-  var text=n?('⚠ '+n+' opening mismatch(es) need review'):'';
-  ['mismatchPendingBadge','mismatchPendingBadgeHistory'].forEach(function(id){
-    var el=document.getElementById(id);
+  function countFor(br){
+    return isMgr?(store._openMismatch||[]).filter(function(m){return !m.resolved&&(!m.branch||m.branch===br);}).length:0;
+  }
+  [['mismatchPendingBadge',branch],['mismatchPendingBadgeHistory',histBranch]].forEach(function(pair){
+    var el=document.getElementById(pair[0]);
     if(!el)return;
+    var n=countFor(pair[1]);
+    var text=n?('⚠ '+n+' opening mismatch(es) need review'):'';
     el.style.display=n?'block':'none';
     el.textContent=text;
   });
