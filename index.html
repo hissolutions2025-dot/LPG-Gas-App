@@ -6250,6 +6250,14 @@ function adjustMismatch(i){
   if(!perm('adjust')){toast('You do not have adjust rights',true);return;}
   var mmList=(store._openMismatch||[]).filter(function(m){return m.branch===histBranch;});
   var m=mmList[i];if(!m)return;
+  // Captured before authPromise below (the only async gap in this function - the
+  // reason/quantity prompts after it are native blocking prompt() calls, not async) so
+  // the shared count_mismatches resolve-upsert targets the same date this mismatch was
+  // actually flagged/displayed under, same defensive reasoning as _refreshCountMismatches's
+  // own myToday - a slow password entry must not let the resolve silently drift onto a
+  // different day's row (test-date shift, or a real midnight rollover) and upsert a brand
+  // new row instead of resolving the one on screen.
+  var myToday=today;
   // Same fix as Close Day's authoriser step, signature unlock, and same-day
   // corrections: someone who already qualifies (e.g. a Manager adjusting their own
   // branch's mismatch) gets a single password prompt for their own account, instead
@@ -6310,6 +6318,51 @@ function adjustMismatch(i){
       var rowsForBn=syncRowsCount(store.count.filter(function(r){return r.branch===bc;}),bc);
       syncPush('Counts', rowsForBn.map(function(x){x._replaceKey=(x.date+'|'+x.branch);return x;}));
       try{_stockCountsUpsert([row]);}catch(e){console.error('_stockCountsUpsert threw synchronously:',e.message);}
+      // Also resolve the shared count_mismatches row (upsert by its natural key, same
+      // approach stock_counts already uses - no need to track a generated row id) so the
+      // resolution is visible from any device, not just this one. m.resolved etc above were
+      // already set optimistically - same immediate-local-update pattern every other write
+      // in this function uses, so the UI reflects the resolution right away without waiting
+      // on the network. But unlike stock_counts, there's no offline retry queue for this
+      // table yet, so on failure that optimistic state is explicitly rolled back and
+      // surfaced to the user below, rather than silently left claiming "resolved" when the
+      // shared table never actually got the correction - a console.error alone would never
+      // be seen on a phone.
+      // Natural key uses bc/sz/st/br (== m.branch/m.size/m.state/m.brand, copied verbatim
+      // off the shared row this mismatch was read from) plus myToday (captured above), so
+      // this upsert resolves the SAME row _refreshCountMismatches wrote, never a duplicate.
+      // `counted` is deliberately oldVal (what the operator actually committed), not
+      // `correct` - count_mismatches.counted is the historical "what was counted" fact,
+      // distinct from corrected_to; m.counted itself was already overwritten to `correct`
+      // a few lines up for the local optimistic UI, so oldVal (captured before that
+      // mutation, a few lines up too) is the only variable still holding the original
+      // figure. resolved_by/resolved_by_name_snapshot both use `auth` (the actual
+      // authoriser - self or borrowed), never currentProfile - matches _correctedBy's
+      // convention elsewhere in this function/file: currentProfile can be a different,
+      // non-qualifying person when _borrowAuth was used, and stock_counts' own correction
+      // path (_stockCountToSharedRow's hasCorr branch) deliberately avoids stamping a UUID
+      // for that same reason.
+      sb.from('count_mismatches').upsert([{
+        branch:bc, date:myToday, size:sz, state:st, brand:br,
+        expected:num(m.expected), counted:num(oldVal),
+        resolved:true, resolved_by:(auth&&auth.id)||null,
+        resolved_by_name_snapshot:auth.name, resolved_at:new Date().toISOString(),
+        corrected_to:correct, resolution_reason:reason2.trim()
+      }],{onConflict:'branch,date,size,state,brand'}).then(function(res){
+        if(res.error){
+          console.error('count_mismatches resolve upsert failed:',res.error.message);
+          m.resolved=false;m.adjustedTo=undefined;m.adjustNote='';m.adjustedBy=undefined;m.adjustedAt=undefined;
+          saveWorkingStore();
+          toast('Counts corrected, but the shared mismatch record could not be marked resolved - please tell Freddie: '+res.error.message,true);
+          openHistory();
+        }
+      },function(e){
+        console.error('count_mismatches resolve upsert failed unexpectedly:',e&&e.message);
+        m.resolved=false;m.adjustedTo=undefined;m.adjustNote='';m.adjustedBy=undefined;m.adjustedAt=undefined;
+        saveWorkingStore();
+        toast('Counts corrected, but the shared mismatch record could not be marked resolved - please tell Freddie: '+(e&&e.message||'unknown error'),true);
+        openHistory();
+      });
     }
     saveWorkingStore();
     toast(itemLabel+' corrected to '+correct+' ✓');
