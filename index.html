@@ -4733,6 +4733,16 @@ function openCapAdjust(){
 // corrected value actually reaches the backend sheet, not just the local Adjustments note.
 function openCountAdjust(){
   if(loadSavedDay(today,cBranch)){toast('Day already closed for '+cBranch+' - use the correction tool from Count History instead',true);return;}
+  // Captured once, up front, before the modal (z-index 60, covering the branch-toggle
+  // header at z-index 10) ever opens - mirrors adjustMismatch()'s own `bc=m.branch`
+  // capture (~6363) and for the same reason: every branch-scoped read/write this
+  // function makes below should target the branch this correction session actually
+  // started against, never whatever the live `cBranch` global happens to hold by the
+  // time an async callback (onApply, afterClose) finally runs. Currently the modal's
+  // coverage makes cBranch unable to actually change while open, so this is defense-
+  // in-depth rather than a live bug fix - but it's cheap, and matches the established
+  // pattern instead of relying on that coverage as an unenforced invariant.
+  var _adjBranch=cBranch;
   // Refresh-on-open: pull today's committed lines for this branch from the shared
   // table first, merging anything found into local store.count, so the picker below
   // shows what's been committed from ANY device today, not just this one. If the
@@ -4744,7 +4754,7 @@ function openCountAdjust(){
   // query failures normally RESOLVE with res.error set (not a rejected promise), so
   // res.error must be checked explicitly - the .catch alone only ever caught a
   // network-level failure, never a query-level one, which is the more common case.
-  sb.from('stock_counts').select('*').eq('branch',cBranch).eq('date',today).then(function(res){
+  sb.from('stock_counts').select('*').eq('branch',_adjBranch).eq('date',today).then(function(res){
     if(res.error){
       console.error('stock_counts fetch failed:',res.error.message);
       toast('Could not check other devices’ counts (' +res.error.message+ ') - showing this device’s own data only.',true);
@@ -4755,27 +4765,28 @@ function openCountAdjust(){
     console.error('stock_counts fetch failed:',e&&e.message);
     toast('Could not check other devices’ counts (no connection?) - showing this device’s own data only.',true);
   }).then(function(){
-    var todaysStore={count:store.count.filter(function(r){return r.branch===cBranch && (r._date||today)===today;})};
-    if(!todaysStore.count.length){toast('Nothing committed yet today for '+cBranch,true);return;}
+    var todaysStore={count:store.count.filter(function(r){return r.branch===_adjBranch && (r._date||today)===today;})};
+    if(!todaysStore.count.length){toast('Nothing committed yet today for '+_adjBranch,true);return;}
     // Accumulates one overlay row per Opening correction applied while this tool stays open
     // (corrApplyCountGroup can apply several - one per changed brand/size - before the user
-    // closes the modal and afterClose below fires openHistory()). Same shape/purpose as
-    // adjustMismatch()'s _mismatchOverlayForRefresh (see its comment, ~6353): without this,
-    // _refreshMismatchPanel's _refreshCountMismatches(cBranch) call could still read the
-    // pre-correction value from stock_counts if _stockCountsUpsert's write (kicked off
-    // per-onApply, on its own separate chain) hasn't landed yet, and re-flag an already-fixed
-    // Opening mismatch as unresolved right in front of the user. Only Opening corrections are
-    // ever pushed onto it - _refreshCountMismatches's overlay merges straight into its Opening
-    // baseline, so a Closing qty pushed here would be silently misread as an Opening count.
+    // closes the modal and afterClose below fires _refreshMismatchPanel()). Same shape/
+    // purpose as adjustMismatch()'s _mismatchOverlayForRefresh (see its comment, ~6373):
+    // without this, _refreshMismatchPanel's _refreshCountMismatches(_adjBranch) call could
+    // still read the pre-correction value from stock_counts if _stockCountsUpsert's write
+    // (kicked off per-onApply, on its own separate chain) hasn't landed yet, and re-flag an
+    // already-fixed Opening mismatch as unresolved right in front of the user. Only Opening
+    // corrections are ever pushed onto it - _refreshCountMismatches's overlay merges straight
+    // into its Opening baseline, so a Closing qty pushed here would be silently misread as an
+    // Opening count.
     var _mismatchOverlayForRefresh=[];
     openCorrection({
-      title:'Adjust Stock Count ('+cCT+') — '+cBranch+' (today, before close)',
-      store:todaysStore, branch:cBranch, sections:[cCT],
+      title:'Adjust Stock Count ('+cCT+') — '+_adjBranch+' (today, before close)',
+      store:todaysStore, branch:_adjBranch, sections:[cCT],
       onApply:function(sel,oldVal,newVal,reason,auth){
-        syncPush('Adjustments',[{date:today,branch:cBranch,Kind:'SameDayCountAdjustment',Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:auth.name+' ('+auth.level+')'}]);
+        syncPush('Adjustments',[{date:today,branch:_adjBranch,Kind:'SameDayCountAdjustment',Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:auth.name+' ('+auth.level+')'}]);
         saveWorkingStore();
-        auditLog('Stock Count adjusted (same day)',cBranch+' '+sel.tag+': '+oldVal+' → '+newVal+' by '+auth.name+' - '+reason,{was:oldVal},{now:newVal});
-        var rowsForBn=syncRowsCount(store.count.filter(function(r){return r.branch===cBranch;}),cBranch);
+        auditLog('Stock Count adjusted (same day)',_adjBranch+' '+sel.tag+': '+oldVal+' → '+newVal+' by '+auth.name+' - '+reason,{was:oldVal},{now:newVal});
+        var rowsForBn=syncRowsCount(store.count.filter(function(r){return r.branch===_adjBranch;}),_adjBranch);
         syncPush('Counts', rowsForBn.map(function(x){x._replaceKey=(x.date+'|'+x.branch);return x;}));
         // Push just the corrected line, not the whole day - unlike the Sheets replace-set sync
         // above (which structurally needs the full day to reflect deletions/absence), each
@@ -4784,12 +4795,24 @@ function openCountAdjust(){
         // untouched line as if this correction touched it too.
         try{_stockCountsUpsert([sel.row]);}catch(e){console.error('_stockCountsUpsert threw synchronously:',e.message);}
         if(cCT==='Opening'&&sel.row){
-          _mismatchOverlayForRefresh.push({branch:cBranch,size:sel.row.size,state:sel.row.state,brand:sel.row.brand,qty:sel.row.qty});
+          _mismatchOverlayForRefresh.push({branch:_adjBranch,size:sel.row.size,state:sel.row.state,brand:sel.row.brand,qty:sel.row.qty});
         }
       },
       afterClose:function(){
         cRenderGrid();
-        if(document.querySelector('.view.active')&&document.querySelector('.view.active').id==='historyView')openHistory(_mismatchOverlayForRefresh);
+        // Unconditional, unlike the round-5 fix this replaces (which only refreshed the
+        // shared table/badge when History happened to be the active view) - this tool's
+        // only entry point is the Stock Count capture screen (see the header comment
+        // above), so that guard meant the ordinary flow (Manager taps Adjust here, fixes
+        // a line, closes the modal) never refreshed the shared count_mismatches table or
+        // the pending-mismatch badge at all. _refreshMismatchPanel(_adjBranch,...) is safe
+        // to call from any screen: it always runs _refreshCountMismatches (the shared-table
+        // write/self-heal) and _updateMismatchPendingBadge() regardless of the active view,
+        // and only re-renders the on-screen History panel HTML if History is both open and
+        // showing this same branch (its own internal guard, ~5387-5388) - matching
+        // _cCommitReal()'s equivalent unconditional _refreshCountMismatches call (~3472)
+        // for a normal commit.
+        _refreshMismatchPanel(_adjBranch,_mismatchOverlayForRefresh);
       }
     });
   });
