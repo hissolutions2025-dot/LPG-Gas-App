@@ -4757,6 +4757,17 @@ function openCountAdjust(){
   }).then(function(){
     var todaysStore={count:store.count.filter(function(r){return r.branch===cBranch && (r._date||today)===today;})};
     if(!todaysStore.count.length){toast('Nothing committed yet today for '+cBranch,true);return;}
+    // Accumulates one overlay row per Opening correction applied while this tool stays open
+    // (corrApplyCountGroup can apply several - one per changed brand/size - before the user
+    // closes the modal and afterClose below fires openHistory()). Same shape/purpose as
+    // adjustMismatch()'s _mismatchOverlayForRefresh (see its comment, ~6353): without this,
+    // _refreshMismatchPanel's _refreshCountMismatches(cBranch) call could still read the
+    // pre-correction value from stock_counts if _stockCountsUpsert's write (kicked off
+    // per-onApply, on its own separate chain) hasn't landed yet, and re-flag an already-fixed
+    // Opening mismatch as unresolved right in front of the user. Only Opening corrections are
+    // ever pushed onto it - _refreshCountMismatches's overlay merges straight into its Opening
+    // baseline, so a Closing qty pushed here would be silently misread as an Opening count.
+    var _mismatchOverlayForRefresh=[];
     openCorrection({
       title:'Adjust Stock Count ('+cCT+') — '+cBranch+' (today, before close)',
       store:todaysStore, branch:cBranch, sections:[cCT],
@@ -4772,10 +4783,13 @@ function openCountAdjust(){
         // resending. Sending the whole day would also re-stamp updated_by/updated_at on every
         // untouched line as if this correction touched it too.
         try{_stockCountsUpsert([sel.row]);}catch(e){console.error('_stockCountsUpsert threw synchronously:',e.message);}
+        if(cCT==='Opening'&&sel.row){
+          _mismatchOverlayForRefresh.push({branch:cBranch,size:sel.row.size,state:sel.row.state,brand:sel.row.brand,qty:sel.row.qty});
+        }
       },
       afterClose:function(){
         cRenderGrid();
-        if(document.querySelector('.view.active')&&document.querySelector('.view.active').id==='historyView')openHistory();
+        if(document.querySelector('.view.active')&&document.querySelector('.view.active').id==='historyView')openHistory(_mismatchOverlayForRefresh);
       }
     });
   });
