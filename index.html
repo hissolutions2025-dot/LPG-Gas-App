@@ -2533,6 +2533,10 @@ function doLogin(){
   }).catch(function(){loginBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}toast('Network error — check your connection',true);});
 }
 function _finishLogin(u,b){
+  // Bumped here too (not just in logout()) - covers a session-timeout-then-relogin that
+  // never went through an explicit logout() call, so a stale in-flight refresh from the
+  // prior session is still discarded correctly.
+  _sessionGen++;
   // Checked here (not just filtered out of the login_names picker) because this function is
   // also the shared path for _bootApp()'s session auto-resume on reload - without this check,
   // someone already signed in on a device would keep their session even after being locked
@@ -2579,7 +2583,7 @@ function _finishLogin(u,b){
 function logout(){
   if(operator)auditLog('Logout','Signed out');
   sb.auth.signOut();
-  operator=null;branch=null;role=null;currentProfile=null;store._openMismatch=[];
+  operator=null;branch=null;role=null;currentProfile=null;store._openMismatch=[];_sessionGen++;
   // idle lock must not be able to outlive its own session - clear it unconditionally on
   // every logout, whether that's a normal sign-out or the lock screen's own "Not you? Sign
   // out instead" escape hatch (which just calls this function directly).
@@ -3686,7 +3690,12 @@ function _dayBefore(dateStr){
 // same branch always resolve in the order they were issued, never letting a
 // slower-but-earlier call's stale result clobber a faster-but-later one's fresher result.
 var _refreshCountMismatchesChains={};
+// Bumped on every session transition (logout() and the top of _finishLogin()) so an
+// in-flight refresh from a superseded session can detect it's stale and discard its
+// result instead of writing another user/branch's data into store._openMismatch.
+var _sessionGen=0;
 function _refreshCountMismatches(br, localOverlayRows){
+  var myGen=_sessionGen;
   var prior=_refreshCountMismatchesChains[br]||Promise.resolve();
   var chained=prior.then(function(){
     var yDate;
@@ -3796,6 +3805,7 @@ function _refreshCountMismatches(br, localOverlayRows){
       return sb.from('count_mismatches').select('*').eq('branch',br).eq('date',today);
     }).then(function(res){
       if(res.error)throw new Error('count_mismatches fetch failed: '+res.error.message);
+      if(_sessionGen!==myGen)return; // a different session has started since this call began - discard, matching the offline-safe "never write stale data" contract
       var rows=res.data||[];
       store._openMismatch=(store._openMismatch||[]).filter(function(m){return m.branch!==br||m.kind==='manifold';});
       rows.forEach(function(d){store._openMismatch.push(_countMismatchFromShared(d));});
@@ -5247,7 +5257,7 @@ function histSetBranch(x){
 // whatever's already in store._openMismatch, once again after the async shared refresh
 // resolves).
 function _mismatchPanelHtml(branch){
-  var mmList=(store._openMismatch||[]).filter(function(m){return m.branch===branch;});
+  var mmList=(store._openMismatch||[]).filter(function(m){return !m.branch||m.branch===branch;});
   if(!mmList.length)return '';
   var isMgr=(role==='Manager'||role==='Owner');
   var html='<div class="histSection" style="border:2px solid #C0392B"><h4 style="color:#C0392B">⚠ Opening count incorrect</h4>';
