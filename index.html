@@ -3293,16 +3293,13 @@ function cSaveDetail(){
         if(cTries[key]>=C_MAX_TRIES){cLocked[key]=true;l._locked=true;anyLocked=true;}
       }
     });
-    if(anyLocked){
-      toast('This count is incorrect. Line locked — a Manager or Owner must correct it in Count History.',true);
+    // Both the locked and still-retryable wrong cases now go straight back to the grid,
+    // with no toast - the grid cell itself (cIsFlagged) already shows "incorrect"
+    // persistently, and this detail view's own inline "This count is incorrect" text
+    // (cRenderDetail) already covers it while reopening the line. A toast here was
+    // redundant with both, and on some screens visibly got cut off by content below it.
+    if(anyLocked||anyWrong){
       cRenderDetail();cBackToGrid();return;
-    }
-    if(anyWrong){
-      // blind: no number, no direction — only tries remaining
-      var minLeft=C_MAX_TRIES;
-      arr.forEach(function(l){if(l._mismatch){var k=cMisKey(cBranch,st,cDet.size,l.brand);minLeft=Math.min(minLeft,C_MAX_TRIES-(cTries[k]||0));}});
-      toast('This count is incorrect. '+minLeft+' '+(minLeft===1?'try':'tries')+' left before it locks.',true);
-      cRenderDetail();return; // stay on the line so he can re-count
     }
   }
   toast(cDet.size+' '+cDet.side+' saved');cSaveDraft();cBackToGrid();
