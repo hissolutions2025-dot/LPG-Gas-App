@@ -136,6 +136,7 @@
   .cgToggle{display:flex;border:1.5px solid var(--navy);border-radius:10px;overflow:hidden;flex:1;}
   .cgTg{flex:1;padding:9px;border:none;background:#fff;color:var(--navy);font-size:13px;font-weight:800;cursor:pointer;}
   .cgTg.on{background:var(--navy);color:#fff;}
+  .cgTg.bad{background:#FDF3F2;color:#C0392B;}
   .cGrid{border:1.5px solid var(--navy);border-radius:12px;overflow:hidden;}
   .cgHead{display:flex;background:var(--navy);color:#fff;font-weight:800;font-size:13px;}
   .cgHead .gc{flex:1;text-align:center;padding:11px 6px;} .cgHead .gc.sz{flex:none;width:74px;text-align:left;padding-left:14px;background:var(--navy-d);}
@@ -345,7 +346,8 @@
     <div class="cgRow"><label>Count</label><div class="cgToggle">
       <button class="cgTg on" id="cct-Opening" onclick="cSetCT('Opening')">Opening</button>
       <button class="cgTg" id="cct-Closing" onclick="cSetCT('Closing')">Closing</button></div></div>
-    <button type="button" id="mmTabBtn" style="display:none;width:100%;border:1.5px solid #C0392B;border-radius:11px;background:#FDF3F2;color:#C0392B;font-size:13px;font-weight:800;padding:10px 12px;margin-top:8px;cursor:pointer;text-align:left" onclick="openMismatches()">⚠ Mismatches <span id="mmTabCount" style="background:#C0392B;color:#fff;border-radius:10px;padding:1px 8px;font-size:11px;margin-left:4px"></span></button>
+    <div class="cgRow" id="mmTabRow" style="display:none"><label>Status</label><div class="cgToggle">
+      <button type="button" class="cgTg" id="mmTabBtn" onclick="openMismatches()">Mismatches</button></div></div>
   </div>
   <div class="wrap">
     <div class="ctxbar" id="cCtx" style="margin-bottom:10px;"></div>
@@ -3668,15 +3670,19 @@ function _updateCountPendingBadge(){
 // store._openMismatch directly rather than querying Supabase itself - whichever of
 // _refreshCountMismatches's call sites ran most recently already populated it.
 // The Home badge and Count History's own copy of this are retired - the Mismatches tab
-// on the Stock Count grid (mmTabBtn/mmTabCount) is now the one place this shows, scoped to
+// on the Stock Count grid (mmTabRow/mmTabBtn) is now the one place this shows, scoped to
 // cBranch (whichever branch is currently open on that screen), same Manager/Owner-only gate.
+// A PERMANENT row, same as Branch/Count next to it - visible whenever the role qualifies,
+// same as those always are, not just when something's wrong. Only the color/label changes:
+// neutral "Mismatches" when clear, red "N mismatch(es)" when something's unresolved.
 function _updateMismatchPendingBadge(){
   var isMgr=(role==='Manager'||role==='Owner');
-  var btn=document.getElementById('mmTabBtn'), cnt=document.getElementById('mmTabCount');
-  if(!btn||!cnt)return;
+  var row=document.getElementById('mmTabRow'), btn=document.getElementById('mmTabBtn');
+  if(!row||!btn)return;
+  row.style.display=isMgr?'flex':'none';
   var n=isMgr?(store._openMismatch||[]).filter(function(m){return !m.resolved&&(!m.branch||m.branch===cBranch);}).length:0;
-  btn.style.display=n?'block':'none';
-  cnt.textContent=n;
+  btn.classList.toggle('bad',n>0);
+  btn.textContent=n?('⚠ '+n+' mismatch'+(n===1?'':'es')):'Mismatches';
 }
 // Upserts committed/corrected local rows into the shared stock_counts table.
 // Called from both _cCommitReal() (a normal commit) and openCountAdjust()'s onApply
