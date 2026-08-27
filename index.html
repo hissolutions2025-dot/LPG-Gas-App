@@ -3673,7 +3673,11 @@ function _updateCountPendingBadge(){
 // same as those always are, not just when something's wrong. Only the color/label changes:
 // neutral "Mismatches" when clear, red "N mismatch(es)" when something's unresolved.
 function _updateMismatchPendingBadge(){
-  var isMgr=(role==='Manager'||role==='Owner');
+  // Opening-mismatch detection only ever concerns Opening counts (vs the previous day's
+  // Closing) - same reasoning as cCellHtml's own cCT==='Opening' gate on the flagged-cell
+  // styling. The row itself must not show at all while on the Closing tab, not just leave
+  // the individual cells unflagged there.
+  var isMgr=(role==='Manager'||role==='Owner')&&cCT==='Opening';
   var row=document.getElementById('mmTabRow'), btn=document.getElementById('mmTabBtn');
   if(!row||!btn)return;
   row.style.display=isMgr?'flex':'none';
@@ -5224,9 +5228,20 @@ function askMismatchResolution(title,msg,defaultQty){
   });
 }
 function _mmResolveReason(){return document.getElementById('mmResolveReason').value;}
+// A validation toast fired while a field inside this modal is still focused rendered
+// invisible/clipped on a phone - the on-screen keyboard sits on top of everything in the
+// viewport (no CSS z-index reaches above it), covering the bottom-anchored toast entirely,
+// and its own 1800ms fade timer still runs the whole time it's hidden, so it looked "stuck"
+// or "not disappearing" once the keyboard finally closed and the (by-then-faded-or-fading)
+// toast became visible. Blurring the active field first dismisses the keyboard so the toast
+// is actually visible for its full, normal lifetime.
+function _mmResolveToast(msg){
+  if(document.activeElement&&document.activeElement.blur)document.activeElement.blur();
+  toast(msg,true);
+}
 function mmResolveConfirm(){
   var reason=_mmResolveReason();
-  if(!reason.trim()){toast('A reason is required',true);return;}
+  if(!reason.trim()){_mmResolveToast('A reason is required');return;}
   var qtyInp=document.getElementById('mmResolveQty');
   var qty=qtyInp.value;
   // "Save correction" means the count actually changed - a left-unchanged quantity here is
@@ -5235,7 +5250,7 @@ function mmResolveConfirm(){
   // attribute Accept as correct itself reads) rather than saving a no-op "correction" whose
   // From/To in the audit trail would be identical.
   if(num(qty)===num(qtyInp.getAttribute('data-default'))){
-    toast('Enter a different quantity to save a correction, or use Accept as correct if the count is right',true);
+    _mmResolveToast('Enter a different quantity to save a correction, or use Accept as correct if the count is right');
     return;
   }
   document.getElementById('mmResolveModal').classList.remove('show');
@@ -5243,7 +5258,7 @@ function mmResolveConfirm(){
 }
 function mmResolveAccept(){
   var reason=_mmResolveReason();
-  if(!reason.trim()){toast('A reason is required',true);return;}
+  if(!reason.trim()){_mmResolveToast('A reason is required');return;}
   var defaultQty=document.getElementById('mmResolveQty').getAttribute('data-default');
   document.getElementById('mmResolveModal').classList.remove('show');
   if(_mmResolveResolve){_mmResolveResolve({action:'accept',qty:defaultQty,reason:reason});_mmResolveResolve=null;}
