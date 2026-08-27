@@ -55,6 +55,12 @@
   .t1 .ic{background:var(--steel);} .t2 .ic{background:#6B4FA3;} .t3 .ic{background:var(--ok);}
   .t4 .ic{background:var(--amber);color:var(--navy-d);} .t5 .ic{background:#B5533B;} .t6 .ic{background:#3C7A89;}
   .badge{position:absolute;top:10px;right:10px;background:var(--bad);color:#fff;font-size:11px;font-weight:800;min-width:20px;height:20px;border-radius:10px;display:flex;align-items:center;justify-content:center;padding:0 5px;}
+  /* Home tile customization: long-press to reorder/resize (device-local, see applyHomeLayout) */
+  .grid.editing .tile{border:2px dashed var(--steel);}
+  .tile.large{grid-column:span 2;}
+  .tile.dragging{transform:scale(1.04);box-shadow:0 10px 26px rgba(31,58,95,.28);z-index:5;opacity:.9;}
+  .tileResizeBtn{position:absolute;top:8px;left:8px;width:26px;height:26px;border-radius:8px;border:1.5px solid var(--steel);background:#fff;color:var(--steel);font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center;padding:0;line-height:1;}
+  #homeEditHint{color:var(--steel);font-weight:700;}
   .view{display:none;} .view.active{display:block;}
   /* HARD ENFORCEMENT: only the view matching body[data-view] is ever visible.
      Prevents any view (including the login screen) from stacking under another. */
@@ -268,17 +274,22 @@
     <div id="closeDayPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div id="countPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div class="greet">Every entry uses today's date, your name and branch.</div>
-    <div class="grid">
-      <button class="tile t1" onclick="openCount()"><div class="ic">&#9638;</div><h3>Stock Count</h3><p>Opening / closing, full &amp; empty</p><span class="badge" id="b-count" style="display:none">0</span></button>
-      <button class="tile t2" onclick="openCap('manifold')"><div class="ic">&#9878;</div><h3>Manifold</h3><p>Weigh DV donor cylinders</p><span class="badge" id="b-manifold" style="display:none">0</span></button>
-      <button class="tile t3" onclick="openCap('refill')"><div class="ic">&#9981;</div><h3>Refill</h3><p>Cylinders filled for stock</p><span class="badge" id="b-refill" style="display:none">0</span></button>
-      <button class="tile t4" onclick="openCap('private')"><div class="ic">&#9684;</div><h3>Private Refill</h3><p>Customer's own cylinder</p><span class="badge" id="b-private" style="display:none">0</span></button>
-      <button class="tile t5" onclick="openReceived()"><div class="ic">&#8681;</div><h3>Stock Received</h3><p>Deliveries &amp; returns</p><span class="badge" id="b-received" style="display:none">0</span></button>
-      <button class="tile t6" onclick="openHistory()"><div class="ic">&#9776;</div><h3>Count History</h3><p>Review today's captures</p></button>
-      <button class="tile t4" id="tileResidual" onclick="openResidual()" style="display:none"><div class="ic">&#127766;</div><h3>Residual Gas</h3><p>Gas left in received cylinders</p></button>
-      <button class="tile t1" id="tileUsers" onclick="openUsers()" style="display:none"><div class="ic">&#128100;</div><h3>Manage Users</h3><p>Owner: users, levels &amp; branches</p></button>
-      <button class="tile t5" id="tileAudit" onclick="openAudit()" style="display:none"><div class="ic">&#128220;</div><h3>Audit Log</h3><p>Owner only — who did what, when</p></button>
-      <button class="tile t2" id="tileAdmin" onclick="openAdmin()" style="display:none"><div class="ic">&#9881;</div><h3>Admin</h3><p>Seal register &amp; suppliers</p></button>
+    <div class="greet" id="homeEditHint" style="display:none">Drag to reorder, tap ⤢ to resize.</div>
+    <div class="grid" id="homeGrid">
+      <button class="tile t1" data-key="count" onclick="openCount()"><div class="ic">&#9638;</div><h3>Stock Count</h3><p>Opening / closing, full &amp; empty</p><span class="badge" id="b-count" style="display:none">0</span></button>
+      <button class="tile t2" data-key="manifold" onclick="openCap('manifold')"><div class="ic">&#9878;</div><h3>Manifold</h3><p>Weigh DV donor cylinders</p><span class="badge" id="b-manifold" style="display:none">0</span></button>
+      <button class="tile t3" data-key="refill" onclick="openCap('refill')"><div class="ic">&#9981;</div><h3>Refill</h3><p>Cylinders filled for stock</p><span class="badge" id="b-refill" style="display:none">0</span></button>
+      <button class="tile t4" data-key="private" onclick="openCap('private')"><div class="ic">&#9684;</div><h3>Private Refill</h3><p>Customer's own cylinder</p><span class="badge" id="b-private" style="display:none">0</span></button>
+      <button class="tile t5" data-key="received" onclick="openReceived()"><div class="ic">&#8681;</div><h3>Stock Received</h3><p>Deliveries &amp; returns</p><span class="badge" id="b-received" style="display:none">0</span></button>
+      <button class="tile t6" data-key="history" onclick="openHistory()"><div class="ic">&#9776;</div><h3>Count History</h3><p>Review today's captures</p></button>
+      <button class="tile t4" data-key="residual" id="tileResidual" onclick="openResidual()" style="display:none"><div class="ic">&#127766;</div><h3>Residual Gas</h3><p>Gas left in received cylinders</p></button>
+      <button class="tile t1" data-key="users" id="tileUsers" onclick="openUsers()" style="display:none"><div class="ic">&#128100;</div><h3>Manage Users</h3><p>Owner: users, levels &amp; branches</p></button>
+      <button class="tile t5" data-key="audit" id="tileAudit" onclick="openAudit()" style="display:none"><div class="ic">&#128220;</div><h3>Audit Log</h3><p>Owner only — who did what, when</p></button>
+      <button class="tile t2" data-key="admin" id="tileAdmin" onclick="openAdmin()" style="display:none"><div class="ic">&#9881;</div><h3>Admin</h3><p>Seal register &amp; suppliers</p></button>
+    </div>
+    <div class="cFooter" id="homeEditBar" style="display:none">
+      <button type="button" class="cbGhost" onclick="resetHomeLayout()">Reset layout</button>
+      <button type="button" class="cbPrimary" onclick="_endHomeEdit(true)">Done</button>
     </div>
   </div>
 </div>
@@ -2608,7 +2619,7 @@ function _finishLogin(u,b){
   // "Where was I" - resume the same section (with its data) this operator was on when this
   // device last left off, instead of always landing on the home screen. Falls back to home
   // if there's nothing to resume (new day, different operator, or they were on home anyway).
-  if(!_restoreCurrentSection())show('landing');
+  if(!_restoreCurrentSection()){show('landing');applyHomeLayout();}
   updateBadges();
   _armIdleTimer();
 }
@@ -2730,16 +2741,146 @@ function syncHeader(id){
   var who=document.getElementById('who');
   if(who)who.style.display=(id==='landing'&&operator)?'block':'none';
 }
-function goHome(){show('landing');renderLandingHeader();document.getElementById('backBtn').style.display='none';greyTiles();_saveCurrentSection('home');}
+function goHome(){show('landing');renderLandingHeader();document.getElementById('backBtn').style.display='none';greyTiles();applyHomeLayout();_saveCurrentSection('home');}
 function greyTiles(){
-  var map={count:'t1',manifold:'t2',refill:'t3',private:'t4',received:'t5'};
+  // Keyed on data-key directly now, not the tile's color class (t1..t6) - several tiles
+  // reuse the same color class for visual variety (e.g. Stock Count and Manage Users are
+  // both t1), so document.querySelector('.tile.t1') could silently match the wrong one
+  // depending on DOM order. data-key is unique per tile (also what applyHomeLayout below
+  // and the customize feature rely on), so this can't cross-wire.
+  var sections=['count','manifold','refill','private','received'];
   var br=branch||'Helderberg';
-  Object.keys(map).forEach(function(sec){
-    var tile=document.querySelector('.tile.'+map[sec]);if(!tile)return;
+  sections.forEach(function(sec){
+    var tile=document.querySelector('.tile[data-key="'+sec+'"]');if(!tile)return;
     if(!canUseSection(br,sec)){
       tile.style.opacity='0.4';tile.style.filter='grayscale(1)';tile.setAttribute('data-deact','1');
     } else {
       tile.style.opacity='';tile.style.filter='';tile.removeAttribute('data-deact');
+    }
+  });
+}
+// ---- Home tile customization: long-press to reorder/resize (device-local only, no sync -
+// this is pure presentation, every tile still calls exactly the function it always did
+// regardless of position/size, so it can never affect data capture or Sheets/Supabase
+// reporting). Order/size are keyed by each tile's stable data-key, never DOM position or
+// visual class, so a future restyle of the tiles themselves doesn't invalidate a saved
+// layout, and a tile that's currently role-hidden (or didn't exist when the layout was
+// saved) is simply skipped rather than leaving a gap. ----
+var HOME_LAYOUT_KEY='gs_home_layout';
+var _homeEditing=false, _homeLongPressTimer=null, _homeDragKey=null, _homeDragOrder=[], _homeDragMoved=false, _homeDragStartX=0, _homeDragStartY=0, _homeSuppressNextClick=false;
+function _loadHomeLayout(){
+  try{var r=localStorage.getItem(HOME_LAYOUT_KEY);var d=r?JSON.parse(r):null;return (d&&d.order)?d:{order:[],sizes:{}};}
+  catch(e){return {order:[],sizes:{}};}
+}
+function _saveHomeLayoutData(layout){try{localStorage.setItem(HOME_LAYOUT_KEY,JSON.stringify(layout));}catch(e){}}
+function applyHomeLayout(){
+  var layout=_loadHomeLayout();
+  var order=layout.order||[], sizes=layout.sizes||{};
+  document.querySelectorAll('#homeGrid .tile[data-key]').forEach(function(t){
+    var key=t.getAttribute('data-key');
+    var idx=order.indexOf(key);
+    t.style.order=(idx===-1)?9999:idx; // not in the saved layout (new/never-arranged tile) sorts after everything that is
+    t.classList.toggle('large',sizes[key]==='large');
+  });
+  _ensureHomeCustomizeWired();
+}
+function resetHomeLayout(){
+  _saveHomeLayoutData({order:[],sizes:{}});
+  applyHomeLayout();
+  toast('Layout reset to default');
+}
+function _visualHomeOrder(){
+  var tiles=Array.prototype.slice.call(document.querySelectorAll('#homeGrid .tile[data-key]'));
+  tiles.sort(function(a,b){return (parseInt(a.style.order,10)||0)-(parseInt(b.style.order,10)||0);});
+  return tiles.map(function(t){return t.getAttribute('data-key');});
+}
+function _startHomeEdit(){
+  if(_homeEditing)return;
+  _homeEditing=true;
+  document.getElementById('homeGrid').classList.add('editing');
+  document.getElementById('homeEditHint').style.display='block';
+  document.getElementById('homeEditBar').style.display='flex';
+  document.querySelectorAll('#homeGrid .tile[data-key]').forEach(function(t){
+    var b=document.createElement('button');
+    b.type='button';b.className='tileResizeBtn';
+    b.textContent=t.classList.contains('large')?'⤡':'⤢';
+    b.onclick=function(e){e.stopPropagation();t.classList.toggle('large');b.textContent=t.classList.contains('large')?'⤡':'⤢';};
+    t.appendChild(b);
+  });
+}
+function _endHomeEdit(save){
+  if(!_homeEditing)return;
+  _homeEditing=false;
+  document.getElementById('homeGrid').classList.remove('editing');
+  document.getElementById('homeEditHint').style.display='none';
+  document.getElementById('homeEditBar').style.display='none';
+  document.querySelectorAll('.tileResizeBtn').forEach(function(b){b.remove();});
+  if(save){
+    var order=_visualHomeOrder();
+    var sizes={};
+    document.querySelectorAll('#homeGrid .tile[data-key]').forEach(function(t){
+      if(t.classList.contains('large'))sizes[t.getAttribute('data-key')]='large';
+    });
+    _saveHomeLayoutData({order:order,sizes:sizes});
+  } else {
+    applyHomeLayout(); // discard anything moved mid-edit, restore last saved layout
+  }
+}
+function _ensureHomeCustomizeWired(){
+  var grid=document.getElementById('homeGrid');
+  if(!grid||grid._customizeWired)return;
+  grid._customizeWired=true;
+  // Capturing-phase click swallow: a tile's own onclick (openCount() etc, still exactly as
+  // it always was - nothing about the 10 tiles' real actions changed) must never fire while
+  // customizing, or right after a drag ends (the touchend that finishes a drag still emits
+  // a synthetic click on most browsers).
+  grid.addEventListener('click',function(e){
+    // The resize button lives inside a tile inside this grid, so it's on the same capture
+    // path as the tile's own navigation click - must be let through, or its own onclick
+    // (toggling .large) never fires, since capture-phase stopPropagation() here runs before
+    // the target's own handler ever gets a chance to.
+    if(e.target.closest('.tileResizeBtn'))return;
+    if(_homeEditing||_homeSuppressNextClick){e.stopPropagation();e.preventDefault();_homeSuppressNextClick=false;}
+  },true);
+  grid.addEventListener('touchstart',function(e){
+    var t=e.target.closest('.tile[data-key]');if(!t)return;
+    if(_homeEditing){
+      _homeDragKey=t.getAttribute('data-key');
+      var touch=e.touches[0];_homeDragStartX=touch.clientX;_homeDragStartY=touch.clientY;_homeDragMoved=false;
+      _homeDragOrder=_visualHomeOrder();
+      t.classList.add('dragging');
+      return;
+    }
+    _homeLongPressTimer=setTimeout(function(){_startHomeEdit();},550);
+  },{passive:true});
+  grid.addEventListener('touchmove',function(e){
+    if(_homeDragKey){
+      e.preventDefault();
+      var touch=e.touches[0];
+      if(Math.abs(touch.clientX-_homeDragStartX)>6||Math.abs(touch.clientY-_homeDragStartY)>6)_homeDragMoved=true;
+      var under=document.elementFromPoint(touch.clientX,touch.clientY);
+      var targetTile=under&&under.closest&&under.closest('.tile[data-key]');
+      if(targetTile){
+        var targetKey=targetTile.getAttribute('data-key');
+        if(targetKey!==_homeDragKey){
+          var fromIdx=_homeDragOrder.indexOf(_homeDragKey), toIdx=_homeDragOrder.indexOf(targetKey);
+          if(fromIdx!==-1&&toIdx!==-1){
+            _homeDragOrder.splice(fromIdx,1);_homeDragOrder.splice(toIdx,0,_homeDragKey);
+            _homeDragOrder.forEach(function(k,i){var el=document.querySelector('#homeGrid .tile[data-key="'+k+'"]');if(el)el.style.order=i;});
+          }
+        }
+      }
+      return;
+    }
+    if(_homeLongPressTimer){clearTimeout(_homeLongPressTimer);_homeLongPressTimer=null;}
+  },{passive:false});
+  grid.addEventListener('touchend',function(){
+    if(_homeLongPressTimer){clearTimeout(_homeLongPressTimer);_homeLongPressTimer=null;}
+    if(_homeDragKey){
+      var el=document.querySelector('#homeGrid .tile[data-key="'+_homeDragKey+'"]');
+      if(el)el.classList.remove('dragging');
+      if(_homeDragMoved)_homeSuppressNextClick=true;
+      _homeDragKey=null;
     }
   });
 }
