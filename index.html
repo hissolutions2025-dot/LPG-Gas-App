@@ -3107,7 +3107,13 @@ function cCellHtml(sz,side){
   // moment it was saved. cIsFlagged reads the durable, shared truth (count_mismatches, via
   // store._openMismatch) instead, so the cell keeps showing flagged until a Manager/Owner
   // actually resolves it - not just until the draft happens to get cleared.
-  var bad=arr.some(function(l){var k=cMisKey(cBranch,st,sz,l.brand);return l._mismatch||l._locked||cLocked[k];})||cIsFlagged(cBranch,st,sz);
+  // Opening-mismatch detection only ever compares Opening counts against the previous day's
+  // Closing - a Closing cell was never flagged in the first place, so cIsFlagged (which
+  // doesn't itself know which tab is active) must be gated on cCT==='Opening' here, same as
+  // cSaveDetail's own blind check already is. Without this, cIsFlagged's branch/size/state
+  // match alone finds the same still-open Opening mismatch regardless of which count-type
+  // tab happens to be selected, and wrongly flags the Closing cell too.
+  var bad=(cCT==='Opening')&&(arr.some(function(l){var k=cMisKey(cBranch,st,sz,l.brand);return l._mismatch||l._locked||cLocked[k];})||cIsFlagged(cBranch,st,sz));
   var badStyle=bad?' style="border:2px solid #C0392B;background:#FDF3F2"':'';
   // Time-bracket border frame: red outline when this whole count is outside its expected
   // time-of-day window (see Count Times) - a separate visual channel from the fill/text
