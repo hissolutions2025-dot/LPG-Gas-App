@@ -5224,7 +5224,17 @@ function _mmResolveReason(){return document.getElementById('mmResolveReason').va
 function mmResolveConfirm(){
   var reason=_mmResolveReason();
   if(!reason.trim()){toast('A reason is required',true);return;}
-  var qty=document.getElementById('mmResolveQty').value;
+  var qtyInp=document.getElementById('mmResolveQty');
+  var qty=qtyInp.value;
+  // "Save correction" means the count actually changed - a left-unchanged quantity here is
+  // "the count was already right," which is what Accept as correct is for. Compare against
+  // the originally counted value (captured on data-default when the modal opened, same
+  // attribute Accept as correct itself reads) rather than saving a no-op "correction" whose
+  // From/To in the audit trail would be identical.
+  if(num(qty)===num(qtyInp.getAttribute('data-default'))){
+    toast('Enter a different quantity to save a correction, or use Accept as correct if the count is right',true);
+    return;
+  }
   document.getElementById('mmResolveModal').classList.remove('show');
   if(_mmResolveResolve){_mmResolveResolve({action:'correct',qty:qty,reason:reason});_mmResolveResolve=null;}
 }
