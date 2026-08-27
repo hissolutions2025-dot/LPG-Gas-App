@@ -853,6 +853,15 @@
   <div id="corrBody"></div>
 </div></div>
 
+<div id="textModal" class="modal"><div class="modalCard">
+  <div class="modalHead"><span id="textModalTitle">—</span><button onclick="textModalCancel()" class="mClose">&#10005;</button></div>
+  <div style="padding:4px 0 10px"><div id="textModalMsg" style="font-size:13px;color:var(--navy);white-space:pre-line;margin-bottom:10px"></div>
+    <input class="mField" id="textModalInput" onkeydown="if(event.key==='Enter')textModalOk()">
+  </div>
+  <button class="saveBtn" onclick="textModalOk()">Confirm</button>
+  <button class="sigClear" style="width:100%;margin-top:8px" onclick="textModalCancel()">Cancel</button>
+</div></div>
+
 <div id="toast"></div>
 
 <!-- IDLE LOCK OVERLAY - covers the entire app after inactivity to prevent "pocket edits".
@@ -5146,6 +5155,26 @@ function askPassword(title,msg){
 }
 function pwOk(){var v=document.getElementById('pwInput').value;document.getElementById('pwModal').classList.remove('show');if(_pwResolve){_pwResolve(v);_pwResolve=null;}}
 function pwCancel(){document.getElementById('pwModal').classList.remove('show');if(_pwResolve){_pwResolve(null);_pwResolve=null;}}
+// ---- App-styled text/number prompt (replaces native prompt(), which shows the raw
+// page origin - e.g. "hissolutions2025-dot.github.io says" - and doesn't match the rest
+// of the app's look). Same resolve/cancel contract as prompt(): resolves the entered
+// string on Confirm, or null on Cancel - callers that already handle prompt()'s null-
+// means-cancelled convention need no other changes beyond awaiting this instead. ----
+var _textModalResolve=null;
+function askText(title,msg,defaultValue,inputType){
+  return new Promise(function(resolve){
+    _textModalResolve=resolve;
+    document.getElementById('textModalTitle').textContent=title||'';
+    document.getElementById('textModalMsg').textContent=msg||'';
+    var inp=document.getElementById('textModalInput');
+    inp.type=inputType||'text';
+    inp.value=(defaultValue!==undefined&&defaultValue!==null)?defaultValue:'';
+    document.getElementById('textModal').classList.add('show');
+    setTimeout(function(){inp.focus();inp.select();},50);
+  });
+}
+function textModalOk(){var v=document.getElementById('textModalInput').value;document.getElementById('textModal').classList.remove('show');if(_textModalResolve){_textModalResolve(v);_textModalResolve=null;}}
+function textModalCancel(){document.getElementById('textModal').classList.remove('show');if(_textModalResolve){_textModalResolve(null);_textModalResolve=null;}}
 // #9: pressing Done should not lose an in-progress entry. If key fields are filled, add it first.
 function doneModal(){
   try{
@@ -6461,129 +6490,151 @@ function adjustMismatch(i){
     // landed yet, find it still differing from resolvedTo[key], and re-upsert the row
     // resolved:false - silently reverting the correction just made, in front of the user.
     var _mismatchOverlayForRefresh;
+    // askText() (an app-styled modal) replaces the two blocking native prompt() calls that
+    // used to sit here - each is now a real async gap, so the same _sessionGen check used
+    // after the password prompt above is re-run after each one too, for the same reason (a
+    // logout()/fresh-login could genuinely happen while either modal is open).
+    function staleSession(){
+      if(_sessionGen===mySessionGen)return false;
+      toast('Session changed - adjustment not saved, please try again',true);
+      return true;
+    }
     if(m.kind==='manifold'){
       itemLabel='Manifold '+m.cyl;
-      var nv=prompt('Correct OPENING gas-left (kg) for '+m.cyl+'\n(previous close was '+m.expected+'kg, counted '+m.counted+'kg):', String(m.counted));
-      if(nv===null)return;
-      correct=num(nv);
-      var reason=prompt('Reason / note for this correction (required):');
-      if(reason===null)return; if(!reason.trim()){toast('A reason is required',true);return;}
-      var mrow=store.manifold.filter(function(r){return r.stage==='Opening'&&r.cyl===m.cyl&&(!r.branch||r.branch===bc);})[0];
-      oldVal=mrow?mrow.gasLeft:m.counted;
-      if(mrow){mrow.gasLeft=correct;mrow.scale=num(mrow.tare)+correct;mrow._adjusted=true;}
-      m.resolved=true;m.counted=correct;m.adjustedTo=correct;
-      m.adjustNote='Adj by '+auth.name+' ('+auth.level+') → '+correct+'kg: '+reason.trim();
-      m.adjustedBy=auth.name;m.adjustedAt=nowStamp();
-      auditLog('Manifold mismatch adjusted',m.cyl+' — prev close '+m.expected+'kg, counted '+oldVal+'kg, corrected to '+correct+'kg · '+reason.trim(),
-        {prevClose:m.expected,counted:oldVal},{correctedOpening:correct,reason:reason.trim()});
-      // Previously this branch never touched the sheet at all - no Adjustments entry, no
-      // Manifold tab update. Fixed to match every other correction tool: log the change to
-      // Adjustments, and correct the ORIGINAL Manifold sheet row in place via its _rid (same
-      // mechanism openCapAdjust already uses for Manifold's own same-day corrections).
-      syncPush('Adjustments',[{date:today,branch:bc,Kind:'OpeningMismatch',Line:'Manifold '+m.cyl,From:oldVal,To:correct,Reason:reason.trim(),By:auth.name+' ('+auth.level+')'}]);
-      if(mrow)adjustSheetRow('Manifold',mrow._rid,{GasLeft:correct,Scale:mrow.scale});
+      askText('Correct opening count','Correct OPENING gas-left (kg) for '+m.cyl+'\n(previous close was '+m.expected+'kg, counted '+m.counted+'kg):',String(m.counted),'number').then(function(nv){
+        if(nv===null)return;
+        if(staleSession())return;
+        correct=num(nv);
+        askText('Reason for correction','Reason / note for this correction (required):','').then(function(reason){
+          if(reason===null)return;
+          if(staleSession())return;
+          if(!reason.trim()){toast('A reason is required',true);return;}
+          var mrow=store.manifold.filter(function(r){return r.stage==='Opening'&&r.cyl===m.cyl&&(!r.branch||r.branch===bc);})[0];
+          oldVal=mrow?mrow.gasLeft:m.counted;
+          if(mrow){mrow.gasLeft=correct;mrow.scale=num(mrow.tare)+correct;mrow._adjusted=true;}
+          m.resolved=true;m.counted=correct;m.adjustedTo=correct;
+          m.adjustNote='Adj by '+auth.name+' ('+auth.level+') → '+correct+'kg: '+reason.trim();
+          m.adjustedBy=auth.name;m.adjustedAt=nowStamp();
+          auditLog('Manifold mismatch adjusted',m.cyl+' — prev close '+m.expected+'kg, counted '+oldVal+'kg, corrected to '+correct+'kg · '+reason.trim(),
+            {prevClose:m.expected,counted:oldVal},{correctedOpening:correct,reason:reason.trim()});
+          // Previously this branch never touched the sheet at all - no Adjustments entry, no
+          // Manifold tab update. Fixed to match every other correction tool: log the change to
+          // Adjustments, and correct the ORIGINAL Manifold sheet row in place via its _rid (same
+          // mechanism openCapAdjust already uses for Manifold's own same-day corrections).
+          syncPush('Adjustments',[{date:today,branch:bc,Kind:'OpeningMismatch',Line:'Manifold '+m.cyl,From:oldVal,To:correct,Reason:reason.trim(),By:auth.name+' ('+auth.level+')'}]);
+          if(mrow)adjustSheetRow('Manifold',mrow._rid,{GasLeft:correct,Scale:mrow.scale});
+          saveWorkingStore();
+          toast(itemLabel+' corrected to '+correct+' ✓');
+          openHistory(_mismatchOverlayForRefresh);
+        });
+      });
     } else {
       var st=m.state, sz=m.size, br=m.brand;
       itemLabel=sz+' '+st+' '+br;
-      var nv2=prompt('Correct OPENING quantity for '+sz+' '+st+' '+br+'\n(previous close was '+m.expected+', operator counted '+m.counted+'):', String(m.counted));
-      if(nv2===null)return;
-      correct=num(nv2);
-      var reason2=prompt('Reason / note for this correction (required):');
-      if(reason2===null)return; if(!reason2.trim()){toast('A reason is required',true);return;}
-      var row=store.count.filter(function(r){return r.countType==='Opening'&&r.state===st&&r.size===sz&&r.brand===br&&(!r.branch||r.branch===bc);})[0];
-      oldVal=row?row.qty:m.counted;
-      if(row){row.qty=correct;row._adjusted=true;}
-      else{row={countType:'Opening',state:st,size:sz,brand:br,qty:correct,branch:bc,_adjusted:true,_date:today};store.count.push(row);}
-      // Minimal shape _refreshCountMismatches's overlay loop reads (branch/size/state/
-      // brand/qty) - see the comment on this variable's declaration above for why it's
-      // needed at all.
-      _mismatchOverlayForRefresh=[{branch:bc,size:sz,state:st,brand:br,qty:correct}];
-      m.resolved=true;m.counted=correct;m.adjustedTo=correct;
-      m.adjustNote='Adj by '+auth.name+' ('+auth.level+') → '+correct+': '+reason2.trim();
-      m.adjustedBy=auth.name;m.adjustedAt=nowStamp();
-      var lockKey=bc+'|Opening|'+st+'|'+sz+'|'+br;
-      delete cLocked[lockKey];cTries[lockKey]=0;
-      auditLog('Opening mismatch adjusted',sz+' '+st+' '+br+' — prev close '+m.expected+', counted '+oldVal+', corrected to '+correct+' · '+reason2.trim(),
-        {prevClose:m.expected,counted:oldVal},{correctedOpening:correct,reason:reason2.trim()});
-      syncPush('Adjustments',[{date:today,branch:bc,Kind:'OpeningMismatch',Line:sz+' '+st+' '+br,From:oldVal,To:correct,Reason:reason2.trim(),By:auth.name+' ('+auth.level+')'}]);
-      // Previously this stopped at the Adjustments-tab log - the Counts tab itself, and the
-      // shared stock_counts table the pilot Adjust tool now reads from, both silently kept
-      // the wrong original figure. Fixed to match openCountAdjust's onApply exactly.
-      row._correctedFrom=oldVal;row._correctedBy=auth.name;row._correctedTime=nowStamp();
-      var rowsForBn=syncRowsCount(store.count.filter(function(r){return r.branch===bc;}),bc);
-      syncPush('Counts', rowsForBn.map(function(x){x._replaceKey=(x.date+'|'+x.branch);return x;}));
-      try{_stockCountsUpsert([row]);}catch(e){console.error('_stockCountsUpsert threw synchronously:',e.message);}
-      // Also resolve the shared count_mismatches row (upsert by its natural key, same
-      // approach stock_counts already uses - no need to track a generated row id) so the
-      // resolution is visible from any device, not just this one. m.resolved etc above were
-      // already set optimistically - same immediate-local-update pattern every other write
-      // in this function uses, so the UI reflects the resolution right away without waiting
-      // on the network. But unlike stock_counts, there's no offline retry queue for this
-      // table yet, so on failure that optimistic state is explicitly rolled back and
-      // surfaced to the user below, rather than silently left claiming "resolved" when the
-      // shared table never actually got the correction - a console.error alone would never
-      // be seen on a phone.
-      // Natural key uses bc/sz/st/br (== m.branch/m.size/m.state/m.brand, copied verbatim
-      // off the shared row this mismatch was read from) plus myMismatchDate (captured
-      // above, off `m.date` - the row's own real date), so this upsert resolves the SAME
-      // row _refreshCountMismatches wrote, never a duplicate, and never a wrong-date row
-      // if shiftTestDate() has moved the live `today` since this panel was refreshed.
-      // `counted` is deliberately oldVal (what the operator actually committed), not
-      // `correct` - count_mismatches.counted is the historical "what was counted" fact,
-      // distinct from corrected_to; m.counted itself was already overwritten to `correct`
-      // a few lines up for the local optimistic UI, so oldVal (captured before that
-      // mutation, a few lines up too) is the only variable still holding the original
-      // figure. resolved_by/resolved_by_name_snapshot both use `auth` (the actual
-      // authoriser - self or borrowed), never currentProfile - matches _correctedBy's
-      // convention elsewhere in this function/file: currentProfile can be a different,
-      // non-qualifying person when _borrowAuth was used, and stock_counts' own correction
-      // path (_stockCountToSharedRow's hasCorr branch) deliberately avoids stamping a UUID
-      // for that same reason.
-      // Chained onto _refreshCountMismatchesChains[bc] - the SAME per-branch chain
-      // _refreshCountMismatches() itself uses for every read/write to this table -
-      // rather than fired as an independent, un-sequenced call. Without this, this
-      // resolve-upsert and a concurrent _refreshCountMismatches(bc) (e.g. the one
-      // openHistory() below is about to kick off via _refreshMismatchPanel()) are two
-      // independent read-then-write paths to the same table with no ordering guarantee:
-      // if a refresh's existing-row select ran before this resolve-upsert landed, it
-      // would re-flag this exact row resolved:false, undoing the resolution just made.
-      // Chaining here guarantees this write always runs strictly before or after any
-      // concurrent refresh for this branch, never interleaved with one.
-      var _priorMismatchChain=_refreshCountMismatchesChains[bc]||Promise.resolve();
-      var _resolveUpsertChain=_priorMismatchChain.then(function(){
-        return sb.from('count_mismatches').upsert([{
-          branch:bc, date:myMismatchDate, size:sz, state:st, brand:br,
-          expected:num(m.expected), counted:num(oldVal),
-          resolved:true, resolved_by:(auth&&auth.id)||null,
-          resolved_by_name_snapshot:auth.name, resolved_at:new Date().toISOString(),
-          corrected_to:correct, resolution_reason:reason2.trim()
-        }],{onConflict:'branch,date,size,state,brand'});
-      }).then(function(res){
-        if(res.error){
-          console.error('count_mismatches resolve upsert failed:',res.error.message);
-          m.resolved=false;m.adjustedTo=undefined;m.adjustNote='';m.adjustedBy=undefined;m.adjustedAt=undefined;
+      askText('Correct opening count','Correct OPENING quantity for '+sz+' '+st+' '+br+'\n(previous close was '+m.expected+', operator counted '+m.counted+'):',String(m.counted),'number').then(function(nv2){
+        if(nv2===null)return;
+        if(staleSession())return;
+        correct=num(nv2);
+        askText('Reason for correction','Reason / note for this correction (required):','').then(function(reason2){
+          if(reason2===null)return;
+          if(staleSession())return;
+          if(!reason2.trim()){toast('A reason is required',true);return;}
+          var row=store.count.filter(function(r){return r.countType==='Opening'&&r.state===st&&r.size===sz&&r.brand===br&&(!r.branch||r.branch===bc);})[0];
+          oldVal=row?row.qty:m.counted;
+          if(row){row.qty=correct;row._adjusted=true;}
+          else{row={countType:'Opening',state:st,size:sz,brand:br,qty:correct,branch:bc,_adjusted:true,_date:today};store.count.push(row);}
+          // Minimal shape _refreshCountMismatches's overlay loop reads (branch/size/state/
+          // brand/qty) - see the comment on this variable's declaration above for why it's
+          // needed at all.
+          _mismatchOverlayForRefresh=[{branch:bc,size:sz,state:st,brand:br,qty:correct}];
+          m.resolved=true;m.counted=correct;m.adjustedTo=correct;
+          m.adjustNote='Adj by '+auth.name+' ('+auth.level+') → '+correct+': '+reason2.trim();
+          m.adjustedBy=auth.name;m.adjustedAt=nowStamp();
+          var lockKey=bc+'|Opening|'+st+'|'+sz+'|'+br;
+          delete cLocked[lockKey];cTries[lockKey]=0;
+          auditLog('Opening mismatch adjusted',sz+' '+st+' '+br+' — prev close '+m.expected+', counted '+oldVal+', corrected to '+correct+' · '+reason2.trim(),
+            {prevClose:m.expected,counted:oldVal},{correctedOpening:correct,reason:reason2.trim()});
+          syncPush('Adjustments',[{date:today,branch:bc,Kind:'OpeningMismatch',Line:sz+' '+st+' '+br,From:oldVal,To:correct,Reason:reason2.trim(),By:auth.name+' ('+auth.level+')'}]);
+          // Previously this stopped at the Adjustments-tab log - the Counts tab itself, and the
+          // shared stock_counts table the pilot Adjust tool now reads from, both silently kept
+          // the wrong original figure. Fixed to match openCountAdjust's onApply exactly.
+          row._correctedFrom=oldVal;row._correctedBy=auth.name;row._correctedTime=nowStamp();
+          var rowsForBn=syncRowsCount(store.count.filter(function(r){return r.branch===bc;}),bc);
+          syncPush('Counts', rowsForBn.map(function(x){x._replaceKey=(x.date+'|'+x.branch);return x;}));
+          try{_stockCountsUpsert([row]);}catch(e){console.error('_stockCountsUpsert threw synchronously:',e.message);}
+          // Also resolve the shared count_mismatches row (upsert by its natural key, same
+          // approach stock_counts already uses - no need to track a generated row id) so the
+          // resolution is visible from any device, not just this one. m.resolved etc above were
+          // already set optimistically - same immediate-local-update pattern every other write
+          // in this function uses, so the UI reflects the resolution right away without waiting
+          // on the network. But unlike stock_counts, there's no offline retry queue for this
+          // table yet, so on failure that optimistic state is explicitly rolled back and
+          // surfaced to the user below, rather than silently left claiming "resolved" when the
+          // shared table never actually got the correction - a console.error alone would never
+          // be seen on a phone.
+          // Natural key uses bc/sz/st/br (== m.branch/m.size/m.state/m.brand, copied verbatim
+          // off the shared row this mismatch was read from) plus myMismatchDate (captured
+          // above, off `m.date` - the row's own real date), so this upsert resolves the SAME
+          // row _refreshCountMismatches wrote, never a duplicate, and never a wrong-date row
+          // if shiftTestDate() has moved the live `today` since this panel was refreshed.
+          // `counted` is deliberately oldVal (what the operator actually committed), not
+          // `correct` - count_mismatches.counted is the historical "what was counted" fact,
+          // distinct from corrected_to; m.counted itself was already overwritten to `correct`
+          // a few lines up for the local optimistic UI, so oldVal (captured before that
+          // mutation, a few lines up too) is the only variable still holding the original
+          // figure. resolved_by/resolved_by_name_snapshot both use `auth` (the actual
+          // authoriser - self or borrowed), never currentProfile - matches _correctedBy's
+          // convention elsewhere in this function/file: currentProfile can be a different,
+          // non-qualifying person when _borrowAuth was used, and stock_counts' own correction
+          // path (_stockCountToSharedRow's hasCorr branch) deliberately avoids stamping a UUID
+          // for that same reason.
+          // Chained onto _refreshCountMismatchesChains[bc] - the SAME per-branch chain
+          // _refreshCountMismatches() itself uses for every read/write to this table -
+          // rather than fired as an independent, un-sequenced call. Without this, this
+          // resolve-upsert and a concurrent _refreshCountMismatches(bc) (e.g. the one
+          // openHistory() below is about to kick off via _refreshMismatchPanel()) are two
+          // independent read-then-write paths to the same table with no ordering guarantee:
+          // if a refresh's existing-row select ran before this resolve-upsert landed, it
+          // would re-flag this exact row resolved:false, undoing the resolution just made.
+          // Chaining here guarantees this write always runs strictly before or after any
+          // concurrent refresh for this branch, never interleaved with one.
+          var _priorMismatchChain=_refreshCountMismatchesChains[bc]||Promise.resolve();
+          var _resolveUpsertChain=_priorMismatchChain.then(function(){
+            return sb.from('count_mismatches').upsert([{
+              branch:bc, date:myMismatchDate, size:sz, state:st, brand:br,
+              expected:num(m.expected), counted:num(oldVal),
+              resolved:true, resolved_by:(auth&&auth.id)||null,
+              resolved_by_name_snapshot:auth.name, resolved_at:new Date().toISOString(),
+              corrected_to:correct, resolution_reason:reason2.trim()
+            }],{onConflict:'branch,date,size,state,brand'});
+          }).then(function(res){
+            if(res.error){
+              console.error('count_mismatches resolve upsert failed:',res.error.message);
+              m.resolved=false;m.adjustedTo=undefined;m.adjustNote='';m.adjustedBy=undefined;m.adjustedAt=undefined;
+              saveWorkingStore();
+              toast('Counts corrected, but the shared mismatch record could not be marked resolved - please tell Freddie: '+res.error.message,true);
+              openHistory(_mismatchOverlayForRefresh);
+            }
+          },function(e){
+            console.error('count_mismatches resolve upsert failed unexpectedly:',e&&e.message);
+            m.resolved=false;m.adjustedTo=undefined;m.adjustNote='';m.adjustedBy=undefined;m.adjustedAt=undefined;
+            saveWorkingStore();
+            toast('Counts corrected, but the shared mismatch record could not be marked resolved - please tell Freddie: '+(e&&e.message||'unknown error'),true);
+            openHistory(_mismatchOverlayForRefresh);
+          }).catch(function(e){
+            // Should be unreachable (both branches above already catch their own promise) -
+            // defensive only, so a truly unexpected throw here can never poison every future
+            // call chained onto this branch's slot, mirroring _refreshCountMismatches's own
+            // outer .catch on `chained`.
+            console.error('count_mismatches resolve-upsert chain link failed unexpectedly:',e&&e.message);
+          });
+          _refreshCountMismatchesChains[bc]=_resolveUpsertChain;
           saveWorkingStore();
-          toast('Counts corrected, but the shared mismatch record could not be marked resolved - please tell Freddie: '+res.error.message,true);
+          toast(itemLabel+' corrected to '+correct+' ✓');
           openHistory(_mismatchOverlayForRefresh);
-        }
-      },function(e){
-        console.error('count_mismatches resolve upsert failed unexpectedly:',e&&e.message);
-        m.resolved=false;m.adjustedTo=undefined;m.adjustNote='';m.adjustedBy=undefined;m.adjustedAt=undefined;
-        saveWorkingStore();
-        toast('Counts corrected, but the shared mismatch record could not be marked resolved - please tell Freddie: '+(e&&e.message||'unknown error'),true);
-        openHistory(_mismatchOverlayForRefresh);
-      }).catch(function(e){
-        // Should be unreachable (both branches above already catch their own promise) -
-        // defensive only, so a truly unexpected throw here can never poison every future
-        // call chained onto this branch's slot, mirroring _refreshCountMismatches's own
-        // outer .catch on `chained`.
-        console.error('count_mismatches resolve-upsert chain link failed unexpectedly:',e&&e.message);
+        });
       });
-      _refreshCountMismatchesChains[bc]=_resolveUpsertChain;
     }
-    saveWorkingStore();
-    toast(itemLabel+' corrected to '+correct+' ✓');
-    openHistory(_mismatchOverlayForRefresh);
   });
 }
 function listSavedDays(){
