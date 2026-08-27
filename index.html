@@ -64,6 +64,7 @@
   body[data-view="countGridView"] #countGridView,
   body[data-view="countDetailView"] #countDetailView,
   body[data-view="countReviewView"] #countReviewView,
+  body[data-view="mismatchesView"] #mismatchesView,
   body[data-view="recvGridView"] #recvGridView,
   body[data-view="recvDetailView"] #recvDetailView,
   body[data-view="recvReviewView"] #recvReviewView,
@@ -265,7 +266,6 @@
     <div class="datebar"><label>Stock-take date</label><div class="val" id="dateVal">—</div></div>
     <div id="closeDayPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div id="countPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
-    <div id="mismatchPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div class="greet">Every entry uses today's date, your name and branch.</div>
     <div class="grid">
       <button class="tile t1" onclick="openCount()"><div class="ic">&#9638;</div><h3>Stock Count</h3><p>Opening / closing, full &amp; empty</p><span class="badge" id="b-count" style="display:none">0</span></button>
@@ -345,6 +345,7 @@
     <div class="cgRow"><label>Count</label><div class="cgToggle">
       <button class="cgTg on" id="cct-Opening" onclick="cSetCT('Opening')">Opening</button>
       <button class="cgTg" id="cct-Closing" onclick="cSetCT('Closing')">Closing</button></div></div>
+    <button type="button" id="mmTabBtn" style="display:none;width:100%;border:1.5px solid #C0392B;border-radius:11px;background:#FDF3F2;color:#C0392B;font-size:13px;font-weight:800;padding:10px 12px;margin-top:8px;cursor:pointer;text-align:left" onclick="openMismatches()">⚠ Mismatches <span id="mmTabCount" style="background:#C0392B;color:#fff;border-radius:10px;padding:1px 8px;font-size:11px;margin-left:4px"></span></button>
   </div>
   <div class="wrap">
     <div class="ctxbar" id="cCtx" style="margin-bottom:10px;"></div>
@@ -378,6 +379,13 @@
     <div id="cRevBody"></div>
   </div>
   <div class="cFooter"><button class="cbGhost" onclick="cBackFromReview()">Back to count</button><button class="cbPrimary" onclick="cCommit()">Commit count</button></div>
+</div>
+
+<div id="mismatchesView" class="view">
+  <div class="wrap">
+    <div id="mmScreenContainer"></div>
+  </div>
+  <div class="cFooter" style="position:static;box-shadow:none;border:none;padding:16px 0 0;margin-top:10px"><button class="cbGhost" style="width:100%" onclick="cBackFromMismatches()">Back to count</button></div>
 </div>
 
 
@@ -459,7 +467,6 @@
 <div id="historyView" class="view"><div class="wrap">
   <div id="closeDayPendingBadgeHistory" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
   <div id="countPendingBadgeHistory" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
-  <div id="mismatchPendingBadgeHistory" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
   <div class="ctxbar" id="hCtx" style="margin-bottom:12px;"></div>
   <div class="histTabs">
     <button class="htab on" id="htab-today" onclick="setHistTab('today')">Today</button>
@@ -3145,6 +3152,7 @@ function cRenderGrid(){
     return '<div class="cgLine"><div class="gc sz">'+sz+'</div><div class="gc fullcol">'+cCellHtml(sz,'full')+'</div><div class="gc emptycol">'+cCellHtml(sz,'empty')+'</div></div>';
   }).join('');
   document.getElementById('cGrid').innerHTML=html;
+  _updateMismatchPendingBadge();
 }
 function cOpenDetail(sz,side){
   if(!canUseItem(cBranch,'count',sz)){toast(sz+' is deactivated for this branch/user',true);return;}
@@ -3639,19 +3647,16 @@ function _updateCountPendingBadge(){
 // incorrect" tile/toast already tells them everything they're meant to know. Reads
 // store._openMismatch directly rather than querying Supabase itself - whichever of
 // _refreshCountMismatches's call sites ran most recently already populated it.
+// The Home badge and Count History's own copy of this are retired - the Mismatches tab
+// on the Stock Count grid (mmTabBtn/mmTabCount) is now the one place this shows, scoped to
+// cBranch (whichever branch is currently open on that screen), same Manager/Owner-only gate.
 function _updateMismatchPendingBadge(){
   var isMgr=(role==='Manager'||role==='Owner');
-  function countFor(br){
-    return isMgr?(store._openMismatch||[]).filter(function(m){return !m.resolved&&(!m.branch||m.branch===br);}).length:0;
-  }
-  [['mismatchPendingBadge',branch],['mismatchPendingBadgeHistory',histBranch]].forEach(function(pair){
-    var el=document.getElementById(pair[0]);
-    if(!el)return;
-    var n=countFor(pair[1]);
-    var text=n?('⚠ '+n+' opening mismatch(es) need review'):'';
-    el.style.display=n?'block':'none';
-    el.textContent=text;
-  });
+  var btn=document.getElementById('mmTabBtn'), cnt=document.getElementById('mmTabCount');
+  if(!btn||!cnt)return;
+  var n=isMgr?(store._openMismatch||[]).filter(function(m){return !m.resolved&&(!m.branch||m.branch===cBranch);}).length:0;
+  btn.style.display=n?'block':'none';
+  cnt.textContent=n;
 }
 // Upserts committed/corrected local rows into the shared stock_counts table.
 // Called from both _cCommitReal() (a normal commit) and openCountAdjust()'s onApply
@@ -5497,17 +5502,35 @@ function _mismatchPanelHtml(branch){
   return html;
 }
 // Kicks off the shared refresh and, if it finds anything different, re-renders just the
-// mismatch panel container - not the whole Count History screen (avoids any risk of
-// clobbering something else the user is mid-interacting with elsewhere on the page), and
-// only if the user hasn't navigated away from History in the meantime.
+// Mismatches screen's own container (openMismatches()) - not the whole screen (avoids any
+// risk of clobbering something else the user is mid-interacting with elsewhere on the
+// page), and only if the user is actually on that screen right now for this branch. Called
+// from several places besides openMismatches() itself (openHistory(), openCountAdjust()'s
+// afterClose) that don't display this panel but still need to keep the shared table/badge
+// fresh - the "stillOnMismatches" guard just means those calls skip the re-render, not the
+// underlying refresh.
 function _refreshMismatchPanel(branch,overlayRows){
   _refreshCountMismatches(branch,overlayRows).then(function(){
-    var container=document.getElementById('mmPanelContainer');
-    var stillOnHistory=document.querySelector('.view.active') && document.querySelector('.view.active').id==='historyView';
-    if(container && stillOnHistory && histBranch===branch)container.outerHTML='<div id="mmPanelContainer">'+_mismatchPanelHtml(branch)+'</div>';
+    var container=document.getElementById('mmScreenContainer');
+    var stillOnMismatches=document.querySelector('.view.active') && document.querySelector('.view.active').id==='mismatchesView';
+    if(container && stillOnMismatches && histBranch===branch)container.innerHTML=_mismatchPanelHtml(branch)||'<div class="histEmpty">No opening mismatches for '+branch+'.</div>';
     _updateMismatchPendingBadge();
   });
 }
+// Manager/Owner-only permanent screen for reviewing/resolving Opening mismatches - replaces
+// the old Home badge + Count History panel (both retired), reached from the Stock Count
+// grid's own "⚠ Mismatches" tab instead. Reuses histBranch/_mismatchPanelHtml/adjustMismatch
+// exactly as Count History's version did, just mounted on its own screen.
+function openMismatches(){
+  if(!(role==='Manager'||role==='Owner')){toast('Manager/Owner only',true);return;}
+  histBranch=cBranch;
+  document.getElementById('hTitle').textContent='Mismatches';
+  document.getElementById('hSub').textContent=histBranch;
+  document.getElementById('mmScreenContainer').innerHTML=_mismatchPanelHtml(histBranch)||'<div class="histEmpty">No opening mismatches for '+histBranch+'.</div>';
+  cShow('mismatchesView');window.scrollTo(0,0);
+  _refreshMismatchPanel(histBranch);
+}
+function cBackFromMismatches(){document.getElementById('hTitle').textContent='Stock Count';document.getElementById('hSub').textContent='Tap Full or Empty on a size';cShow('countGridView');cRenderGrid();window.scrollTo(0,0);}
 function openHistory(mismatchOverlayRows){
   _updateCloseDayPendingBadge();
   _updateCountPendingBadge();
@@ -5522,11 +5545,8 @@ function openHistory(mismatchOverlayRows){
   function _br(r){return !r.branch||!branch||r.branch===branch;}
   var refillB=store.refill.filter(_br);
   var privateB=store.private.filter(_br);
-  // #4 OPENING MISMATCH ALERTS (vs previous day close) - role-aware. Rendered into its own
-  // container (not inlined into the surrounding html string) so _refreshCountMismatches'
-  // async result can update just this panel afterward, without re-rendering the rest of
-  // Count History (refills, private, etc. - all synchronous and unaffected by this).
-  html+='<div id="mmPanelContainer">'+_mismatchPanelHtml(branch)+'</div>';
+  // Opening mismatch alerts moved to their own permanent tab on the Stock Count screen
+  // (openMismatches()) - no longer shown here, see that function and _mismatchPanelHtml.
   // combined count — Opening and Closing kept separate
   var counts=liveCounts();
   var sizesWith=ALLSIZES.filter(function(sz){return counts.Opening.Full[sz]||counts.Opening.Empty[sz]||counts.Closing.Full[sz]||counts.Closing.Empty[sz];});
