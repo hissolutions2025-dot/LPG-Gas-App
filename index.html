@@ -3734,6 +3734,19 @@ function _refreshCountMismatches(br, localOverlayRows){
       if(dcRes.error)throw new Error('day_closes fetch failed: '+dcRes.error.message);
       if(opRes.error)throw new Error('stock_counts fetch failed: '+opRes.error.message);
 
+      // hasBaseline mirrors computeOpeningMismatches()'s own "no prior close to compare
+      // against" skip (~3893: !expWrap||!expWrap.exp) - there, no localStorage entry for
+      // this branch means this device never saw a Close Day happen, so it bails out
+      // entirely rather than comparing against nothing. Here the equivalent shared-truth
+      // signal is dcRes.data itself: no day_closes row for branch+yesterday means no
+      // branch has ever run an official Close Day for that date, i.e. there is truly
+      // nothing to compare against - NOT the same as a day_closes row existing but a
+      // specific size/state/brand simply not appearing in its store_snapshot (that IS a
+      // legitimate "expected really is 0 for that line" case and must still flag below).
+      // Without this distinction, exp defaulted to {} in both cases, and every non-zero
+      // Opening count anywhere got upserted as a bogus mismatch against a phantom
+      // expected-zero baseline that never actually existed.
+      var hasBaseline=!!dcRes.data;
       var exp={};
       if(dcRes.data && dcRes.data.store_snapshot && dcRes.data.store_snapshot.count){
         dcRes.data.store_snapshot.count.filter(function(r){return r.countType==='Closing';}).forEach(function(r){
@@ -3763,7 +3776,7 @@ function _refreshCountMismatches(br, localOverlayRows){
       });
 
       var freshMismatches=[];
-      if(Object.keys(op).length){
+      if(hasBaseline && Object.keys(op).length){
         var sizes={};Object.keys(exp).forEach(function(s){sizes[s]=1;});Object.keys(op).forEach(function(s){sizes[s]=1;});
         Object.keys(sizes).forEach(function(sz){
           ['Full','Empty'].forEach(function(st){
@@ -3788,13 +3801,16 @@ function _refreshCountMismatches(br, localOverlayRows){
       // these two writes themselves take.
       if(_sessionGen!==myGen)return;
 
-      // Self-healing (and the already-resolved guard just below) only run when op
-      // reflects a genuine shared-truth fetch that found SOMETHING counted
-      // (Object.keys(op).length) - if truly nobody has counted Opening for this branch
-      // today anywhere, there's nothing to compare against, so existing rows are left
-      // exactly as they are rather than guessed at (freshMismatches is empty in that
-      // case too, by construction above, so there's nothing to upsert either).
-      var reconcileAndUpsertPromise=Object.keys(op).length
+      // Self-healing (and the already-resolved guard just below) only run when
+      // hasBaseline AND op reflects a genuine shared-truth fetch that found SOMETHING
+      // counted (Object.keys(op).length). If truly nobody has counted Opening for this
+      // branch today anywhere, there's nothing to compare against. And if no day_closes
+      // row exists at all for this branch/date (!hasBaseline), there's likewise nothing
+      // real to compare against - freshMismatches is already forced empty above in that
+      // case, but this guard also stops the self-heal (reconcile) path from "resolving"
+      // pre-existing rows using a bogus liveExpected of 0, which would log a nonsensical
+      // "no longer differs from previous close" against a close that never happened.
+      var reconcileAndUpsertPromise=(hasBaseline && Object.keys(op).length)
         ? sb.from('count_mismatches').select('*').eq('branch',br).eq('date',myToday).then(function(existingRes){
             if(existingRes.error)throw new Error('count_mismatches existing-check failed: '+existingRes.error.message);
             var existingRows=existingRes.data||[];
