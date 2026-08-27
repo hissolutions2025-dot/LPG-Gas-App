@@ -7433,6 +7433,36 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 // "Manage deployments" again, double check which entry you're editing - there is more than
 // one "Untitled" deployment in that list, and only one of them is the one this app calls.
 function syncCfg(){return { url: 'https://script.google.com/macros/s/AKfycbx_L_PHF-pTKhbc3YMnWSEfhdV57zMMr6Sg7FLpxK2RsAchgzYtwMVzXNkQSU4CaSxG/exec', token: "GasSales2026" };}
+
+// TEMPORARY, remote-debug-only. Only activates with ?debug=1 on the URL - invisible in
+// normal use. On-screen panel + captured errors so an issue can be diagnosed from a
+// screenshot alone, with no cable, desktop, or dev-tools access to the phone needed.
+// Safe to delete once the opening-mismatch operator-side rollout is confirmed working.
+(function(){
+  try{
+    if(!/[?&]debug=1\b/.test(location.search))return;
+    var errs=[];
+    window.addEventListener('error',function(e){errs.unshift((e.message||'error')+' @ '+(e.filename||'')+':'+(e.lineno||''));errs=errs.slice(0,5);render();});
+    var origErr=console.error;
+    console.error=function(){errs.unshift(Array.prototype.slice.call(arguments).map(String).join(' '));errs=errs.slice(0,5);render();origErr.apply(console,arguments);};
+    var panel=document.createElement('div');
+    panel.style.cssText='position:fixed;top:0;left:0;right:0;z-index:99999;background:#000;color:#0f0;font:10px/1.4 monospace;padding:6px 8px;max-height:40vh;overflow:auto;white-space:pre-wrap;pointer-events:none;';
+    document.addEventListener('DOMContentLoaded',function(){document.body.appendChild(panel);render();});
+    function safe(fn){try{return fn();}catch(e){return 'ERR:'+e.message;}}
+    function render(){
+      if(!panel.parentNode)return;
+      var lines=[];
+      lines.push('today='+safe(function(){return today;})+' branch='+safe(function(){return branch;})+' role='+safe(function(){return role;}));
+      lines.push('cBranch='+safe(function(){return cBranch;})+' cCT='+safe(function(){return cCT;}));
+      lines.push('cHasPrevClose(cBranch)='+safe(function(){return cHasPrevClose(cBranch);}));
+      lines.push('_liveExpectedOpening keys='+safe(function(){return JSON.stringify(Object.keys(_liveExpectedOpening));}));
+      lines.push('_liveExpectedOpening[cBranch]='+safe(function(){return JSON.stringify(_liveExpectedOpening[cBranch]);}));
+      if(errs.length)lines.push('--- errors ---',errs.join('\n'));
+      panel.textContent='[DEBUG] '+lines.join('\n');
+    }
+    setInterval(render,1000);
+  }catch(e){}
+})();
 </script>
 </body>
 </html>
