@@ -347,7 +347,7 @@
       <button class="cgTg on" id="cct-Opening" onclick="cSetCT('Opening')">Opening</button>
       <button class="cgTg" id="cct-Closing" onclick="cSetCT('Closing')">Closing</button></div></div>
     <div class="cgRow" id="mmTabRow" style="display:none"><label>Status</label><div class="cgToggle">
-      <button type="button" class="cgTg" id="mmTabBtn" onclick="openMismatches()">Mismatches</button></div></div>
+      <button type="button" class="cgTg" id="mmTabBtn" onclick="openMismatches()">Open Count Mismatches</button></div></div>
   </div>
   <div class="wrap">
     <div class="ctxbar" id="cCtx" style="margin-bottom:10px;"></div>
@@ -3682,7 +3682,7 @@ function _updateMismatchPendingBadge(){
   row.style.display=isMgr?'flex':'none';
   var n=isMgr?(store._openMismatch||[]).filter(function(m){return !m.resolved&&(!m.branch||m.branch===cBranch);}).length:0;
   btn.classList.toggle('bad',n>0);
-  btn.textContent=n?('⚠ '+n+' mismatch'+(n===1?'':'es')):'Mismatches';
+  btn.textContent=n?('⚠ '+n+' Open Count Mismatch'+(n===1?'':'es')):'Open Count Mismatches';
 }
 // Upserts committed/corrected local rows into the shared stock_counts table.
 // Called from both _cCommitReal() (a normal commit) and openCountAdjust()'s onApply
