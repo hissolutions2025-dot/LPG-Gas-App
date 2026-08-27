@@ -3282,11 +3282,17 @@ function _cReviewSideHtml(sz,side,br,ct,bkt){
   var committedLines=cCommittedLines(sz,side,br,ct);
   var oldTotal=committedLines.reduce(function(s,r){return s+num(r.qty);},0);
   var brandsTxt=lines.filter(function(l){return num(l.qty)>0;}).map(function(l){return l.brand+' '+num(l.qty)+(l.note?' ('+l.note+')':'');}).join('<br>');
+  // Carry the blind mismatch check's flag through to the Review screen too - a line saved
+  // as still-incorrect (_mismatch) or locked-after-max-tries (_locked) in cSaveDetail should
+  // read as flagged here as well, not just on the grid, so it's visible right before commit
+  // too, not only discovered after.
+  var flagged=lines.some(function(l){return l._mismatch||l._locked;});
+  var warn=flagged?'<br><span style="color:#C0392B;font-weight:800">⚠ incorrect</span>':'';
   if(!committedLines.length && !lines.length)return '—';
-  if(!committedLines.length)return '<span style="color:var(--ok);font-weight:800">new</span><br>'+(brandsTxt||'—');
-  if(newTotal===0)return '<span style="color:#C0392B;font-weight:800">removing '+oldTotal+'</span>';
-  if(newTotal!==oldTotal)return '<span style="color:var(--amber);font-weight:800">'+oldTotal+' → '+newTotal+'</span><br>'+(brandsTxt||'—');
-  return brandsTxt||'—'; // unchanged from what's already committed
+  if(!committedLines.length)return '<span style="color:var(--ok);font-weight:800">new</span><br>'+(brandsTxt||'—')+warn;
+  if(newTotal===0)return '<span style="color:#C0392B;font-weight:800">removing '+oldTotal+'</span>'+warn;
+  if(newTotal!==oldTotal)return '<span style="color:var(--amber);font-weight:800">'+oldTotal+' → '+newTotal+'</span><br>'+(brandsTxt||'—')+warn;
+  return (brandsTxt||'—')+warn; // unchanged from what's already committed
 }
 function cReview(){
   // build review of ALL branch|ct buckets that have data
@@ -3546,11 +3552,11 @@ function _cCommitReal(){
   var zeroedCount=freshRows.filter(function(r){return r.qty===0;}).length;
   saveWorkingStore();auditLog('Count committed',freshRows.length+' line(s)'+(zeroedCount>0?(' · '+zeroedCount+' reset to zero'):'')+' — '+cBranch+' (Opening/Closing)'+(mm.length?(' · '+mm.length+' opening mismatch(es) flagged'):''));
   updateBadges();
-  if(mm.length){
-    if(role==='Manager'||role==='Owner')toast('⚠ '+mm.length+' opening line(s) do not match previous close - see Count History',true);
-    else toast('⚠ This count is incorrect - see Count History. A manager must review.',true);
-  }
-  else toast('Count committed ✓');
+  // No extra "this count is wrong" toast here - the grid cell itself (cIsFlagged) and the
+  // History mismatch panel already carry that signal persistently; a one-time toast at the
+  // moment of commit, right before goHome() navigates away from both of those, was redundant
+  // with them rather than adding information.
+  if(!mm.length)toast('Count committed ✓');
   goHome();
 }
 function _countQueueKey(){return 'gs_stockcount_pending';}
@@ -7476,6 +7482,8 @@ function syncCfg(){return { url: 'https://script.google.com/macros/s/AKfycbx_L_P
       lines.push('cHasPrevClose(cBranch)='+safe(function(){return cHasPrevClose(cBranch);}));
       lines.push('_liveExpectedOpening keys='+safe(function(){return JSON.stringify(Object.keys(_liveExpectedOpening));}));
       lines.push('_liveExpectedOpening[cBranch]='+safe(function(){return JSON.stringify(_liveExpectedOpening[cBranch]);}));
+      lines.push('store._openMismatch (cBranch, unresolved)='+safe(function(){return JSON.stringify((store._openMismatch||[]).filter(function(m){return m.branch===cBranch&&!m.resolved;}).map(function(m){return m.size+'|'+m.state+'|'+m.brand+'|date='+m.date;}));}));
+      lines.push('cIsFlagged(cBranch,Full,9kg)='+safe(function(){return cIsFlagged(cBranch,'Full','9kg');})+' cIsFlagged(cBranch,Empty,9kg)='+safe(function(){return cIsFlagged(cBranch,'Empty','9kg');}));
       if(errs.length)lines.push('--- errors ---',errs.join('\n'));
       panel.textContent='[DEBUG] '+lines.join('\n');
     }
