@@ -6515,6 +6515,18 @@ function viewSavedDayNoAuth(ds){
   // reuse viewSavedDay body by temporarily bypassing the gate
   store._auditBypass=true;viewSavedDay(ds);store._auditBypass=false;
 }
+// adjustMismatch()'s post-resolve refresh - was openHistory(overlayRows) before the
+// Mismatches screen moved out of Count History; History no longer shows this panel at all,
+// so bouncing there after a resolve left the Manager looking at a screen with nothing
+// mismatch-related on it. Re-renders mmScreenContainer immediately from the just-mutated
+// local state (optimistic, same as before) if the Mismatches screen is actually what's open,
+// then kicks off the same live refresh _refreshMismatchPanel always did.
+function _mismatchesResolveDone(overlayRows){
+  var container=document.getElementById('mmScreenContainer');
+  var onScreen=document.querySelector('.view.active')&&document.querySelector('.view.active').id==='mismatchesView';
+  if(container&&onScreen)container.innerHTML=_mismatchPanelHtml(histBranch)||'<div class="histEmpty">No opening mismatches for '+histBranch+'.</div>';
+  _refreshMismatchPanel(histBranch,overlayRows);
+}
 // #4 Manager/Owner resolves an opening mismatch (adjusts OPENING only, close stays signed)
 function adjustMismatch(i){
   if(!perm('adjust')){toast('You do not have adjust rights',true);return;}
@@ -6600,7 +6612,7 @@ function adjustMismatch(i){
         if(mrow)adjustSheetRow('Manifold',mrow._rid,{GasLeft:correct,Scale:mrow.scale});
         saveWorkingStore();
         toast(itemLabel+(accepted?' accepted as correct ✓':' corrected to '+correct+' ✓'));
-        openHistory(_mismatchOverlayForRefresh);
+        _mismatchesResolveDone(_mismatchOverlayForRefresh);
       });
     } else {
       var st=m.state, sz=m.size, br=m.brand;
@@ -6685,14 +6697,14 @@ function adjustMismatch(i){
               m.resolved=false;m.adjustedTo=undefined;m.adjustNote='';m.adjustedBy=undefined;m.adjustedAt=undefined;
               saveWorkingStore();
               toast('Counts corrected, but the shared mismatch record could not be marked resolved - please tell Freddie: '+res.error.message,true);
-              openHistory(_mismatchOverlayForRefresh);
+              _mismatchesResolveDone(_mismatchOverlayForRefresh);
             }
           },function(e){
             console.error('count_mismatches resolve upsert failed unexpectedly:',e&&e.message);
             m.resolved=false;m.adjustedTo=undefined;m.adjustNote='';m.adjustedBy=undefined;m.adjustedAt=undefined;
             saveWorkingStore();
             toast('Counts corrected, but the shared mismatch record could not be marked resolved - please tell Freddie: '+(e&&e.message||'unknown error'),true);
-            openHistory(_mismatchOverlayForRefresh);
+            _mismatchesResolveDone(_mismatchOverlayForRefresh);
           }).catch(function(e){
             // Should be unreachable (both branches above already catch their own promise) -
             // defensive only, so a truly unexpected throw here can never poison every future
@@ -6703,7 +6715,28 @@ function adjustMismatch(i){
           _refreshCountMismatchesChains[bc]=_resolveUpsertChain;
           saveWorkingStore();
           toast(itemLabel+(accepted?' accepted as correct ✓':' corrected to '+correct+' ✓'));
-          openHistory(_mismatchOverlayForRefresh);
+          _mismatchesResolveDone(_mismatchOverlayForRefresh);
+          // "Accept as correct" means today's count stands as counted - so if it still
+          // doesn't match yesterday's Closing, the Closing figure itself was the mistake,
+          // not today's operator. Hand straight into the existing 48h historical-correction
+          // tool (viewSavedDay/correctSavedLine) for that exact date, instead of leaving the
+          // Manager to separately remember to go hunt for it in Count History -> Past.
+          // viewSavedDay reads the CURRENT LOGGED-IN branch (a global, not a parameter), so
+          // this only auto-opens when that already matches the mismatch's own branch - a
+          // Manager working a different branch's mismatch is told to switch branches first
+          // rather than risking opening the wrong branch's saved day.
+          if(accepted){
+            var yDate;
+            try{yDate=_dayBefore(myMismatchDate);}catch(e){console.error('Could not compute the previous day for the Closing hand-off:',e.message);}
+            if(yDate){
+              if(bc!==branch){
+                toast('To correct '+yDate+'\'s Closing for '+itemLabel+', switch to '+bc+' branch, then use Count History → Past.',true);
+              } else {
+                toast('Opening '+yDate+' so you can correct Closing for '+itemLabel+'…');
+                setTimeout(function(){viewSavedDay(yDate);},900);
+              }
+            }
+          }
       });
     }
   });
