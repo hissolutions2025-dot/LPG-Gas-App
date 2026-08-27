@@ -2583,7 +2583,7 @@ function _finishLogin(u,b){
 function logout(){
   if(operator)auditLog('Logout','Signed out');
   sb.auth.signOut();
-  operator=null;branch=null;role=null;currentProfile=null;store._openMismatch=[];_sessionGen++;
+  operator=null;branch=null;role=null;currentProfile=null;store._openMismatch=[];_liveExpectedOpening={};_sessionGen++;
   // idle lock must not be able to outlive its own session - clear it unconditionally on
   // every logout, whether that's a normal sign-out or the lock screen's own "Not you? Sign
   // out instead" escape hatch (which just calls this function directly).
@@ -2951,13 +2951,38 @@ var C_MAX_TRIES=5;
 var cTries={};   // key: br|Opening|state|size|brand -> number of failed saves
 var cLocked={};  // key -> true when locked after C_MAX_TRIES
 function cMisKey(br,st,sz,brand){return br+'|Opening|'+st+'|'+sz+'|'+brand;}
+// Live-derived expected-opening cache for the grid's blind mismatch check and the commit-time
+// toast (cExpectedFor/cHasPrevClose/computeOpeningMismatches) - previously these only ever read
+// loadExpectedOpening's local-device carry-forward, written solely when THIS device ran a real
+// Close Day, so the operator-facing toast/lock never fired on any other device (the exact gap
+// _refreshCountMismatches was built to close on the Manager/Owner side, never migrated here).
+// Fetched live from day_closes when the Stock Count screen opens/branch switches (openCount,
+// cSetBranch), same source and shape _refreshCountMismatches already reads. Falls back to the
+// local carry-forward while the fetch is in flight or offline, so nothing regresses/blocks.
+var _liveExpectedOpening={};
+function _fetchLiveExpectedOpening(br){
+  var yDate;
+  try{yDate=_dayBefore(today);}catch(e){return;}
+  sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
+    if(res.error){console.error('_fetchLiveExpectedOpening failed for '+br+':',res.error.message);return;}
+    if(!res.data){delete _liveExpectedOpening[br];return;} // no prior close - local carry-forward fallback applies
+    var exp={};
+    ((res.data.store_snapshot&&res.data.store_snapshot.count)||[]).filter(function(r){return r.countType==='Closing';}).forEach(function(r){
+      var st=(r.state==='Empty')?'Empty':'Full';
+      if(!exp[r.size])exp[r.size]={Full:{},Empty:{}};
+      exp[r.size][st][r.brand]=(exp[r.size][st][r.brand]||0)+num(r.qty);
+    });
+    _liveExpectedOpening[br]={exp:exp};
+  },function(e){console.error('_fetchLiveExpectedOpening rejected for '+br+':',e&&e.message);});
+}
+function _getLiveExpectedOpening(br){return _liveExpectedOpening[br]||loadExpectedOpening(br);}
 function cExpectedFor(br,st,sz,brand){
-  var w=loadExpectedOpening(br);
+  var w=_getLiveExpectedOpening(br);
   if(!w||!w.exp)return null; // null = no previous close to compare
   var b=(w.exp[sz]&&w.exp[sz][st])||{};
   return b[brand]||0;
 }
-function cHasPrevClose(br){var w=loadExpectedOpening(br);return !!(w&&w.exp&&Object.keys(w.exp).length);}
+function cHasPrevClose(br){var w=_getLiveExpectedOpening(br);return !!(w&&w.exp&&Object.keys(w.exp).length);}
 function cKey(){return cBranch+'|'+cCT;}
 function cBucket(){if(!cData[cKey()])cData[cKey()]={};return cData[cKey()];}
 function cCell(sz){var b=cBucket();if(!b[sz])b[sz]={full:[],empty:[]};return b[sz];}
@@ -2989,6 +3014,7 @@ function openCount(){
       auditLog('Additional count (no auth required)','Second same-day count for '+branch+' - password check temporarily disabled');
     }
     cBranch=branch||'Helderberg';
+    _fetchLiveExpectedOpening(cBranch);
     if(!cHasPrevClose(cBranch) && !store._noPrevAuth){
       store._noPrevAuth=true;
       auditLog('Count started (no auth required)','No previous day close for '+cBranch+' - password check temporarily disabled');
@@ -3003,7 +3029,7 @@ function openCount(){
 }
 function cSetBranch(x){
   if(role==='Operator' && x!==branch){toast('Locked to '+branch,true);return;}
-  cBranch=x;applyBranchLock('cbr-',x);cRenderGrid();
+  cBranch=x;_fetchLiveExpectedOpening(cBranch);applyBranchLock('cbr-',x);cRenderGrid();
 }
 function cSetCT(x){cCT=x;['Opening','Closing'].forEach(function(c){document.getElementById('cct-'+c).classList.toggle('on',c===x);});cRenderGrid();}
 
@@ -3899,7 +3925,7 @@ function _refreshCountMismatches(br, localOverlayRows){
 }
 // Compare committed Opening lines against saved expected opening (prev close)
 function computeOpeningMismatches(br){
-  var expWrap=loadExpectedOpening(br);
+  var expWrap=_getLiveExpectedOpening(br);
   // ||m.kind==='manifold' guard matches _refreshCountMismatches's own merge (~3875) and
   // computeManifoldMismatches's own merge (~3296) - without it, this replace-filter dropped
   // this branch's local-only manifold mismatch entries too (kind is unset on a Stock-Count
