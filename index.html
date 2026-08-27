@@ -58,8 +58,12 @@
   /* Home tile customization: long-press to reorder/resize (device-local, see applyHomeLayout) */
   .grid.editing .tile{border:2px dashed var(--steel);}
   .tile.large{grid-column:span 2;}
-  .tile.dragging{transform:scale(1.04);box-shadow:0 10px 26px rgba(31,58,95,.28);z-index:5;opacity:.9;}
-  .tileResizeBtn{position:absolute;top:8px;left:8px;width:26px;height:26px;border-radius:8px;border:1.5px solid var(--steel);background:#fff;color:var(--steel);font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center;padding:0;line-height:1;}
+  .tile.compact{padding:10px 12px;min-height:64px;gap:4px;}
+  .tile.compact .ic{width:30px;height:30px;font-size:15px;border-radius:9px;}
+  .tile.compact h3{font-size:13px;}
+  .tile.compact p{display:none;}
+  .tileResizeBtn{position:absolute;bottom:6px;right:6px;width:28px;height:28px;border-radius:8px;border:1.5px solid var(--steel);background:#fff;color:var(--steel);font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center;padding:0;line-height:1;cursor:nwse-resize;touch-action:none;}
+  .homeDragGhost{position:fixed;margin:0;pointer-events:none;transform:scale(1.04);box-shadow:0 10px 26px rgba(31,58,95,.28);z-index:80;opacity:.95;}
   #homeEditHint{color:var(--steel);font-weight:700;}
   .view{display:none;} .view.active{display:block;}
   /* HARD ENFORCEMENT: only the view matching body[data-view] is ever visible.
@@ -2759,15 +2763,20 @@ function greyTiles(){
     }
   });
 }
-// ---- Home tile customization: long-press to reorder/resize (device-local only, no sync -
-// this is pure presentation, every tile still calls exactly the function it always did
-// regardless of position/size, so it can never affect data capture or Sheets/Supabase
-// reporting). Order/size are keyed by each tile's stable data-key, never DOM position or
-// visual class, so a future restyle of the tiles themselves doesn't invalidate a saved
-// layout, and a tile that's currently role-hidden (or didn't exist when the layout was
-// saved) is simply skipped rather than leaving a gap. ----
+// ---- Home tile customization: long-press to reorder (the held tile follows your finger via
+// a ghost proxy; the others slide smoothly out of the way via FLIP animation, not an instant
+// jump), drag a tile's corner handle to resize it (width: normal/wide, height:
+// normal/compact) - device-local only, no sync. Purely presentational: every tile still
+// calls exactly the function it always did (openCount() etc), regardless of position/size,
+// so none of this can ever affect data capture or Sheets/Supabase reporting. Order/size are
+// keyed by each tile's stable data-key, never DOM position or the shared color classes, so a
+// future restyle of the tiles doesn't invalidate a saved layout, a role-hidden tile is
+// skipped without leaving a gap, and a tile added later (not in an old save) just sorts last
+// and defaults to normal size rather than breaking. ----
 var HOME_LAYOUT_KEY='gs_home_layout';
-var _homeEditing=false, _homeLongPressTimer=null, _homeDragKey=null, _homeDragOrder=[], _homeDragMoved=false, _homeDragStartX=0, _homeDragStartY=0, _homeSuppressNextClick=false;
+var _homeEditing=false, _homeLongPressTimer=null, _homeSuppressNextClick=false;
+var _homeMoveKey=null, _homeMoveOrder=[], _homeMoveGhost=null, _homeMoveStartX=0, _homeMoveStartY=0, _homeMoveOffX=0, _homeMoveOffY=0, _homeMoveMoved=false;
+var _homeResizeTile=null, _homeResizeStartX=0, _homeResizeStartY=0, _homeResizeStartLarge=false, _homeResizeStartCompact=false;
 function _loadHomeLayout(){
   try{var r=localStorage.getItem(HOME_LAYOUT_KEY);var d=r?JSON.parse(r):null;return (d&&d.order)?d:{order:[],sizes:{}};}
   catch(e){return {order:[],sizes:{}};}
@@ -2780,7 +2789,9 @@ function applyHomeLayout(){
     var key=t.getAttribute('data-key');
     var idx=order.indexOf(key);
     t.style.order=(idx===-1)?9999:idx; // not in the saved layout (new/never-arranged tile) sorts after everything that is
-    t.classList.toggle('large',sizes[key]==='large');
+    var sz=sizes[key]||{};
+    t.classList.toggle('large',!!sz.w2);
+    t.classList.toggle('compact',!!sz.hc);
   });
   _ensureHomeCustomizeWired();
 }
@@ -2802,9 +2813,7 @@ function _startHomeEdit(){
   document.getElementById('homeEditBar').style.display='flex';
   document.querySelectorAll('#homeGrid .tile[data-key]').forEach(function(t){
     var b=document.createElement('button');
-    b.type='button';b.className='tileResizeBtn';
-    b.textContent=t.classList.contains('large')?'⤡':'⤢';
-    b.onclick=function(e){e.stopPropagation();t.classList.toggle('large');b.textContent=t.classList.contains('large')?'⤡':'⤢';};
+    b.type='button';b.className='tileResizeBtn';b.textContent='⤡';
     t.appendChild(b);
   });
 }
@@ -2819,12 +2828,37 @@ function _endHomeEdit(save){
     var order=_visualHomeOrder();
     var sizes={};
     document.querySelectorAll('#homeGrid .tile[data-key]').forEach(function(t){
-      if(t.classList.contains('large'))sizes[t.getAttribute('data-key')]='large';
+      var key=t.getAttribute('data-key');
+      var w2=t.classList.contains('large'), hc=t.classList.contains('compact');
+      if(w2||hc)sizes[key]={w2:w2,hc:hc};
     });
     _saveHomeLayoutData({order:order,sizes:sizes});
   } else {
     applyHomeLayout(); // discard anything moved mid-edit, restore last saved layout
   }
+}
+// FLIP-technique reflow: records every tile's on-screen position before `mutate` runs
+// (which changes layout instantly, e.g. via style.order), then animates any tile that
+// actually moved from its old visual spot to its new one over .2s, instead of the instant
+// jump changing style.order alone would produce - this is what makes dragging one tile over
+// another feel like the rest are sliding out of the way, matching a real app's reorder UI.
+function _flipReflow(mutate){
+  var tiles=Array.prototype.slice.call(document.querySelectorAll('#homeGrid .tile[data-key]'));
+  var before={};
+  tiles.forEach(function(t){before[t.getAttribute('data-key')]=t.getBoundingClientRect();});
+  mutate();
+  tiles.forEach(function(t){
+    var key=t.getAttribute('data-key');
+    var b=before[key], a=t.getBoundingClientRect();
+    var dx=b.left-a.left, dy=b.top-a.top;
+    if(!dx&&!dy)return;
+    t.style.transition='none';
+    t.style.transform='translate('+dx+'px,'+dy+'px)';
+    t.offsetHeight; // force reflow so the browser registers the starting transform before animating away from it
+    t.style.transition='transform .2s ease';
+    t.style.transform='';
+    setTimeout(function(){t.style.transition='';},220); // hand control back to the tile's own CSS transition (its normal tap-scale effect) once the reflow animation is done
+  });
 }
 function _ensureHomeCustomizeWired(){
   var grid=document.getElementById('homeGrid');
@@ -2835,38 +2869,84 @@ function _ensureHomeCustomizeWired(){
   // customizing, or right after a drag ends (the touchend that finishes a drag still emits
   // a synthetic click on most browsers).
   grid.addEventListener('click',function(e){
-    // The resize button lives inside a tile inside this grid, so it's on the same capture
-    // path as the tile's own navigation click - must be let through, or its own onclick
-    // (toggling .large) never fires, since capture-phase stopPropagation() here runs before
-    // the target's own handler ever gets a chance to.
-    if(e.target.closest('.tileResizeBtn'))return;
+    if(e.target.closest('.tileResizeBtn'))return; // handled entirely by its own drag below, never a plain click
     if(_homeEditing||_homeSuppressNextClick){e.stopPropagation();e.preventDefault();_homeSuppressNextClick=false;}
   },true);
   grid.addEventListener('touchstart',function(e){
-    var t=e.target.closest('.tile[data-key]');if(!t)return;
-    if(_homeEditing){
-      _homeDragKey=t.getAttribute('data-key');
-      var touch=e.touches[0];_homeDragStartX=touch.clientX;_homeDragStartY=touch.clientY;_homeDragMoved=false;
-      _homeDragOrder=_visualHomeOrder();
-      t.classList.add('dragging');
+    var handle=e.target.closest('.tileResizeBtn');
+    if(handle){
+      var rt=handle.closest('.tile[data-key]');if(!rt)return;
+      e.preventDefault();
+      _homeResizeTile=rt;
+      var rTouch=e.touches[0];_homeResizeStartX=rTouch.clientX;_homeResizeStartY=rTouch.clientY;
+      _homeResizeStartLarge=rt.classList.contains('large');_homeResizeStartCompact=rt.classList.contains('compact');
       return;
     }
-    _homeLongPressTimer=setTimeout(function(){_startHomeEdit();},550);
-  },{passive:true});
+    var t=e.target.closest('.tile[data-key]');if(!t)return;
+    if(!_homeEditing){_homeLongPressTimer=setTimeout(function(){_startHomeEdit();},550);return;}
+    e.preventDefault();
+    var rect=t.getBoundingClientRect();
+    var touch=e.touches[0];
+    _homeMoveKey=t.getAttribute('data-key');
+    _homeMoveStartX=touch.clientX;_homeMoveStartY=touch.clientY;
+    _homeMoveOffX=touch.clientX-rect.left;_homeMoveOffY=touch.clientY-rect.top;
+    _homeMoveMoved=false;
+    _homeMoveOrder=_visualHomeOrder();
+    // A fixed-position ghost visually follows the finger 1:1 - the real tile stays put in
+    // the grid (so it keeps holding its slot, preventing the layout collapsing into the gap
+    // it would otherwise leave) but turns invisible, since the ghost is what the user
+    // actually sees moving.
+    var ghost=t.cloneNode(true);
+    ghost.className=t.className+' homeDragGhost';
+    ghost.style.left=rect.left+'px';ghost.style.top=rect.top+'px';
+    ghost.style.width=rect.width+'px';ghost.style.height=rect.height+'px';
+    var ghostHandle=ghost.querySelector('.tileResizeBtn');if(ghostHandle)ghostHandle.remove();
+    document.body.appendChild(ghost);
+    _homeMoveGhost=ghost;
+    t.style.visibility='hidden';
+  },{passive:false});
   grid.addEventListener('touchmove',function(e){
-    if(_homeDragKey){
+    if(_homeResizeTile){
+      e.preventDefault();
+      var rTouch=e.touches[0];
+      var dx=rTouch.clientX-_homeResizeStartX, dy=rTouch.clientY-_homeResizeStartY;
+      // Drag the handle away from the tile (right/down) to grow, back towards it (left/up)
+      // to shrink - the standard resize-handle convention. Independent thresholds per axis
+      // so width and height can be adjusted together or separately in one drag; a small
+      // dead zone around the start position (rather than a single 0px line) avoids the size
+      // flickering back and forth on tiny finger jitter right at the threshold.
+      var large=_homeResizeStartLarge?(dx>-30):(dx>30);
+      // NOTE: was `_homeResizeStartCompact?(dy>-20):(dy<-20)` - that let a tile become
+      // compact from a downward drag, but never let it un-compact via a downward (grow) drag
+      // once already compact, since dy<-20 can never be true while dragging down. Verified
+      // wrong by an actual drag test (not just read - see commit), fixed to the symmetric
+      // form below: compact only flips when the drag crosses ~20px in the shrinking (up)
+      // direction, growing (down) always available regardless of starting state.
+      var compact=_homeResizeStartCompact?(dy<=20):(dy<=-20);
+      _homeResizeTile.classList.toggle('large',large);
+      _homeResizeTile.classList.toggle('compact',compact);
+      return;
+    }
+    if(_homeMoveKey){
       e.preventDefault();
       var touch=e.touches[0];
-      if(Math.abs(touch.clientX-_homeDragStartX)>6||Math.abs(touch.clientY-_homeDragStartY)>6)_homeDragMoved=true;
-      var under=document.elementFromPoint(touch.clientX,touch.clientY);
+      if(Math.abs(touch.clientX-_homeMoveStartX)>6||Math.abs(touch.clientY-_homeMoveStartY)>6)_homeMoveMoved=true;
+      if(_homeMoveGhost){
+        _homeMoveGhost.style.left=(touch.clientX-_homeMoveOffX)+'px';
+        _homeMoveGhost.style.top=(touch.clientY-_homeMoveOffY)+'px';
+      }
+      var under=document.elementFromPoint(touch.clientX,touch.clientY); // pointer-events:none on the ghost (CSS) means this always sees the real tile underneath, never the ghost itself
       var targetTile=under&&under.closest&&under.closest('.tile[data-key]');
       if(targetTile){
         var targetKey=targetTile.getAttribute('data-key');
-        if(targetKey!==_homeDragKey){
-          var fromIdx=_homeDragOrder.indexOf(_homeDragKey), toIdx=_homeDragOrder.indexOf(targetKey);
+        if(targetKey!==_homeMoveKey){
+          var fromIdx=_homeMoveOrder.indexOf(_homeMoveKey), toIdx=_homeMoveOrder.indexOf(targetKey);
           if(fromIdx!==-1&&toIdx!==-1){
-            _homeDragOrder.splice(fromIdx,1);_homeDragOrder.splice(toIdx,0,_homeDragKey);
-            _homeDragOrder.forEach(function(k,i){var el=document.querySelector('#homeGrid .tile[data-key="'+k+'"]');if(el)el.style.order=i;});
+            _homeMoveOrder.splice(fromIdx,1);_homeMoveOrder.splice(toIdx,0,_homeMoveKey);
+            var newOrder=_homeMoveOrder;
+            _flipReflow(function(){
+              newOrder.forEach(function(k,i){var el=document.querySelector('#homeGrid .tile[data-key="'+k+'"]');if(el)el.style.order=i;});
+            });
           }
         }
       }
@@ -2876,11 +2956,13 @@ function _ensureHomeCustomizeWired(){
   },{passive:false});
   grid.addEventListener('touchend',function(){
     if(_homeLongPressTimer){clearTimeout(_homeLongPressTimer);_homeLongPressTimer=null;}
-    if(_homeDragKey){
-      var el=document.querySelector('#homeGrid .tile[data-key="'+_homeDragKey+'"]');
-      if(el)el.classList.remove('dragging');
-      if(_homeDragMoved)_homeSuppressNextClick=true;
-      _homeDragKey=null;
+    if(_homeResizeTile){_homeResizeTile=null;return;}
+    if(_homeMoveKey){
+      var el=document.querySelector('#homeGrid .tile[data-key="'+_homeMoveKey+'"]');
+      if(el)el.style.visibility='';
+      if(_homeMoveGhost){_homeMoveGhost.remove();_homeMoveGhost=null;}
+      if(_homeMoveMoved)_homeSuppressNextClick=true;
+      _homeMoveKey=null;
     }
   });
 }
