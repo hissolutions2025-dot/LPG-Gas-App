@@ -6742,8 +6742,12 @@ function adjustMismatch(i){
               if(bc!==branch){
                 toast('To correct '+yDate+'\'s Closing for '+itemLabel+', switch to '+bc+' branch, then use Count History → Past.',true);
               } else {
-                toast('Opening '+yDate+' so you can correct Closing for '+itemLabel+'…');
-                setTimeout(function(){viewSavedDay(yDate);},900);
+                // No toast here - the resolved line's own "✓ accepted as correct" is already
+                // visible in the (dimmed, still-showing-behind-the-modal) Mismatches list
+                // itself, and the auth modal's own title below names the date. A toast tried
+                // here before, but its 1800ms fade outlives the short pause before the modal
+                // opens, so it visibly clipped/overlapped the modal instead of finishing first.
+                setTimeout(function(){viewSavedDay(yDate,'Open the closing count for '+yDate+'?');},500);
               }
             }
           }
@@ -6818,18 +6822,23 @@ function renderCalendar(){
   document.getElementById('calGrid').innerHTML=html;
 }
 function calMove(dir){calMonth2+=dir;if(calMonth2<0){calMonth2=11;calYear--;}if(calMonth2>11){calMonth2=0;calYear++;}renderCalendar();}
-function viewSavedDay(ds){
+function viewSavedDay(ds,promptMsg){
   // Only Manager or Owner may open historical days, with password
   if(!perm('history')){toast('You do not have permission to open historical counts',true);return;}
   if(!store._auditBypass){
     var eligibleNow=(role==='Manager'||role==='Owner');
+    // promptMsg lets a caller that already knows WHY it's opening this day (e.g. adjustMismatch's
+    // "Accept as correct" hand-off, which is specifically about the Closing figure) say so on the
+    // auth modal itself, instead of the generic wording every other caller (Count History -> Past,
+    // which opens the WHOLE day, not just Closing) still gets by default.
+    var msg=promptMsg||('Open the count for '+ds+'?');
     var authPromise=eligibleNow
-      ? _selfReauth('Open the count for '+ds+'?')
-      : _borrowAuth('Owner','Open the count for '+ds+'?',function(p){return p.level==='Owner';});
+      ? _selfReauth(msg)
+      : _borrowAuth('Owner',msg,function(p){return p.level==='Owner';});
     authPromise.then(function(auth){
       if(!auth){toast('Wrong password',true);return;}
       auditLog('Historical count opened','Opened saved count for '+ds+' ('+branch+')');
-      store._auditBypass=true;viewSavedDay(ds);store._auditBypass=false;
+      store._auditBypass=true;viewSavedDay(ds,promptMsg);store._auditBypass=false;
     });
     return;
   }
