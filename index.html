@@ -46,24 +46,28 @@
   .datebar{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:16px;display:flex;align-items:center;gap:10px;}
   .datebar label{font-size:11px;font-weight:800;color:var(--navy);text-transform:uppercase;letter-spacing:.5px;white-space:nowrap;margin:0;}
   .datebar .val{flex:1;font-size:14px;font-weight:700;color:var(--ink);}
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  /* flex-wrap, not grid: each tile carries its own explicit, continuously-resizable
+     width/height (set inline by applyHomeLayout/the resize drag below) - CSS Grid's shared
+     column tracks can't give one item an independent size the way flex items with explicit
+     width can. A tile that grows wider naturally pushes later ones to wrap onto the next
+     row, which is what makes resizing actually free up visible space. */
+  .grid{display:flex;flex-wrap:wrap;gap:12px;}
   .tile{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px 14px;text-align:left;cursor:pointer;
-    display:flex;flex-direction:column;gap:10px;min-height:120px;position:relative;transition:transform .08s,box-shadow .12s;}
+    display:flex;flex-direction:column;gap:10px;position:relative;transition:transform .08s,box-shadow .12s;
+    /* No min-height here on purpose - every tile gets an explicit height set by
+       applyHomeLayout/the resize drag now (see HOME_MIN_H), and a leftover CSS floor here
+       would silently override a legitimate small resize below 120px. */
+    box-sizing:border-box;flex:none;overflow:hidden;}
   .tile:active{transform:scale(.97);box-shadow:0 4px 14px rgba(31,58,95,.16);}
-  .tile .ic{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;color:#fff;}
+  .tile .ic{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;color:#fff;flex:none;}
   .tile h3{margin:0;font-size:15px;font-weight:700;} .tile p{margin:0;font-size:11px;color:var(--muted);line-height:1.35;}
   .t1 .ic{background:var(--steel);} .t2 .ic{background:#6B4FA3;} .t3 .ic{background:var(--ok);}
   .t4 .ic{background:var(--amber);color:var(--navy-d);} .t5 .ic{background:#B5533B;} .t6 .ic{background:#3C7A89;}
   .badge{position:absolute;top:10px;right:10px;background:var(--bad);color:#fff;font-size:11px;font-weight:800;min-width:20px;height:20px;border-radius:10px;display:flex;align-items:center;justify-content:center;padding:0 5px;}
-  /* Home tile customization: long-press to reorder/resize (device-local, see applyHomeLayout) */
-  .grid.editing .tile{border:2px dashed var(--steel);}
-  .tile.large{grid-column:span 2;}
-  .tile.compact{padding:10px 12px;min-height:64px;gap:4px;}
-  .tile.compact .ic{width:30px;height:30px;font-size:15px;border-radius:9px;}
-  .tile.compact h3{font-size:13px;}
-  .tile.compact p{display:none;}
-  .tileResizeBtn{position:absolute;bottom:6px;right:6px;width:28px;height:28px;border-radius:8px;border:1.5px solid var(--steel);background:#fff;color:var(--steel);font-size:14px;font-weight:800;display:flex;align-items:center;justify-content:center;padding:0;line-height:1;cursor:nwse-resize;touch-action:none;}
-  .homeDragGhost{position:fixed;margin:0;pointer-events:none;transform:scale(1.04);box-shadow:0 10px 26px rgba(31,58,95,.28);z-index:80;opacity:.95;}
+  /* Home tile customization: long-press to reorder, drag the frame edge/corner to resize
+     (device-local, see applyHomeLayout) */
+  .grid.editing .tile{border:2px dashed var(--steel);touch-action:none;}
+  .homeDragGhost{position:fixed;margin:0;pointer-events:none;transform:scale(1.04);box-shadow:0 10px 26px rgba(31,58,95,.28);z-index:80;opacity:.95;box-sizing:border-box;}
   #homeEditHint{color:var(--steel);font-weight:700;}
   .view{display:none;} .view.active{display:block;}
   /* HARD ENFORCEMENT: only the view matching body[data-view] is ever visible.
@@ -278,7 +282,7 @@
     <div id="closeDayPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div id="countPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div class="greet">Every entry uses today's date, your name and branch.</div>
-    <div class="greet" id="homeEditHint" style="display:none">Drag to reorder, tap ⤢ to resize.</div>
+    <div class="greet" id="homeEditHint" style="display:none">Drag the middle of a tile to reorder. Drag its edge or corner to resize.</div>
     <div class="grid" id="homeGrid">
       <button class="tile t1" data-key="count" onclick="openCount()"><div class="ic">&#9638;</div><h3>Stock Count</h3><p>Opening / closing, full &amp; empty</p><span class="badge" id="b-count" style="display:none">0</span></button>
       <button class="tile t2" data-key="manifold" onclick="openCap('manifold')"><div class="ic">&#9878;</div><h3>Manifold</h3><p>Weigh DV donor cylinders</p><span class="badge" id="b-manifold" style="display:none">0</span></button>
@@ -2774,29 +2778,62 @@ function greyTiles(){
 // skipped without leaving a gap, and a tile added later (not in an old save) just sorts last
 // and defaults to normal size rather than breaking. ----
 var HOME_LAYOUT_KEY='gs_home_layout';
+var HOME_RESIZE_EDGE=16; // px from a tile's right/bottom edge that counts as "grabbing the frame" for resize, vs the interior which starts a reorder-drag
+var HOME_MIN_W=90, HOME_MIN_H=64, HOME_MAX_H=340;
 var _homeEditing=false, _homeLongPressTimer=null, _homeSuppressNextClick=false;
 var _homeMoveKey=null, _homeMoveOrder=[], _homeMoveGhost=null, _homeMoveStartX=0, _homeMoveStartY=0, _homeMoveOffX=0, _homeMoveOffY=0, _homeMoveMoved=false;
-var _homeResizeTile=null, _homeResizeStartX=0, _homeResizeStartY=0, _homeResizeStartLarge=false, _homeResizeStartCompact=false;
+var _homeResizeTile=null, _homeResizeEdgeX=false, _homeResizeEdgeY=false, _homeResizeStartX=0, _homeResizeStartY=0, _homeResizeStartW=0, _homeResizeStartH=0, _homeResizeMaxW=0;
 function _loadHomeLayout(){
   try{var r=localStorage.getItem(HOME_LAYOUT_KEY);var d=r?JSON.parse(r):null;return (d&&d.order)?d:{order:[],sizes:{}};}
   catch(e){return {order:[],sizes:{}};}
 }
 function _saveHomeLayoutData(layout){try{localStorage.setItem(HOME_LAYOUT_KEY,JSON.stringify(layout));}catch(e){}}
+// Scales the icon and heading, and hides the description once too cramped to read, as a
+// tile's own current box size changes - continuous, not stepped, so any size the frame gets
+// dragged to still looks intentional rather than clipped or comically empty. Reference size
+// (160x130) is roughly this tile's own natural default (2-per-row) size, so an unresized
+// tile always renders at exactly scale 1 - identical to how it looked before any of this
+// existed.
+function _fitTileContent(t){
+  var w=t.clientWidth, h=t.clientHeight;
+  if(!w||!h)return;
+  var scale=Math.max(.55,Math.min(1.35,Math.min(w/160,h/130)));
+  var ic=t.querySelector('.ic'), h3=t.querySelector('h3'), p=t.querySelector('p');
+  if(ic){var icPx=Math.round(44*scale);ic.style.width=icPx+'px';ic.style.height=icPx+'px';ic.style.fontSize=Math.round(22*scale)+'px';ic.style.borderRadius=Math.round(12*scale)+'px';}
+  if(h3)h3.style.fontSize=Math.round(15*scale)+'px';
+  if(p)p.style.display=(h<95||w<115)?'none':'';
+}
+// Every tile with no saved size gets an explicit width/height applied (not left to flex's own
+// content-driven sizing) so resizing later has a real, consistent starting point on every
+// device - width matches "2 per row" on THIS device's own screen, height matches this tile's
+// own natural (unresized) content height, measured before any inline height is forced on, so
+// nothing about the default look changes for someone who never touches this feature.
+function _homeDefaultSize(t,gridWidth,gap){
+  var w=Math.floor((gridWidth-gap)/2);
+  var prevH=t.style.height;t.style.height='';
+  var h=t.getBoundingClientRect().height||130;
+  t.style.height=prevH;
+  return {w:w,h:Math.round(h)};
+}
 function applyHomeLayout(){
   var layout=_loadHomeLayout();
   var order=layout.order||[], sizes=layout.sizes||{};
+  var gridEl=document.getElementById('homeGrid');
+  var gap=12, gridWidth=gridEl.clientWidth||320;
   document.querySelectorAll('#homeGrid .tile[data-key]').forEach(function(t){
     var key=t.getAttribute('data-key');
     var idx=order.indexOf(key);
     t.style.order=(idx===-1)?9999:idx; // not in the saved layout (new/never-arranged tile) sorts after everything that is
-    var sz=sizes[key]||{};
-    t.classList.toggle('large',!!sz.w2);
-    t.classList.toggle('compact',!!sz.hc);
+    var sz=sizes[key];
+    if(!sz)sz=_homeDefaultSize(t,gridWidth,gap);
+    t.style.width=sz.w+'px';t.style.height=sz.h+'px';
+    _fitTileContent(t);
   });
   _ensureHomeCustomizeWired();
 }
 function resetHomeLayout(){
   _saveHomeLayoutData({order:[],sizes:{}});
+  document.querySelectorAll('#homeGrid .tile[data-key]').forEach(function(t){t.style.width='';t.style.height='';});
   applyHomeLayout();
   toast('Layout reset to default');
 }
@@ -2811,11 +2848,6 @@ function _startHomeEdit(){
   document.getElementById('homeGrid').classList.add('editing');
   document.getElementById('homeEditHint').style.display='block';
   document.getElementById('homeEditBar').style.display='flex';
-  document.querySelectorAll('#homeGrid .tile[data-key]').forEach(function(t){
-    var b=document.createElement('button');
-    b.type='button';b.className='tileResizeBtn';b.textContent='⤡';
-    t.appendChild(b);
-  });
 }
 function _endHomeEdit(save){
   if(!_homeEditing)return;
@@ -2823,18 +2855,15 @@ function _endHomeEdit(save){
   document.getElementById('homeGrid').classList.remove('editing');
   document.getElementById('homeEditHint').style.display='none';
   document.getElementById('homeEditBar').style.display='none';
-  document.querySelectorAll('.tileResizeBtn').forEach(function(b){b.remove();});
   if(save){
     var order=_visualHomeOrder();
     var sizes={};
     document.querySelectorAll('#homeGrid .tile[data-key]').forEach(function(t){
-      var key=t.getAttribute('data-key');
-      var w2=t.classList.contains('large'), hc=t.classList.contains('compact');
-      if(w2||hc)sizes[key]={w2:w2,hc:hc};
+      sizes[t.getAttribute('data-key')]={w:t.clientWidth,h:t.clientHeight};
     });
     _saveHomeLayoutData({order:order,sizes:sizes});
   } else {
-    applyHomeLayout(); // discard anything moved mid-edit, restore last saved layout
+    applyHomeLayout(); // discard anything moved/resized mid-edit, restore last saved layout
   }
 }
 // FLIP-technique reflow: records every tile's on-screen position before `mutate` runs
@@ -2869,24 +2898,28 @@ function _ensureHomeCustomizeWired(){
   // customizing, or right after a drag ends (the touchend that finishes a drag still emits
   // a synthetic click on most browsers).
   grid.addEventListener('click',function(e){
-    if(e.target.closest('.tileResizeBtn'))return; // handled entirely by its own drag below, never a plain click
     if(_homeEditing||_homeSuppressNextClick){e.stopPropagation();e.preventDefault();_homeSuppressNextClick=false;}
   },true);
   grid.addEventListener('touchstart',function(e){
-    var handle=e.target.closest('.tileResizeBtn');
-    if(handle){
-      var rt=handle.closest('.tile[data-key]');if(!rt)return;
-      e.preventDefault();
-      _homeResizeTile=rt;
-      var rTouch=e.touches[0];_homeResizeStartX=rTouch.clientX;_homeResizeStartY=rTouch.clientY;
-      _homeResizeStartLarge=rt.classList.contains('large');_homeResizeStartCompact=rt.classList.contains('compact');
-      return;
-    }
     var t=e.target.closest('.tile[data-key]');if(!t)return;
     if(!_homeEditing){_homeLongPressTimer=setTimeout(function(){_startHomeEdit();},550);return;}
     e.preventDefault();
     var rect=t.getBoundingClientRect();
     var touch=e.touches[0];
+    // Grabbing near the tile's own right/bottom edge resizes it (drag the frame, per the
+    // requested interaction); anywhere else in the interior starts a reorder-drag, same as
+    // before. Corner = both axes at once. touch-action:none on .grid.editing (CSS) stops the
+    // browser's own scroll/zoom gestures from fighting either one once a finger is down.
+    var nearRight=(rect.right-touch.clientX)<=HOME_RESIZE_EDGE;
+    var nearBottom=(rect.bottom-touch.clientY)<=HOME_RESIZE_EDGE;
+    if(nearRight||nearBottom){
+      _homeResizeTile=t;
+      _homeResizeEdgeX=nearRight;_homeResizeEdgeY=nearBottom;
+      _homeResizeStartX=touch.clientX;_homeResizeStartY=touch.clientY;
+      _homeResizeStartW=rect.width;_homeResizeStartH=rect.height;
+      _homeResizeMaxW=grid.clientWidth; // a tile can be dragged up to the full row width, never wider than the screen has room for
+      return;
+    }
     _homeMoveKey=t.getAttribute('data-key');
     _homeMoveStartX=touch.clientX;_homeMoveStartY=touch.clientY;
     _homeMoveOffX=touch.clientX-rect.left;_homeMoveOffY=touch.clientY-rect.top;
@@ -2900,7 +2933,6 @@ function _ensureHomeCustomizeWired(){
     ghost.className=t.className+' homeDragGhost';
     ghost.style.left=rect.left+'px';ghost.style.top=rect.top+'px';
     ghost.style.width=rect.width+'px';ghost.style.height=rect.height+'px';
-    var ghostHandle=ghost.querySelector('.tileResizeBtn');if(ghostHandle)ghostHandle.remove();
     document.body.appendChild(ghost);
     _homeMoveGhost=ghost;
     t.style.visibility='hidden';
@@ -2910,21 +2942,15 @@ function _ensureHomeCustomizeWired(){
       e.preventDefault();
       var rTouch=e.touches[0];
       var dx=rTouch.clientX-_homeResizeStartX, dy=rTouch.clientY-_homeResizeStartY;
-      // Drag the handle away from the tile (right/down) to grow, back towards it (left/up)
-      // to shrink - the standard resize-handle convention. Independent thresholds per axis
-      // so width and height can be adjusted together or separately in one drag; a small
-      // dead zone around the start position (rather than a single 0px line) avoids the size
-      // flickering back and forth on tiny finger jitter right at the threshold.
-      var large=_homeResizeStartLarge?(dx>-30):(dx>30);
-      // NOTE: was `_homeResizeStartCompact?(dy>-20):(dy<-20)` - that let a tile become
-      // compact from a downward drag, but never let it un-compact via a downward (grow) drag
-      // once already compact, since dy<-20 can never be true while dragging down. Verified
-      // wrong by an actual drag test (not just read - see commit), fixed to the symmetric
-      // form below: compact only flips when the drag crosses ~20px in the shrinking (up)
-      // direction, growing (down) always available regardless of starting state.
-      var compact=_homeResizeStartCompact?(dy<=20):(dy<=-20);
-      _homeResizeTile.classList.toggle('large',large);
-      _homeResizeTile.classList.toggle('compact',compact);
+      if(_homeResizeEdgeX){
+        var w=Math.max(HOME_MIN_W,Math.min(_homeResizeMaxW,_homeResizeStartW+dx));
+        _homeResizeTile.style.width=w+'px';
+      }
+      if(_homeResizeEdgeY){
+        var h=Math.max(HOME_MIN_H,Math.min(HOME_MAX_H,_homeResizeStartH+dy));
+        _homeResizeTile.style.height=h+'px';
+      }
+      _fitTileContent(_homeResizeTile);
       return;
     }
     if(_homeMoveKey){
