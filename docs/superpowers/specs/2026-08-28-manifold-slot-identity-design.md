@@ -105,20 +105,23 @@ deliberately changes it.
 ## Validation rules
 
 Anchored to each gas type's own nominal capacity (`cap` = 48 LPG / 45 Propane, matching the
-existing `gasLeftCap` code's own convention). Caught during self-review and clarifying here
-since it wasn't explicit: the tolerance band only makes sense for an **Added**-stage
-reading (confirming a freshly swapped-in cylinder is genuinely full) - Opening and Closing
-readings are *expected* to often sit well below capacity as gas gets used through the day, so
-checking them against "should be close to full" would wrongly flag perfectly normal readings.
-The hard ceiling, by contrast, is a real physical limit (a cylinder cannot hold more gas than
-its own capacity, regardless of when it's measured) and applies at every stage - matching how
-today's existing cap already works everywhere, just corrected to the right threshold.
+existing `gasLeftCap` code's own convention). Applies at **every stage** (Opening/Added/
+Removed/Closing), not just Added — an earlier draft of this doc scoped the tolerance band to
+Added only, reasoning that Opening/Closing readings are normally well below capacity so
+wouldn't need it; corrected after review, since the point isn't "this stage should be near
+capacity," it's "whenever ANY reading happens to land in this zone, flag it" - an operator
+fat-fingering a digit can produce a near-capacity reading at any stage, and the system can't
+tell that apart from a cylinder that's genuinely still near-full (e.g. a backup slot that
+barely got used that day) without a person looking at it - which is exactly what the
+override-with-reason step is for, regardless of which stage triggered it.
 
-| Range (relative to `cap`) | LPG example | Propane example | Applies to | Behavior |
-|---|---|---|---|---|
-| `cap − 0.1` to `cap + 0.1` | 47.9–48.1kg | 44.9–45.1kg | Added only | Normal, no flag |
-| `cap + 0.1` to `cap + 0.2` | 48.1–48.2kg | 45.1–45.2kg | Added only | Flagged; Manager/Owner password + reason overrides it, same as the existing seal-boundary override |
-| `cap + 0.2` and above | 48.2kg+ | 45.2kg+ | Every stage (Opening/Added/Removed/Closing) | Never saved, no override — clear message shown, operator must re-weigh and correct before it can be saved at all |
+| Range (relative to `cap`) | LPG example | Propane example | Behavior |
+|---|---|---|---|
+| `cap − 0.1` to `cap + 0.1` | 47.9–48.1kg | 44.9–45.1kg | Normal, no flag |
+| `cap + 0.1` to `cap + 0.2` | 48.1–48.2kg | 45.1–45.2kg | Flagged; Manager/Owner password + reason overrides it, same as the existing seal-boundary override |
+| `cap + 0.2` and above | 48.2kg+ | 45.2kg+ | Never saved, no override — clear message shown, operator must re-weigh and correct before it can be saved at all |
+
+All three rows apply uniformly to Opening, Added, Removed, and Closing readings alike.
 
 Gas-left can never be negative — already true today for free (the existing "scale cannot be
 less than tare" check makes this impossible), no new work needed.
