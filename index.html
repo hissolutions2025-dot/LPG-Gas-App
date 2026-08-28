@@ -620,6 +620,7 @@
     <button class="htab" id="atab-suppliers" onclick="adminTab('suppliers')">Brands</button>
     <button class="htab" id="atab-clear" onclick="adminTab('clear')">Clear Stock Take</button>
     <button class="htab" id="atab-bsetup" onclick="adminTab('bsetup')">Branch Setup</button>
+    <button class="htab" id="atab-manifold" onclick="adminTab('manifold')">Manifold Slots</button>
     <button class="htab" id="atab-faulty" onclick="adminTab('faulty')">Faulty Cylinders</button>
     <button class="htab" id="atab-suppliersmgmt" onclick="adminTab('suppliersmgmt')">Manage Suppliers</button>
     <button class="htab" id="atab-counttimes" onclick="adminTab('counttimes')">Count Times</button>
@@ -686,6 +687,18 @@
           <select class="mField" id="bsBranch" onchange="renderBsetup()"><option>Helderberg</option><option>Kleinmond</option></select></div>
       </div>
       <div id="bsetupBody" style="margin-top:10px"></div>
+    </div>
+  </div>
+
+  <!-- MANIFOLD SLOTS PANE -->
+  <div id="adminManifold" style="display:none">
+    <div class="histSection"><h4>Manifold Slots — per branch</h4>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">How many cylinder slots (Cyl 1..N) this branch's manifold has. Synced live - every device at this branch sees the same count. Owner only.</div>
+      <div class="adminRow">
+        <div class="grow"><label class="mLabel" style="font-size:11px">Branch</label>
+          <select class="mField" id="mfBranch" onchange="renderManifoldSlots()"><option>Helderberg</option><option>Kleinmond</option></select></div>
+      </div>
+      <div id="manifoldSlotsBody" style="margin-top:10px"></div>
     </div>
   </div>
 
@@ -1186,10 +1199,10 @@ function openAdmin(){
 }
 var _adminUnlocked={}; // per Admin session: which tabs unlocked
 var ADMIN_TAB_PERM={seals:'seal_admin',suppliers:'seal_admin',clear:'seal_edit_used',bsetup:'branch_setup',suppliersmgmt:'manageSuppliers',counttimes:'branch_setup'};
-var ADMIN_TAB_NAME={seals:'Seal Register',suppliers:'Brands',clear:'Clear Stock Take',bsetup:'Branch Setup',faulty:'Faulty Cylinders',suppliersmgmt:'Manage Suppliers',counttimes:'Count Times'};
+var ADMIN_TAB_NAME={seals:'Seal Register',suppliers:'Brands',clear:'Clear Stock Take',bsetup:'Branch Setup',faulty:'Faulty Cylinders',suppliersmgmt:'Manage Suppliers',counttimes:'Count Times',manifold:'Manifold Slots'};
 function adminShowTabsOnly(){
-  ['adminSeals','adminSuppliers','adminClear','adminBsetup','adminFaulty','adminSuppliersMgmt','adminCountTimes'].forEach(function(id){var e=document.getElementById(id);if(e)e.style.display='none';});
-  ['atab-seals','atab-suppliers','atab-clear','atab-bsetup','atab-faulty','atab-suppliersmgmt','atab-counttimes'].forEach(function(id){var e=document.getElementById(id);if(e)e.classList.remove('on');});
+  ['adminSeals','adminSuppliers','adminClear','adminBsetup','adminManifold','adminFaulty','adminSuppliersMgmt','adminCountTimes'].forEach(function(id){var e=document.getElementById(id);if(e)e.style.display='none';});
+  ['atab-seals','atab-suppliers','atab-clear','atab-bsetup','atab-manifold','atab-faulty','atab-suppliersmgmt','atab-counttimes'].forEach(function(id){var e=document.getElementById(id);if(e)e.classList.remove('on');});
   _adminUnlocked={}; // reset on each Admin entry
 }
 function adminTab(t){
@@ -1216,6 +1229,7 @@ function _adminTabShow(t){
   document.getElementById('adminSuppliers').style.display=(t==='suppliers')?'block':'none';
   var _ac=document.getElementById('adminClear');if(_ac)_ac.style.display=(t==='clear')?'block':'none';
   var _abs=document.getElementById('adminBsetup');if(_abs)_abs.style.display=(t==='bsetup')?'block':'none';
+  var _amf=document.getElementById('adminManifold');if(_amf)_amf.style.display=(t==='manifold')?'block':'none';
   var _af=document.getElementById('adminFaulty');if(_af)_af.style.display=(t==='faulty')?'block':'none';
   var _asm=document.getElementById('adminSuppliersMgmt');if(_asm)_asm.style.display=(t==='suppliersmgmt')?'block':'none';
   var _act=document.getElementById('adminCountTimes');if(_act)_act.style.display=(t==='counttimes')?'block':'none';
@@ -1223,10 +1237,12 @@ function _adminTabShow(t){
   document.getElementById('atab-suppliers').classList.toggle('on',t==='suppliers');
   var _tc=document.getElementById('atab-clear');if(_tc)_tc.classList.toggle('on',t==='clear');
   var _tbs=document.getElementById('atab-bsetup');if(_tbs)_tbs.classList.toggle('on',t==='bsetup');
+  var _tmf=document.getElementById('atab-manifold');if(_tmf)_tmf.classList.toggle('on',t==='manifold');
   var _tf=document.getElementById('atab-faulty');if(_tf)_tf.classList.toggle('on',t==='faulty');
   var _tsm=document.getElementById('atab-suppliersmgmt');if(_tsm)_tsm.classList.toggle('on',t==='suppliersmgmt');
   var _tct=document.getElementById('atab-counttimes');if(_tct)_tct.classList.toggle('on',t==='counttimes');
   if(t==='bsetup')renderBsetup();
+  if(t==='manifold')renderManifoldSlots();
   if(t==='clear'){var d=document.getElementById('clrDate');if(d&&!d.value)d.value=today;}
   if(t==='seals'){fillBrandPicker();renderRolls();}
   if(t==='suppliers')renderSuppliers();
@@ -1420,6 +1436,29 @@ function renderBsetup(){
     html+='</div>';
   });
   box.innerHTML=html;
+}
+function renderManifoldSlots(){
+  var box=document.getElementById('manifoldSlotsBody');if(!box)return;
+  if(role!=='Owner'){box.innerHTML='<div style="color:#9B2C2C;font-size:13px">Owner only.</div>';return;}
+  var br=document.getElementById('mfBranch').value;
+  box.innerHTML='<div class="histEmpty" style="text-align:center;padding:10px">Loading…</div>';
+  sb.from('manifold_settings').select('slot_count').eq('branch',br).maybeSingle().then(function(res){
+    var n=(res.data&&res.data.slot_count)||4;
+    box.innerHTML='<label class="mLabel" style="font-size:11px">Slot count</label>'+
+      '<input class="mField" type="number" min="1" max="12" id="mfSlotCount" value="'+n+'">'+
+      '<button class="saveBtn" style="margin-top:10px" onclick="saveManifoldSlots(\''+br+'\')">Save</button>';
+  });
+}
+function saveManifoldSlots(br){
+  if(role!=='Owner'){toast('Owner only',true);return;}
+  var n=num(document.getElementById('mfSlotCount').value);
+  if(n<1||n>12){toast('Enter a slot count between 1 and 12',true);return;}
+  sb.from('manifold_settings').upsert([{branch:br,slot_count:n,updated_by:currentProfile&&currentProfile.id,updated_by_name_snapshot:operator,updated_at:new Date().toISOString()}],{onConflict:'branch'}).then(function(res){
+    if(res.error){toast('Could not save: '+res.error.message,true);return;}
+    _manifoldSlotCounts[br]=n;
+    auditLog('Manifold slot count changed',br+' -> '+n+' slots');
+    toast('Manifold slot count saved ✓');
+  },function(e){toast('Network error — check your connection',true);});
 }
 function toggleSection(br,sec,val){
   if(!(role==='Owner'||perm('branch_setup'))){toast('No Branch Setup rights',true);return;}
