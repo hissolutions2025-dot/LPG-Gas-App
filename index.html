@@ -2238,6 +2238,28 @@ function sealBoundaryOverride(msg){
     });
   });
 }
+// Manifold weight-tolerance override: a reading between the tolerance band and the hard
+// ceiling needs Manager/Owner sign-off + a reason before it can be saved as typed. Same
+// qualifying-check pattern as adjustMismatch()/openCorrection() - someone who already
+// qualifies gets a single password prompt for their own account, instead of the two-step
+// "someone else must step in" flow (Manifold capture is normally done by an Operator who
+// needs to hand off to a Manager/Owner physically present, not re-authenticate as themselves).
+// Resolves {auth,reason} on success, or null if cancelled/declined at any step.
+function manifoldWeightOverride(msg){
+  var qualifies=function(p){return p.level==='Manager'||p.level==='Owner';};
+  var authPromise=(currentProfile && qualifies(currentProfile))
+    ? _selfReauth('Override this weight reading?')
+    : _borrowAuth('Manager or Owner','Override this weight reading?',qualifies);
+  return authPromise.then(function(auth){
+    if(!auth)return null;
+    return askText('Reason for override','Reason this reading is outside the normal range (required):','').then(function(reason){
+      if(reason===null||!reason.trim())return null;
+      auditLog('Manifold weight override',capBranch+' — '+msg+' — by '+auth.name+' ('+auth.level+') — '+reason.trim());
+      syncPush('Adjustments',[{date:today||'',branch:capBranch,Kind:'ManifoldWeightOverride',Line:msg,From:'',To:'',Reason:reason.trim(),By:auth.name+' ('+auth.level+')'}]);
+      return {auth:auth,reason:reason.trim()};
+    });
+  });
+}
 // VOID a wrongly-captured seal. mode: 'reuse' (number returns to pool) or 'burn' (number retired).
 // Open day (today, not closed) -> seal_void_open. Closed/prior day -> seal_edit_used.
 // dayIsClosed: caller passes whether the target refill's day is already closed.
@@ -5478,12 +5500,33 @@ function _addLineFinish(c,d){
       if(!d[f.k]||d[f.k]===''){toast('Fill in: '+f.label,true);return;}}
   }
   if('scale'in d&&'tare'in d&&num(d.scale)<num(d.tare)){toast('Scale cannot be less than tare',true);return;}
-  // Gas-left cap (manifold): LPG ≤48kg, Propane ≤45kg — flag & BLOCK, not overridable
+  // Two-tier weight validation (manifold). Applies at every stage (Opening/Added/Removed/
+  // Closing), not just when adding a fresh cylinder - an operator fat-fingering a digit can
+  // produce a near-capacity reading at any stage, and the system can't tell that apart from a
+  // cylinder that's genuinely still near-full (e.g. an unused backup slot) without a person
+  // reviewing it, which is exactly what the override below is for, regardless of which stage
+  // triggered it.
+  //   cap-0.1 .. cap+0.1  -> normal, no flag
+  //   cap+0.1 .. cap+0.2  -> flagged, Manager/Owner override with a reason can still save it
+  //   cap+0.2 and above   -> never saved, no override, operator must re-weigh and fix it
   if(c.gasLeftCap && 'scale'in d && 'tare'in d){
     var gl=num(d.scale)-num(d.tare);
     var cap=(d.gasType==='Propane')?45:48;
-    if(gl>cap){toast('⚠ Gas left ('+gl.toFixed(2)+'kg) exceeds '+cap+'kg max for '+(d.gasType||'LPG')+'. Re-check the weights — this cannot be saved.',true);return;}
+    if(gl>=cap+0.2){
+      toast('⚠ Gas left ('+gl.toFixed(2)+'kg) exceeds '+(cap+0.2).toFixed(1)+'kg — that\'s not physically possible for this cylinder. Re-weigh and correct the scale/tare before saving.',true);
+      return;
+    }
+    if(gl>cap+0.1){
+      manifoldWeightOverride('Gas left '+gl.toFixed(2)+'kg for '+modalItem+' ('+(d.gasType||'LPG')+', normal range up to '+(cap+0.1).toFixed(1)+'kg)').then(function(ok){
+        if(!ok){toast('Override needed to save this reading',true);return;}
+        _addLineFinishAfterCap(c,d);
+      });
+      return; // async path - _addLineFinishAfterCap below continues once authorised
+    }
   }
+  _addLineFinishAfterCap(c,d);
+}
+function _addLineFinishAfterCap(c,d){
   c.popupFields.filter(function(f){return f.type==='auto';}).forEach(function(f){d[f.k]=f.calc(d,modalItem);});
   if(c.toggles)c.toggles.forEach(function(t){if(!d[t.key])d[t.key]=toggleSel[t.key];});
   var bucket=dataBucket();
