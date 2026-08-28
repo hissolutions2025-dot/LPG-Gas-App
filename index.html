@@ -3449,16 +3449,21 @@ function cOpenDetail(sz,side){
   document.getElementById('cDetSub').textContent=(side==='full'?'Full brands for '+cBranch:'Empties — any brand returned');
   cShow('countDetailView');cRenderDetail();window.scrollTo(0,0);
 }
-// Shared byline text for a committed Stock Count line: who captured it and when, or
-// if it was corrected, who corrected it/when/what it changed from-to. Used by both
-// the grid's detail view (cRenderDetail) and the Adjust picker
-// (corrStepCountGroupEdit) - same underlying fields (_operator/_time/_correctedFrom),
-// same wording, one place to keep them consistent.
-function _stockCountByline(l){
+// Shared byline text for a committed capture line: who captured it and when, or if it was
+// corrected, who corrected it/when/what it changed from-to. Originally Stock-Count-only
+// (cRenderDetail, corrStepCountGroupEdit); the underlying fields (_operator/_time/
+// _correctedFrom/_correctedBy/_correctedTime) are stamped the same way by every capture type
+// now (see corrApply's stamp, which covers Received/Refill/Private/Manifold's same-day
+// adjust and the 48-hour historical tool in one place), so this reads off any of them.
+// curVal is the line's current value to show as the "→" side of an adjustment - defaults to
+// l.qty (Stock Count's own field name) for the existing call sites; corrStepEdit (shared
+// across every OTHER capture type, where the field is fullIn/emptyOut/gasLeft/pumped/etc,
+// never .qty) passes it explicitly via corrPick.get() instead.
+function _stockCountByline(l,curVal){
   var lines=[];
   if(l._operator&&l._time)lines.push('Captured by '+l._operator+' · '+l._time);
   if(l._correctedFrom!==undefined && l._correctedFrom!==null && l._correctedBy && l._correctedTime){
-    lines.push('Adjusted by '+l._correctedBy+' · '+l._correctedTime+': '+l._correctedFrom+' → '+num(l.qty));
+    lines.push('Adjusted by '+l._correctedBy+' · '+l._correctedTime+': '+l._correctedFrom+' → '+num(curVal!==undefined?curVal:l.qty));
   }
   return lines.join('<br>');
 }
@@ -6695,9 +6700,15 @@ function corrApplyCountGroup(){
 function corrStepEdit(i){
   var l=corrCfg._lines[i];corrPick=l;
   var cur=l.get();
+  // Same byline shown for Stock Count (cRenderDetail/corrStepCountGroupEdit), now here too
+  // since corrApply() stamps the same fields for every other capture type's same-day adjust
+  // and the historical tool - curVal passed explicitly since l.row's own value field isn't
+  // always .qty (fullIn/emptyOut/gasLeft/pumped/etc depending on section).
+  var byline=l.row?_stockCountByline(l.row,cur):'';
   var html='<div style="font-size:12px;color:var(--muted);margin-bottom:8px"><button class="sigClear" onclick="corrStepLines(\''+corrCfg._section+'\')">\u2039 Back</button></div>'+
     '<div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:8px">'+l.tag+'</div>'+
     '<div style="font-size:12px;color:var(--muted)">Current value: <b>'+cur+'</b></div>'+
+    (byline?'<div style="font-size:10px;color:var(--muted);margin-top:4px">'+byline+'</div>':'')+
     '<input class="mField" id="corrNewVal" type="number" inputmode="numeric" placeholder="Correct value" value="'+cur+'" style="width:100%;margin:8px 0">'+
     '<textarea id="corrReason" placeholder="Reason for correction (required)" style="width:100%;min-height:60px;border:1px solid var(--line);border-radius:10px;padding:8px;font:inherit;box-sizing:border-box"></textarea>'+
     '<button class="mDone" id="corrApplyBtn" style="margin-top:8px" onclick="corrApply()">Apply correction</button>';
@@ -6724,6 +6735,16 @@ function corrApply(){
   if(corrCfg.validate && !corrCfg.validate(sel,oldVal,newVal))return;
   corrApplyBusy=true;
   var btn=document.getElementById('corrApplyBtn');if(btn){btn.disabled=true;btn.style.opacity='.6';}
+  // Same byline stamp corrStepCountGroupApply already does for Stock Count's grouped
+  // correction path - this is the single shared applier every OTHER capture type's same-day
+  // adjust (Received, Refill, Private, Manifold) and the 48-hour historical tool all funnel
+  // through, so fixing it here once covers all of them, same as corrStepCountGroupApply's own
+  // comment already explains: deliberately doesn't touch _operator/_time (who/when originally
+  // captured this line) - the correction is its own separate fact, so "captured by" and
+  // "adjusted by" can both show, one never overwriting the other. Harmless when corrPick.row
+  // isn't a live store row (the historical tool's cloned snapshot) since nothing else reads
+  // these fields off that path.
+  if(corrPick.row){corrPick.row._correctedFrom=oldVal;corrPick.row._correctedBy=corrAuth.name;corrPick.row._correctedTime=nowStamp();}
   corrPick.set(newVal);
   corrCfg.onApply(sel,oldVal,newVal,reason,corrAuth);
   document.getElementById('corrModal').classList.remove('show');
