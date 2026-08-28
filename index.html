@@ -1213,6 +1213,12 @@ function adminTab(t){
     _adminTabShow(t);
     return;
   }
+  // Manifold Slots: Owner-only, no Manager tier — this is a hard role check (not a
+  // perm()-overridable ADMIN_TAB_PERM key) because renderManifoldSlots/saveManifoldSlots
+  // already gate on role==='Owner' directly, and the design intent is strictly Owner-only
+  // with no granular-permission escape hatch for Managers. Block immediately, same as every
+  // other ADMIN_TAB_PERM check below, before the password prompt is ever shown.
+  if(t==='manifold' && role!=='Owner'){toast('You do not have rights for '+ADMIN_TAB_NAME[t],true);return;}
   // password gate per tab — ALWAYS ask, every tap (sensitive area)
   var permKey=ADMIN_TAB_PERM[t];
   if(permKey && !(role==='Owner'||perm(permKey))){toast('You do not have rights for '+ADMIN_TAB_NAME[t],true);return;}
@@ -1443,16 +1449,29 @@ function renderManifoldSlots(){
   var br=document.getElementById('mfBranch').value;
   box.innerHTML='<div class="histEmpty" style="text-align:center;padding:10px">Loading…</div>';
   sb.from('manifold_settings').select('slot_count').eq('branch',br).maybeSingle().then(function(res){
+    // staleness guard: if #mfBranch has moved on since this fetch was issued, a newer
+    // renderManifoldSlots() call is already in flight (or already rendered) for the
+    // current branch — don't let this older resolution clobber it.
+    if(document.getElementById('mfBranch').value!==br)return;
+    if(res.error){
+      console.error('renderManifoldSlots failed for '+br+':',res.error.message);
+      box.innerHTML='<div style="color:#9B2C2C;font-size:13px">Could not load slot count — '+res.error.message+'</div>';
+      return;
+    }
     var n=(res.data&&res.data.slot_count)||4;
     box.innerHTML='<label class="mLabel" style="font-size:11px">Slot count</label>'+
       '<input class="mField" type="number" min="1" max="12" id="mfSlotCount" value="'+n+'">'+
       '<button class="saveBtn" style="margin-top:10px" onclick="saveManifoldSlots(\''+br+'\')">Save</button>';
+  },function(e){
+    if(document.getElementById('mfBranch').value!==br)return;
+    console.error('renderManifoldSlots rejected for '+br+':',e&&e.message);
+    box.innerHTML='<div style="color:#9B2C2C;font-size:13px">Network error — could not load slot count.</div>';
   });
 }
 function saveManifoldSlots(br){
   if(role!=='Owner'){toast('Owner only',true);return;}
   var n=num(document.getElementById('mfSlotCount').value);
-  if(n<1||n>12){toast('Enter a slot count between 1 and 12',true);return;}
+  if(n<1||n>12||n%1!==0){toast('Enter a whole number between 1 and 12',true);return;}
   sb.from('manifold_settings').upsert([{branch:br,slot_count:n,updated_by:currentProfile&&currentProfile.id,updated_by_name_snapshot:operator,updated_at:new Date().toISOString()}],{onConflict:'branch'}).then(function(res){
     if(res.error){toast('Could not save: '+res.error.message,true);return;}
     _manifoldSlotCounts[br]=n;
