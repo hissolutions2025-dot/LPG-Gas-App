@@ -5451,20 +5451,9 @@ function askMismatchResolution(title,msg,defaultQty){
   });
 }
 function _mmResolveReason(){return document.getElementById('mmResolveReason').value;}
-// A validation toast fired while a field inside this modal is still focused rendered
-// invisible/clipped on a phone - the on-screen keyboard sits on top of everything in the
-// viewport (no CSS z-index reaches above it), covering the bottom-anchored toast entirely,
-// and its own 1800ms fade timer still runs the whole time it's hidden, so it looked "stuck"
-// or "not disappearing" once the keyboard finally closed and the (by-then-faded-or-fading)
-// toast became visible. Blurring the active field first dismisses the keyboard so the toast
-// is actually visible for its full, normal lifetime.
-function _mmResolveToast(msg){
-  if(document.activeElement&&document.activeElement.blur)document.activeElement.blur();
-  toast(msg,true);
-}
 function mmResolveConfirm(){
   var reason=_mmResolveReason();
-  if(!reason.trim()){_mmResolveToast('A reason is required');return;}
+  if(!reason.trim()){toast('A reason is required',true);return;}
   var qtyInp=document.getElementById('mmResolveQty');
   var qty=qtyInp.value;
   // "Save correction" means the count actually changed - a left-unchanged quantity here is
@@ -5473,7 +5462,7 @@ function mmResolveConfirm(){
   // attribute Accept as correct itself reads) rather than saving a no-op "correction" whose
   // From/To in the audit trail would be identical.
   if(num(qty)===num(qtyInp.getAttribute('data-default'))){
-    _mmResolveToast('Enter a different quantity to save a correction, or use Accept as correct if the count is right');
+    toast('Enter a different quantity to save a correction, or use Accept as correct if the count is right',true);
     return;
   }
   document.getElementById('mmResolveModal').classList.remove('show');
@@ -5481,7 +5470,7 @@ function mmResolveConfirm(){
 }
 function mmResolveAccept(){
   var reason=_mmResolveReason();
-  if(!reason.trim()){_mmResolveToast('A reason is required');return;}
+  if(!reason.trim()){toast('A reason is required',true);return;}
   var defaultQty=document.getElementById('mmResolveQty').getAttribute('data-default');
   document.getElementById('mmResolveModal').classList.remove('show');
   if(_mmResolveResolve){_mmResolveResolve({action:'accept',qty:defaultQty,reason:reason});_mmResolveResolve=null;}
@@ -7391,7 +7380,19 @@ function exportData(){
   var payload={stockTakeDate:today,operator:operator,branch:branch,entries:store};
   var w=window.open('','_blank');if(w){w.document.write('<pre style="font:13px monospace;padding:16px;white-space:pre-wrap">'+JSON.stringify(payload,null,2).replace(/</g,'&lt;')+'</pre>');}else toast('Allow popups',true);
 }
-var tT;function toast(msg,err){var t=document.getElementById('toast');t.textContent=msg;t.className='show'+(err?' err':'');clearTimeout(tT);tT=setTimeout(function(){t.className=err?'err':'';},1800);}
+// Blurring the focused field before every toast (not just this one call site) is the fix -
+// a toast fired while a text field is focused rendered invisible/clipped on a phone, since
+// the on-screen keyboard sits on top of everything in the viewport with no CSS z-index able
+// to reach above it, and its own 1800ms fade timer kept running the whole time it was
+// hidden, so it looked "stuck"/"not disappearing" once the keyboard eventually closed and
+// the (by-then fading or already-faded) toast became visible. Found and fixed narrowly for
+// one modal first; this generalizes it to the ~80 other validation-style toast() calls
+// across every capture/admin screen that have the exact same risk, since the root cause was
+// never specific to that one modal.
+var tT;function toast(msg,err){
+  if(document.activeElement&&document.activeElement.blur)document.activeElement.blur();
+  var t=document.getElementById('toast');t.textContent=msg;t.className='show'+(err?' err':'');clearTimeout(tT);tT=setTimeout(function(){t.className=err?'err':'';},1800);
+}
 document.body.setAttribute('data-view','login');
 function _bootApp(){
   initLoginScreen(); // always populate the login name dropdown, even when we're about to auto-resume straight past it - otherwise a later logout leaves the dropdown permanently empty
