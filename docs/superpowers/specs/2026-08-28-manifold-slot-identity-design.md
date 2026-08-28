@@ -97,10 +97,19 @@ from `day_closes` rather than duplicated.
 
 ### Manifold slot count setting
 
-New Owner-configurable, per-branch setting (alongside Branch Setup/Count Times in Admin).
-Determines how many slots (`CYLS`) render on the Manifold capture grid for that branch.
-Existing branches default to today's fixed count (4) so nothing changes until an Owner
-deliberately changes it.
+New Owner-configurable, per-branch setting, surfaced alongside Branch Setup/Count Times in
+Admin. Determines how many slots (`CYLS`) render on the Manifold capture grid for that
+branch. Existing branches default to today's fixed count (4) so nothing changes until an
+Owner deliberately changes it.
+
+**Supabase-synced, not device-local** - caught during plan-writing and confirmed here rather
+than assumed: Branch Setup and Count Times, the settings this sits next to in the Admin UI,
+are both device-local only (`localStorage`, no cross-device sync). That's fine for on/off
+admin preferences, but slot count directly determines what the capture grid *shows* - if it
+stayed device-local, an Owner changing it on their own phone wouldn't affect what an Operator's
+phone renders, and they'd literally be capturing against a different number of slots. This
+follows the same Supabase-synced pattern established for anything else in this app that must
+render identically across devices, not the local-only pattern of its Admin-screen neighbors.
 
 ## Validation rules
 
