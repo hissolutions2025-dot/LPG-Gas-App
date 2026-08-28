@@ -1005,7 +1005,24 @@ const FILLSIZES=['5kg','9kg','12kg','14kg','19kg','14kg-FLT','19kg-FLT','8kg-Pro
 const PRIVSIZES=['1.5kg','2kg','3kg','4.5kg','9kg'];
 const PRIVBRANDS=['Cadac','Alva','Safegas','Other'];
 const MOVES=['Received-Full','Returned-Empty','Faulty-Full'];
-const CYLS=['Cyl 1','Cyl 2','Cyl 3','Cyl 4'];
+const CYLS=['Cyl 1','Cyl 2','Cyl 3','Cyl 4']; // default/fallback shape only now - see _manifoldCylLabels
+// Live per-branch slot count, Supabase-synced (never device-local like Branch Setup/Count
+// Times - a stale local value here would mean different devices show a different number of
+// slots for the same branch, capturing genuinely different data). Falls back to today's
+// fixed 4 while the fetch is in flight or if it fails, same graceful-degradation convention
+// every other live fetch in this app already uses - never blocks capture from working.
+var _manifoldSlotCounts={};
+function _manifoldCylLabels(br){
+  var n=_manifoldSlotCounts[br]||4;
+  var out=[];for(var i=1;i<=n;i++)out.push('Cyl '+i);
+  return out;
+}
+function _fetchManifoldSlotCount(br){
+  return sb.from('manifold_settings').select('slot_count').eq('branch',br).maybeSingle().then(function(res){
+    if(res.error){console.error('_fetchManifoldSlotCount failed for '+br+':',res.error.message);return;}
+    if(res.data)_manifoldSlotCounts[br]=res.data.slot_count;
+  },function(e){console.error('_fetchManifoldSlotCount rejected for '+br+':',e&&e.message);});
+}
 const SIZEKG={'5kg':5,'9kg':9,'12kg':12,'14kg':14,'19kg':19,'14kg-FLT':14,'19kg-FLT':19,'8kg-Prop':8,'18kg-Prop':18};
 
 let store={count:[],manifold:[],refill:[],private:[],received:[],residual:[]};
@@ -4857,7 +4874,7 @@ const CAP={
       {k:'pumped',label:'Gas pumped (auto)',type:'auto',calc:function(d,item){var s=SIZEKG[item];return s?s-(num(d.scale)-num(d.tare)):'';}},
       {k:'seal',label:'Seal number',type:'number'},{k:'notes',label:'Notes',type:'text',opt:true}],
     weigh:true },
-  manifold:{title:'Manifold Count',hint:'Opening = cylinders at start. Added = each full cylinder swapped in (run the old one empty first). Closing = cylinders at end.',grid:CYLS,
+  manifold:{title:'Manifold Count',hint:'Opening = cylinders at start. Added = each full cylinder swapped in (run the old one empty first). Closing = cylinders at end.',grid:function(){return _manifoldCylLabels(capBranch);},
     header:[], gate:[], multi:false,
     toggles:[{key:'stage',label:'Stage',states:['Opening','Added','Closing']}],
     popupFields:[{k:'brand',label:'Brand',type:'select',opts:BRANDS},
@@ -4929,6 +4946,7 @@ function openCap(type,opts){
   document.getElementById('capCtx').innerHTML='';document.getElementById('capCtx').style.display='none';
   document.getElementById('capHint').textContent=c.hint;
   buildHeader(c);
+  if(type==='manifold')_fetchManifoldSlotCount(capBranch).then(renderGrid); // re-renders again once live count lands; renderGrid() below runs immediately with whatever's cached/fallback
   renderGrid();
   if(type==='private')loadPrivateSuppliers(); // populate the Supplier/redistributor dropdown
   show('capView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);
@@ -4961,7 +4979,8 @@ function capSetBranch(x){
   if(role==='Operator' && x!==branch){toast('You are locked to '+branch,true);return;}
   capBranch=x;applyBranchLock('capbr-',x);
   document.getElementById('hSub').textContent=capBranch;
-  renderGrid(); // grid must re-render on the new branch, not keep showing the old branch's stale state
+  if(capType==='manifold')_fetchManifoldSlotCount(x).then(renderGrid);
+  renderGrid(); // grid must re-render on the new branch, not keep showing the old branch's stale state - runs immediately with whatever's cached, the live fetch above re-renders again once it lands
   if(capType==='private')_refreshFillSupplierSelect();
 }
 function buildHeader(c){
@@ -5038,7 +5057,7 @@ function renderGrid(){
       } else _twb.style.display='none';
     } else _twb.style.display='none';
   }
-  document.getElementById('capGrid').innerHTML=c.grid.map(function(item){
+  document.getElementById('capGrid').innerHTML=(typeof c.grid==='function'?c.grid():c.grid).map(function(item){
     // Show only THIS branch's lines - the bucket itself can hold lines from more than one
     // branch (switched mid-capture without reviewing/committing), so an unfiltered read here
     // would show another branch's already-added item as "done" for the current branch.
