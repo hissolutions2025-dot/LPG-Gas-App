@@ -5552,14 +5552,23 @@ function _refillSealHint(d){
   }
   existing.textContent='💡 Next seal in sequence: '+expected+' (reference only, not required)';
 }
-function renderModalLines(){
+// sel: optional toggle-selection override (e.g. {stage:'Removed'}) - same override mechanism
+// as dataBucket()/toggleKey() above. Lets the Manifold swap wizard show/delete the CURRENT
+// step's already-saved row(s) for this slot (the 'Removed' bucket in step 1, the 'Added'
+// bucket in step 2) even though live toggleSel.stage never actually becomes 'Removed' - see
+// openManifoldSwap(). Every other caller omits it and keeps its exact previous behaviour
+// (keyed off live toggleSel).
+function renderModalLines(sel){
   var box=document.getElementById('mLines');
-  // Keep each line's REAL index into the raw bucket (removeLine(i) splices the raw bucket by
-  // that index) while only ever displaying/counting the current branch's own lines - same
+  // Keep each line's REAL index into the raw bucket (removeLine(i,sel) splices the raw bucket
+  // by that index) while only ever displaying/counting the current branch's own lines - same
   // reasoning as renderGrid() above.
-  var raw=dataBucket()[modalItem]||[];
+  var raw=dataBucket(sel)[modalItem]||[];
   var lines=raw.map(function(l,i){return {l:l,i:i};}).filter(function(p){return (p.l._addedBranch||capBranch)===capBranch;});
   if(lines.length===0){box.innerHTML='<div style="font-size:12px;color:var(--muted);padding:6px 0">Nothing added yet.</div>';return;}
+  // sel.stage is always one of this file's own internal literals ('Removed'/'Added'), never
+  // user input, so it's safe to inline straight into the onclick attribute below.
+  var selArg=sel?(",{stage:'"+sel.stage+"'}"):'';
   box.innerHTML=lines.map(function(p){
     var l=p.l, i=p.i;
     var desc='';
@@ -5568,7 +5577,7 @@ function renderModalLines(){
     else if(capType==='private')desc='<b>'+(l.cylBrand||'')+'</b> '+l.gasType+' · '+(+l.pumped).toFixed(2)+'kg'+(l.customer?' · '+l.customer:'')+(l.filledBy==='Supplier'?(' · <span style="color:#B5533B;font-weight:700">via '+(privateSupplierName(l)||'supplier')+'</span>'):'');
     else if(capType==='refill')desc='<b>'+l.brand+'</b> '+l.gasType+' · seal '+l.seal+' · '+(+l.pumped).toFixed(2)+'kg';
     else if(capType==='manifold')desc='<b>'+l.brand+'</b> · left '+(+l.gasLeft).toFixed(2)+'kg';
-    return '<div class="lineRow"><span>'+desc+'</span><button onclick="removeLine('+i+')">✕</button></div>';
+    return '<div class="lineRow"><span>'+desc+'</span><button onclick="removeLine('+i+selArg+')">✕</button></div>';
   }).join('');
 }
 function addLine(){
@@ -5723,7 +5732,10 @@ function resetPopupInputs(c){popPhoto={};c.popupFields.forEach(function(f){
   var el=document.getElementById('pf-'+f.k);if(el&&f.type!=='auto')el.value=(f.default!==undefined?f.default:'');
   var th=document.getElementById('pf-'+f.k+'-thumb');if(th)th.innerHTML='';
 });popCalc();}
-function removeLine(i){var b=dataBucket();b[modalItem].splice(i,1);if(b[modalItem].length===0)delete b[modalItem];renderModalLines();renderGrid();}
+// sel: optional toggle-selection override, mirrors dataBucket()/renderModalLines() above -
+// lets the Manifold swap wizard delete a row from the specific 'Removed'/'Added' bucket it's
+// currently showing, even though live toggleSel.stage never actually becomes 'Removed'.
+function removeLine(i,sel){var b=dataBucket(sel);b[modalItem].splice(i,1);if(b[modalItem].length===0)delete b[modalItem];renderModalLines(sel);renderGrid();}
 function closeModal(){document.getElementById('capModal').classList.remove('show');renderGrid();}
 // ---- Masked password prompt (replaces visible prompt()) ----
 var _pwResolve=null;
