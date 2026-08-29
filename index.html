@@ -5398,7 +5398,39 @@ function popCollect(){var c=CAP[capType];var d={};c.popupFields.forEach(function
 // block, and flagged-band override (approved or declined/cancelled/busy) - with no setTimeout
 // polling of capData needed to find out which one happened.
 var _manifoldSwapItem=null, _manifoldSwapId=null;
+// A slot's 'Removed'/'Added' capData buckets hold at most one row each (multi:false - see
+// dataBucket()/_addLineFinishAfterCap's bucket[item]=[] wipe-then-push). Before starting the
+// wizard, work out which of three states this slot is actually in, so tapping the same slot
+// twice never silently destroys a still-uncommitted row from an earlier swap attempt today:
+//   - an unpaired Removed row (step 1 done, step 2 never was - operator exited early) ->
+//     resume straight at step 2, reusing the SAME _swapId, without re-running/overwriting
+//     step 1's already-correct row.
+//   - a complete Removed+Added pair (matching _swapId) -> a fresh step 1 would WIPE this
+//     Removed row the moment it's saved (bucket[item]=[] runs before the new row is pushed) -
+//     warn and require explicit confirmation before doing that, rather than doing it silently
+//     either way. Declining leaves both existing rows completely untouched; Fix B's own ✕ on
+//     the row shown once inside step 1 is the clean, explicit way to actually replace just
+//     one row on purpose, instead of relying on the implicit save-time overwrite.
+//   - neither -> genuinely first swap of this slot today, no warning needed.
 function openManifoldSwap(item){
+  var removedRows=((capData['Removed']&&capData['Removed'][item])||[]).filter(function(r){return (r._addedBranch||capBranch)===capBranch;});
+  var addedRows=((capData['Added']&&capData['Added'][item])||[]).filter(function(r){return (r._addedBranch||capBranch)===capBranch;});
+  var unpairedRemoved=removedRows.find(function(r){
+    return !addedRows.some(function(a){return a._swapId && a._swapId===r._swapId;});
+  });
+  if(unpairedRemoved){
+    _manifoldSwapItem=item;_manifoldSwapId=unpairedRemoved._swapId;
+    modalItem=item;
+    _manifoldSwapStep2();
+    return;
+  }
+  var hasCompleteSwap=removedRows.some(function(r){
+    return addedRows.some(function(a){return a._swapId && a._swapId===r._swapId;});
+  });
+  if(hasCompleteSwap){
+    var proceed=confirm(item+' already has a completed cylinder swap recorded today (not yet committed).\n\nStarting a NEW swap for this slot will overwrite the outgoing cylinder\'s recorded weight from that swap - that reading will be lost. Once you continue, you\'ll see that reading on the next screen and can use its ✕ to remove it explicitly before entering a new one.\n\nOnly continue if you actually need to redo this swap. Start a brand-new swap for '+item+'?');
+    if(!proceed)return;
+  }
   _manifoldSwapItem=item;_manifoldSwapId=_rid();
   modalItem=item; // both swap rows belong to this slot - kept live for the duration of the
                    // wizard since _addLineFinish's override message and popCalc's Propane
@@ -5407,7 +5439,7 @@ function openManifoldSwap(item){
   document.getElementById('mTitle').textContent='Removed — '+item;
   document.getElementById('mState').textContent='Step 1 of 2: weigh the OUTGOING cylinder (residual gas)';
   buildPopupForm(c);
-  document.getElementById('mLines').innerHTML='';
+  renderModalLines({stage:'Removed'});
   document.getElementById('mAddBtn').textContent='Save & continue to incoming cylinder';
   document.getElementById('mAddBtn').setAttribute('onclick','_manifoldSwapStep1()');
   document.getElementById('capModal').classList.add('show');
@@ -5434,7 +5466,7 @@ function _manifoldSwapStep2(){
   document.getElementById('mTitle').textContent='Added — '+_manifoldSwapItem;
   document.getElementById('mState').textContent='Step 2 of 2: weigh the INCOMING (new) cylinder';
   buildPopupForm(c);
-  document.getElementById('mLines').innerHTML='';
+  renderModalLines({stage:'Added'});
   document.getElementById('mAddBtn').textContent='Save';
   document.getElementById('mAddBtn').setAttribute('onclick','_manifoldSwapStep2Save()');
   document.getElementById('capModal').classList.add('show');
