@@ -5313,6 +5313,9 @@ function capSummary(c,lines){
 }
 // ---------- popup ----------
 function openModal(item){
+  // Manifold's Added stage is a guided two-step swap wizard (outgoing residual, then
+  // incoming cylinder), not the plain single-field popup below - see openManifoldSwap().
+  if(capType==='manifold' && toggleSel.stage==='Added'){openManifoldSwap(item);return;}
   modalItem=item;var c=CAP[capType];popPhoto={};
   document.getElementById('mTitle').textContent=item;
   document.getElementById('mState').textContent=c.toggles?c.toggles.map(function(t){return t.label+': '+toggleSel[t.key];}).join(' · '):(CAP[capType].header.length?document.getElementById('hdr-'+c.header[0].k).value:'');
@@ -5320,6 +5323,12 @@ function openModal(item){
   renderModalLines();
   // for single-entry weigh (manifold), if a line exists preload it
   document.getElementById('mAddBtn').textContent=c.multi?'Add':'Save reading';
+  // Restore the default save handler - the Manifold swap wizard (openManifoldSwap() and its
+  // steps) repoints mAddBtn's onclick at its own step functions while it's active, and that
+  // attribute sticks on the DOM element until something resets it. Every entry into the plain
+  // popup (including right after a swap, or after a swap wizard step was left mid-flight) must
+  // land back on addLine(), not a leftover _manifoldSwapStep…() handler from a previous call.
+  document.getElementById('mAddBtn').setAttribute('onclick','addLine()');
   document.getElementById('capModal').classList.add('show');
 }
 function buildPopupForm(c){
@@ -5349,6 +5358,105 @@ function buildPopupForm(c){
   popCalc();
 }
 function popCollect(){var c=CAP[capType];var d={};c.popupFields.forEach(function(f){if(f.type==='photo'){d[f.k]=(popPhoto[f.k]||[]).slice();return;}var el=document.getElementById('pf-'+f.k);if(el)d[f.k]=el.value;});return d;}
+// Guided swap flow for a Manifold slot: tapping a cylinder tile while on the Added toggle no
+// longer opens the plain single-field popup above - it walks through weighing the OUTGOING
+// cylinder first (residual gas, closes out that slot's record for the day as stage 'Removed'),
+// then immediately continues into the INCOMING cylinder (today's existing Added-stage form),
+// which becomes that slot's identity going forward. Both rows share a _swapId so History/audit
+// can show them as one event. 'Removed' is a bucket key only, written here programmatically -
+// it is deliberately NOT added to CAP.manifold.toggles[0].states, so it can never appear as a
+// manually-selectable Stage option in the header toggle.
+// Reuses buildPopupForm/popCollect/_addLineFinish (the same generic form + save path every
+// other capture already uses - CAP.manifold's popupFields are identical for every stage)
+// rather than a bespoke form or a duplicated save routine.
+//
+// Both step functions below call _addLineFinish() directly, bypassing addLine() entirely -
+// which means they must replicate, by hand, the two things addLine() normally does before
+// calling _addLineFinish(): stamp d._addedBranch (so the grid's per-branch "done" filter and
+// flush()'s branch tagging both still work correctly), and stamp d._capturedModalItem /
+// d._capturedToggleSel (the submit-time snapshot _addLineFinishAfterCap() reads INSTEAD OF the
+// live modalItem/toggleSel globals - see addLine()'s own comment and _addLineFinishAfterCap()).
+// Skipping this would either throw (c.toggles is truthy for Manifold, and
+// _addLineFinishAfterCap indexes straight into _capturedToggleSel with no undefined guard) or,
+// worse, silently save into whatever bucket the live toggleSel/modalItem happen to be pointing
+// at by the time an async override resolves - exactly the stale-global race Task 4 fixed for
+// every other caller. The live modalItem/toggleSel globals themselves are deliberately left
+// alone here (still 'Added', whatever the operator tapped to get here) - _addLineFinish's own
+// override-prompt message and _addLineFinishAfterCap's UI-refresh calls (renderGrid etc.) read
+// those live globals on purpose, and they're already correct for both steps since both rows
+// belong to the same slot and the operator never leaves the Added tab during the wizard.
+//
+// _swapId linkage: d itself (not a clone) is the object that ends up pushed into
+// capData[bucket][item] on every successful path (manifold has neither receivedMatch nor
+// mergeSameBrand, so _addLineFinishAfterCap always pushes d as-is) - so stamping d._swapId
+// before calling _addLineFinish is sufficient; no post-hoc "find the last array entry" step
+// is needed, and it's correct across the sync and async-override-approved paths alike since
+// it's the same d flowing through both.
+//
+// Outcome detection: _addLineFinish's optional onDone(saved) callback (see there) fires
+// exactly once per call, deterministically, for all three outcomes - normal save, hard-ceiling
+// block, and flagged-band override (approved or declined/cancelled/busy) - with no setTimeout
+// polling of capData needed to find out which one happened.
+var _manifoldSwapItem=null, _manifoldSwapId=null;
+function openManifoldSwap(item){
+  _manifoldSwapItem=item;_manifoldSwapId=_rid();
+  modalItem=item; // both swap rows belong to this slot - kept live for the duration of the
+                   // wizard since _addLineFinish's override message and popCalc's Propane
+                   // filter both read the live modalItem, and it's correct for both steps.
+  var c=CAP.manifold;popPhoto={};
+  document.getElementById('mTitle').textContent='Removed — '+item;
+  document.getElementById('mState').textContent='Step 1 of 2: weigh the OUTGOING cylinder (residual gas)';
+  buildPopupForm(c);
+  document.getElementById('mLines').innerHTML='';
+  document.getElementById('mAddBtn').textContent='Save & continue to incoming cylinder';
+  document.getElementById('mAddBtn').setAttribute('onclick','_manifoldSwapStep1()');
+  document.getElementById('capModal').classList.add('show');
+}
+function _manifoldSwapStep1(){
+  var c=CAP.manifold;
+  var d=popCollect();
+  d._addedBranch=capBranch;
+  d._capturedModalItem=_manifoldSwapItem;
+  d._capturedToggleSel={stage:'Removed'};
+  d._swapId=_manifoldSwapId;
+  _addLineFinish(c,d,function(saved){
+    // Hard-ceiling block, or a flagged-band override that was declined/cancelled/rejected as
+    // busy: _addLineFinish already showed the operator a toast explaining why, and (since
+    // _addLineFinishAfterCap never ran) the modal is still open on step 1 with mAddBtn still
+    // wired to _manifoldSwapStep1() - the operator can correct the reading and try again. Do
+    // NOT continue to step 2 as if the outgoing cylinder's residual had been recorded.
+    if(!saved)return;
+    _manifoldSwapStep2();
+  });
+}
+function _manifoldSwapStep2(){
+  var c=CAP.manifold;popPhoto={};
+  document.getElementById('mTitle').textContent='Added — '+_manifoldSwapItem;
+  document.getElementById('mState').textContent='Step 2 of 2: weigh the INCOMING (new) cylinder';
+  buildPopupForm(c);
+  document.getElementById('mLines').innerHTML='';
+  document.getElementById('mAddBtn').textContent='Save';
+  document.getElementById('mAddBtn').setAttribute('onclick','_manifoldSwapStep2Save()');
+  document.getElementById('capModal').classList.add('show');
+}
+function _manifoldSwapStep2Save(){
+  var c=CAP.manifold;
+  var d=popCollect();
+  d._addedBranch=capBranch;
+  d._capturedModalItem=_manifoldSwapItem;
+  d._capturedToggleSel={stage:'Added'};
+  d._swapId=_manifoldSwapId;
+  _addLineFinish(c,d,function(saved){
+    // Same reasoning as step 1's callback: a hard-ceiling block or declined/cancelled/busy
+    // override here means the incoming cylinder's reading was never saved - stay on step 2
+    // (mAddBtn is still wired to _manifoldSwapStep2Save()) rather than claiming the swap is
+    // complete. The outgoing cylinder's Removed row from step 1 already landed and is
+    // untouched either way - only step 2 needs correcting and resubmitting.
+    if(!saved)return;
+    toast('Cylinder swap recorded for '+_manifoldSwapItem+' ✓');
+    _manifoldSwapItem=null;_manifoldSwapId=null;
+  });
+}
 function popSetTabField(key,val){
   var el=document.getElementById('pf-'+key);if(!el)return;
   el.value=val;
@@ -5502,18 +5610,28 @@ function addLine(){
   }
   _addLineFinish(c,d);
 }
-function _addLineFinish(c,d){
+// onDone (optional, trailing): invoked exactly once when this call's outcome is fully known -
+// onDone(true) if the reading was actually saved (either the sync normal-range path, or the
+// async flagged-band path once an override is approved), onDone(false) if it was NOT saved for
+// any reason (missing required field, scale<tare, hard-ceiling block, override declined/
+// cancelled, or the busy-guard rejecting a second concurrent override). Every pre-existing
+// caller (addLine()) omits this argument, so onDone is undefined there and every `if(onDone)`
+// guard below is a no-op for them - unchanged behaviour. This exists so the Manifold swap
+// wizard (openManifoldSwap() and friends, which call _addLineFinish directly, bypassing
+// addLine()) can know deterministically when its own step has landed - including across the
+// async override gap - without polling capData on a setTimeout.
+function _addLineFinish(c,d,onDone){
   if(c.receivedMatch){
-    if(!d.brand){toast('Pick a brand',true);return;}
+    if(!d.brand){toast('Pick a brand',true);if(onDone)onDone(false);return;}
     d.fullIn=num(d.fullIn);d.emptyOut=num(d.emptyOut);
-    if(d.fullIn===0&&d.emptyOut===0){toast('Enter fulls received or empties returned',true);return;}
+    if(d.fullIn===0&&d.emptyOut===0){toast('Enter fulls received or empties returned',true);if(onDone)onDone(false);return;}
   } else {
     for(var i=0;i<c.popupFields.length;i++){var f=c.popupFields[i];if(f.type==='auto'||f.opt||f.type==='tabs')continue;
       // conditional field only required when its showIf condition(s) are met
       if(f.showIf){var _conds=Array.isArray(f.showIf)?f.showIf:[f.showIf];if(!_conds.every(function(cond){return d[cond.k]===cond.eq;}))continue;}
-      if(!d[f.k]||d[f.k]===''){toast('Fill in: '+f.label,true);return;}}
+      if(!d[f.k]||d[f.k]===''){toast('Fill in: '+f.label,true);if(onDone)onDone(false);return;}}
   }
-  if('scale'in d&&'tare'in d&&num(d.scale)<num(d.tare)){toast('Scale cannot be less than tare',true);return;}
+  if('scale'in d&&'tare'in d&&num(d.scale)<num(d.tare)){toast('Scale cannot be less than tare',true);if(onDone)onDone(false);return;}
   // Two-tier weight validation (manifold). Applies at every stage (Opening/Added/Removed/
   // Closing), not just when adding a fresh cylinder - an operator fat-fingering a digit can
   // produce a near-capacity reading at any stage, and the system can't tell that apart from a
@@ -5537,6 +5655,7 @@ function _addLineFinish(c,d){
     var cap=(d.gasType==='Propane')?45:48;
     if(gl>=cap+0.2){
       toast('⚠ Gas left ('+gl.toFixed(2)+'kg) exceeds '+(cap+0.2).toFixed(1)+'kg — that\'s not physically possible for this cylinder. Re-weigh and correct the scale/tare before saving.',true);
+      if(onDone)onDone(false);
       return;
     }
     if(gl>cap+0.1){
@@ -5548,20 +5667,23 @@ function _addLineFinish(c,d){
       // error shown - see askPassword()/askText()). Scoped to just this branch, not all of
       // addLine()/mAddBtn: a normal, non-flagged add for a DIFFERENT cylinder never touches
       // askPassword()/askText() at all, so there's no reason to stop the operator weighing
-      // other cylinders while one override is pending.
-      if(manifoldOverrideBusy){toast('An override is already pending for another reading — wait for it to finish, then try again',true);return;}
+      // other cylinders while one override is pending. This guard also correctly covers the
+      // swap wizard's own two saves (both call _addLineFinish, same shared flag), so a swap's
+      // step 1/step 2 and any other in-flight override anywhere in Manifold capture still
+      // can't collide.
+      if(manifoldOverrideBusy){toast('An override is already pending for another reading — wait for it to finish, then try again',true);if(onDone)onDone(false);return;}
       manifoldOverrideBusy=true;
       manifoldWeightOverride('Gas left '+gl.toFixed(2)+'kg for '+modalItem+' ('+(d.gasType||'LPG')+', normal range up to '+(cap+0.1).toFixed(1)+'kg)').then(function(ok){
-        if(!ok){toast('Override needed to save this reading',true);return;}
-        _addLineFinishAfterCap(c,d);
-      }).catch(function(){toast('Something went wrong processing the override — please try again',true);})
+        if(!ok){toast('Override needed to save this reading',true);if(onDone)onDone(false);return;}
+        _addLineFinishAfterCap(c,d,onDone);
+      }).catch(function(){toast('Something went wrong processing the override — please try again',true);if(onDone)onDone(false);})
       .finally(function(){manifoldOverrideBusy=false;});
       return; // async path - _addLineFinishAfterCap below continues once authorised
     }
   }
-  _addLineFinishAfterCap(c,d);
+  _addLineFinishAfterCap(c,d,onDone);
 }
-function _addLineFinishAfterCap(c,d){
+function _addLineFinishAfterCap(c,d,onDone){
   // Write the DATA to the item/toggle-state that was actually active when this reading was
   // SUBMITTED (addLine(), which snapshots d._capturedModalItem/d._capturedToggleSel before any
   // async gap - see there, and toggleKey()/dataBucket() above) - not whatever's live now. This
@@ -5580,10 +5702,10 @@ function _addLineFinishAfterCap(c,d){
   if(!bucket[item])bucket[item]=[];
   if(c.receivedMatch){
     var exr=bucket[item].find(function(l){return l.brand===d.brand;});
-    if(exr){exr.fullIn=num(exr.fullIn)+d.fullIn;exr.emptyOut=num(exr.emptyOut)+d.emptyOut;renderModalLines();renderGrid();resetPopupInputs(c);return;}
-    bucket[item].push(d);renderModalLines();renderGrid();resetPopupInputs(c);return;
+    if(exr){exr.fullIn=num(exr.fullIn)+d.fullIn;exr.emptyOut=num(exr.emptyOut)+d.emptyOut;renderModalLines();renderGrid();resetPopupInputs(c);if(onDone)onDone(true);return;}
+    bucket[item].push(d);renderModalLines();renderGrid();resetPopupInputs(c);if(onDone)onDone(true);return;
   }
-  if(c.mergeSameBrand){var ex=bucket[item].find(function(l){return l.brand===d.brand;});if(ex){ex.qty=num(ex.qty)+num(d.qty);renderModalLines();renderGrid();resetPopupInputs(c);return;}}
+  if(c.mergeSameBrand){var ex=bucket[item].find(function(l){return l.brand===d.brand;});if(ex){ex.qty=num(ex.qty)+num(d.qty);renderModalLines();renderGrid();resetPopupInputs(c);if(onDone)onDone(true);return;}}
   if(!c.multi)bucket[item]=[];
   bucket[item].push(d);
   saveDraft(); // persist uncommitted capture immediately
@@ -5594,6 +5716,7 @@ function _addLineFinishAfterCap(c,d){
   if(c.multi && draftAddCount>0 && draftAddCount % SAVE_NUDGE_EVERY===0){
     showSaveNudge();
   }
+  if(onDone)onDone(true);
 }
 function resetPopupInputs(c){popPhoto={};c.popupFields.forEach(function(f){
   if(f.type==='tabs')return; // sticky across Add - e.g. Private's Us/Supplier tab stays selected until the user picks a different tab themselves, not reset on every add
