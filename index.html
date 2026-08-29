@@ -4966,15 +4966,20 @@ const CAP={
     weigh:true, gridLabel:'cylinder', gasLeftCap:true, multiStage:true },
 };
 
-let capType=null, capData={}, toggleSel={}, modalItem=null, capBranch='Helderberg', capCommitBusy=false;
+let capType=null, capData={}, toggleSel={}, modalItem=null, capBranch='Helderberg', capCommitBusy=false, manifoldOverrideBusy=false;
 
-function toggleKey(){ // combined key of all toggle selections e.g. "Opening|Full"
+// sel: optional toggle-selection object to key off instead of the live toggleSel - used by
+// _addLineFinishAfterCap() to write data against the toggle-state captured at submit time
+// (see addLine()) rather than whatever's live by the time an async override resolves.
+// Callers that omit it get the exact previous behaviour (keyed off live toggleSel).
+function toggleKey(sel){ // combined key of all toggle selections e.g. "Opening|Full"
   var c=CAP[capType];
   if(!c.toggles||!c.toggles.length)return '_flat';
-  return c.toggles.map(function(t){return toggleSel[t.key];}).join('|');
+  sel=sel||toggleSel;
+  return c.toggles.map(function(t){return sel[t.key];}).join('|');
 }
-function dataBucket(){
-  var k=toggleKey();
+function dataBucket(sel){
+  var k=toggleKey(sel);
   if(!capData[k])capData[k]={};
   return capData[k];
 }
@@ -5465,6 +5470,15 @@ function addLine(){
   // "data spillover between branches" bug: switching branch mid-capture, without reviewing/
   // committing first, retagged every not-yet-committed line to the newly-selected branch).
   d._addedBranch=capBranch;
+  // Record which grid item and toggle-state (e.g. Manifold's Stage) were actually active
+  // when this line was SUBMITTED, for the same reason as _addedBranch above - both the
+  // seal-boundary override (refill, below) and the Manifold weight-tolerance override
+  // (_addLineFinish) run async (password + reason prompts), and the popup can be closed and
+  // the operator can switch to a different item/stage while either is pending.
+  // _addLineFinishAfterCap() writes the DATA to these captured values, not whatever's live
+  // by the time it actually runs - see there for the full reasoning.
+  d._capturedModalItem=modalItem;
+  if(c.toggles)d._capturedToggleSel=Object.assign({},toggleSel);
   // ---- SEAL ENFORCEMENT (refill only) ----
   if(capType==='refill'){
     var sres=sealValidate(capBranch, d.seal, d.brand);
@@ -5511,34 +5525,67 @@ function _addLineFinish(c,d){
   //   cap+0.2 and above   -> never saved, no override, operator must re-weigh and fix it
   if(c.gasLeftCap && 'scale'in d && 'tare'in d){
     var gl=num(d.scale)-num(d.tare);
+    // Round to 2 decimals (scale/tare are entered to at most 2dp / gram precision) before the
+    // tier-boundary comparisons below - raw float subtraction of realistic 2dp pairs (e.g.
+    // 60.55-12.35) can land a few ULPs short of an exact boundary (48.199999999999996 vs a
+    // cap+0.2 of 48.200000000000003), which would wrongly drop a reading meant to sit exactly
+    // ON the hard-ceiling boundary into the override-eligible band instead of hard-blocking
+    // it. Only this LOCAL comparison value is rounded - the actual stored/displayed gasLeft
+    // (computed separately below in _addLineFinishAfterCap's auto-calc, straight from
+    // d.scale/d.tare) is left at full precision; rounding this comparison copy doesn't touch it.
+    gl=Math.round(gl*100)/100;
     var cap=(d.gasType==='Propane')?45:48;
     if(gl>=cap+0.2){
       toast('⚠ Gas left ('+gl.toFixed(2)+'kg) exceeds '+(cap+0.2).toFixed(1)+'kg — that\'s not physically possible for this cylinder. Re-weigh and correct the scale/tare before saving.',true);
       return;
     }
     if(gl>cap+0.1){
+      // Re-entrancy guard: manifoldWeightOverride() below runs an async auth (askPassword) +
+      // reason (askText) flow that shares single global resolvers (_pwResolve/
+      // _textModalResolve) across ANY concurrent call into them - a second flagged-band
+      // submission before this one resolves would silently overwrite that resolver and
+      // orphan the first pending promise (it would never fire, dropping that reading with no
+      // error shown - see askPassword()/askText()). Scoped to just this branch, not all of
+      // addLine()/mAddBtn: a normal, non-flagged add for a DIFFERENT cylinder never touches
+      // askPassword()/askText() at all, so there's no reason to stop the operator weighing
+      // other cylinders while one override is pending.
+      if(manifoldOverrideBusy){toast('An override is already pending for another reading — wait for it to finish, then try again',true);return;}
+      manifoldOverrideBusy=true;
       manifoldWeightOverride('Gas left '+gl.toFixed(2)+'kg for '+modalItem+' ('+(d.gasType||'LPG')+', normal range up to '+(cap+0.1).toFixed(1)+'kg)').then(function(ok){
         if(!ok){toast('Override needed to save this reading',true);return;}
         _addLineFinishAfterCap(c,d);
-      });
+      }).catch(function(){toast('Something went wrong processing the override — please try again',true);})
+      .finally(function(){manifoldOverrideBusy=false;});
       return; // async path - _addLineFinishAfterCap below continues once authorised
     }
   }
   _addLineFinishAfterCap(c,d);
 }
 function _addLineFinishAfterCap(c,d){
-  c.popupFields.filter(function(f){return f.type==='auto';}).forEach(function(f){d[f.k]=f.calc(d,modalItem);});
-  if(c.toggles)c.toggles.forEach(function(t){if(!d[t.key])d[t.key]=toggleSel[t.key];});
-  var bucket=dataBucket();
-  if(!bucket[modalItem])bucket[modalItem]=[];
+  // Write the DATA to the item/toggle-state that was actually active when this reading was
+  // SUBMITTED (addLine(), which snapshots d._capturedModalItem/d._capturedToggleSel before any
+  // async gap - see there, and toggleKey()/dataBucket() above) - not whatever's live now. This
+  // function can run asynchronously after a Manifold weight override (password + reason
+  // prompts), during which the popup can be closed and the operator can switch to a different
+  // cylinder or Stage before the override resolves; without this, an approved override would
+  // silently commit against the WRONG slot while the slot it was actually approved for gets
+  // nothing saved. The UI-refresh calls below (renderModalLines/renderGrid/resetPopupInputs/
+  // closeModal) deliberately still use the CURRENT live modalItem/toggleSel/dataBucket() - they
+  // reflect whatever the operator is looking at right now, not the captured submit-time state.
+  var item=d._capturedModalItem;
+  var toggles=d._capturedToggleSel; // undefined for non-toggle types - toggleKey()/dataBucket() fall back to live toggleSel there, which is correct since those types have no toggles at all
+  c.popupFields.filter(function(f){return f.type==='auto';}).forEach(function(f){d[f.k]=f.calc(d,item);});
+  if(c.toggles)c.toggles.forEach(function(t){if(!d[t.key])d[t.key]=toggles[t.key];});
+  var bucket=dataBucket(toggles);
+  if(!bucket[item])bucket[item]=[];
   if(c.receivedMatch){
-    var exr=bucket[modalItem].find(function(l){return l.brand===d.brand;});
+    var exr=bucket[item].find(function(l){return l.brand===d.brand;});
     if(exr){exr.fullIn=num(exr.fullIn)+d.fullIn;exr.emptyOut=num(exr.emptyOut)+d.emptyOut;renderModalLines();renderGrid();resetPopupInputs(c);return;}
-    bucket[modalItem].push(d);renderModalLines();renderGrid();resetPopupInputs(c);return;
+    bucket[item].push(d);renderModalLines();renderGrid();resetPopupInputs(c);return;
   }
-  if(c.mergeSameBrand){var ex=bucket[modalItem].find(function(l){return l.brand===d.brand;});if(ex){ex.qty=num(ex.qty)+num(d.qty);renderModalLines();renderGrid();resetPopupInputs(c);return;}}
-  if(!c.multi)bucket[modalItem]=[];
-  bucket[modalItem].push(d);
+  if(c.mergeSameBrand){var ex=bucket[item].find(function(l){return l.brand===d.brand;});if(ex){ex.qty=num(ex.qty)+num(d.qty);renderModalLines();renderGrid();resetPopupInputs(c);return;}}
+  if(!c.multi)bucket[item]=[];
+  bucket[item].push(d);
   saveDraft(); // persist uncommitted capture immediately
   draftAddCount++;
   renderModalLines();renderGrid();resetPopupInputs(c);
