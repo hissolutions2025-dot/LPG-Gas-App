@@ -1018,15 +1018,15 @@ const FILLSIZES=['5kg','9kg','12kg','14kg','19kg','14kg-FLT','19kg-FLT','8kg-Pro
 const PRIVSIZES=['1.5kg','2kg','3kg','4.5kg','9kg'];
 const PRIVBRANDS=['Cadac','Alva','Safegas','Other'];
 const MOVES=['Received-Full','Returned-Empty','Faulty-Full'];
-const CYLS=['Cyl 1','Cyl 2','Cyl 3','Cyl 4']; // default/fallback shape only now - see _manifoldCylLabels
 // Live per-branch slot count, Supabase-synced (never device-local like Branch Setup/Count
 // Times - a stale local value here would mean different devices show a different number of
 // slots for the same branch, capturing genuinely different data). Falls back to today's
-// fixed 4 while the fetch is in flight or if it fails, same graceful-degradation convention
-// every other live fetch in this app already uses - never blocks capture from working.
+// fixed default of 4 (the `||4` below) while the fetch is in flight or if it fails, same
+// graceful-degradation convention every other live fetch in this app already uses - never
+// blocks capture from working.
 var _manifoldSlotCounts={};
 function _manifoldCylLabels(br){
-  var n=_manifoldSlotCounts[br]||4;
+  var n=_manifoldSlotCounts[br]||4; // 4 is the fallback/default slot count - see comment above
   var out=[];for(var i=1;i<=n;i++)out.push('Cyl '+i);
   return out;
 }
@@ -4954,7 +4954,7 @@ const CAP={
       {k:'pumped',label:'Gas pumped (auto)',type:'auto',calc:function(d,item){var s=SIZEKG[item];return s?s-(num(d.scale)-num(d.tare)):'';}},
       {k:'seal',label:'Seal number',type:'number'},{k:'notes',label:'Notes',type:'text',opt:true}],
     weigh:true },
-  manifold:{title:'Manifold Count',hint:'Opening = cylinders at start. Added = each full cylinder swapped in (run the old one empty first). Closing = cylinders at end.',grid:function(){return _manifoldCylLabels(capBranch);},
+  manifold:{title:'Manifold Count',hint:'Opening = cylinders at start. Added = tap a slot to swap it — weigh the outgoing cylinder\'s residual first, then the incoming cylinder. Closing = cylinders at end.',grid:function(){return _manifoldCylLabels(capBranch);},
     header:[], gate:[], multi:false,
     toggles:[{key:'stage',label:'Stage',states:['Opening','Added','Closing']}],
     popupFields:[{k:'brand',label:'Brand',type:'select',opts:BRANDS},
@@ -6315,7 +6315,9 @@ function initSigPad(id){
 function sigClear(id){var cv=document.getElementById(id);if(cv){cv.getContext('2d').clearRect(0,0,cv.width,cv.height);}sigData[id]='';}
 var dayClosed=false;
 // ===== MANIFOLD GAS BALANCE =====
-// Gas OUT = sum opening gasLeft + sum added gasLeft - sum closing gasLeft (this branch)
+// Gas OUT = sum opening gasLeft + sum added gasLeft - sum closing gasLeft - sum removed
+// gasLeft (this branch) - removed subtracts because it's residual gas that left the system
+// in a swapped-out cylinder, same direction as gas dispensed, not the same direction as added.
 // Must equal Refill pumped + Private pumped (combined pool), within 0.2kg.
 function manifoldBalance(){
   var TOL=0.2;
