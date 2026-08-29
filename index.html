@@ -5935,6 +5935,33 @@ function capReview(){
     var mm=receivedMismatches();
     if(mm.length && !(store._recvOverride)){showOverridePrompt(mm);return;}
   }
+  // MANIFOLD: block reviewing/committing an unpaired swap. A 'Removed' row for some slot
+  // with no matching _swapId in that slot's 'Added' bucket means step 1 of the swap wizard
+  // ran but step 2 never did (operator exited the capture screen before finishing - see
+  // openManifoldSwap()). Letting this commit silently would push that slot's residual-gas
+  // subtraction into the day's mass-balance with nothing added back for it - a confusing,
+  // unexplained imbalance at Close Day with no indication of why. Same hard-block shape as
+  // the header-gate/receivedMatch checks here: toast + return, before anything is flushed
+  // into store[capType] or the Review screen is even shown - this is the primary catch,
+  // before a swap is ever committed (closeDay() has a backstop check on store.manifold for
+  // anything that gets past this anyway).
+  if(capType==='manifold'){
+    var _unpairedSlots=[];
+    Object.keys(capData['Removed']||{}).forEach(function(item){
+      (capData['Removed'][item]||[]).filter(function(r){return (r._addedBranch||capBranch)===capBranch;}).forEach(function(r){
+        var addedForItem=(capData['Added']&&capData['Added'][item])||[];
+        var paired=addedForItem.some(function(a){return a._swapId && a._swapId===r._swapId;});
+        if(!paired && _unpairedSlots.indexOf(item)===-1)_unpairedSlots.push(item);
+      });
+    });
+    if(_unpairedSlots.length){
+      var _umsg=_unpairedSlots.length===1
+        ? (_unpairedSlots[0]+"'s outgoing cylinder was weighed but no incoming cylinder was recorded — complete the swap or remove that reading before this can be reviewed/committed.")
+        : ('These slots have an incomplete swap (outgoing cylinder weighed, incoming not recorded): '+_unpairedSlots.join(', ')+'. Complete each swap or remove the reading before this can be reviewed/committed.');
+      toast('⚠ '+_umsg,true);
+      return;
+    }
+  }
   for(var i=0;i<c.gate.length;i++){if(document.getElementById('hdr-'+c.gate[i]).value===''){toast('Complete the header first',true);return;}}
   var header={};c.header.forEach(function(h){header[h.k]=document.getElementById('hdr-'+h.k).value;});
   // Each line carries its own _addedBranch (set in addLine, at the moment it was captured) -
@@ -6418,6 +6445,24 @@ function closeDay(){
   // #4 BLOCK: unresolved opening mismatches must be adjusted first
   var unresolved=(store._openMismatch||[]).filter(function(m){return (!m.branch||m.branch===branch)&&!m.resolved;});
   if(unresolved.length){toast('Cannot close: '+unresolved.length+' opening line(s) unmatched. Manager/Owner must adjust them in Count History.',true);openHistory();return;}
+  // #4b BLOCK: an unpaired Manifold swap (outgoing cylinder weighed, incoming cylinder never
+  // recorded - a 'Removed' row with no matching _swapId in that slot's 'Added' rows) must be
+  // resolved before the day can close. Same hard-block shape as the unresolved opening-
+  // mismatches check just above, for the same reason: there's nothing valid to reconcile
+  // here, only a missing half of an audit-trail record. capReview()'s own check on capData is
+  // the primary catch, BEFORE a swap is ever committed - this is the backstop for anything
+  // that reached store.manifold anyway (e.g. captured before that check existed).
+  var _manRemoved=(store.manifold||[]).filter(function(r){return (!r.branch||r.branch===branch)&&r.stage==='Removed';});
+  var _manAdded=(store.manifold||[]).filter(function(r){return (!r.branch||r.branch===branch)&&r.stage==='Added';});
+  var _unpairedManifoldSlots=[];
+  _manRemoved.forEach(function(r){
+    var paired=_manAdded.some(function(a){return a._swapId && a._swapId===r._swapId;});
+    if(!paired && _unpairedManifoldSlots.indexOf(r.cyl)===-1)_unpairedManifoldSlots.push(r.cyl);
+  });
+  if(_unpairedManifoldSlots.length){
+    toast('Cannot close: '+_unpairedManifoldSlots.join(', ')+' — outgoing cylinder weighed but no incoming cylinder recorded (incomplete swap). A Manager/Owner must resolve it (Manifold capture → "Adjust an already-committed entry") before the day can be closed.',true);
+    return;
+  }
   // Close Day requires: an authoriser WITH close-day permission + the high-risk second password
   if(!store._closeAuth){
     var closeQualifies=function(p){return userPerms(p).closeday;};
