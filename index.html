@@ -6210,7 +6210,7 @@ function openHistory(mismatchOverlayRows){
       html+='<div style="margin-top:12px;background:var(--navy);color:#fff;border-radius:12px;padding:14px 16px;text-align:center">'+
         '<div style="font-size:12px;opacity:.8;text-transform:uppercase;letter-spacing:.5px">Total gas pumped from manifold today</div>'+
         '<div style="font-size:30px;font-weight:800;margin-top:2px">'+_bal.gasOut.toFixed(2)+' kg</div>'+
-        '<div style="font-size:11px;opacity:.75;margin-top:2px">opening '+_bal.opening.toFixed(2)+' + added '+_bal.added.toFixed(2)+' − closing '+_bal.closing.toFixed(2)+'</div></div>';
+        '<div style="font-size:11px;opacity:.75;margin-top:2px">opening '+_bal.opening.toFixed(2)+' + added '+_bal.added.toFixed(2)+' − closing '+_bal.closing.toFixed(2)+' − removed '+_bal.removed.toFixed(2)+'</div></div>';
       // cross-reference vs what was pumped into cylinders
       html+='<table class="htable" style="margin-top:10px">'+
         '<tr><th>Cross-reference</th><th>kg</th></tr>'+
