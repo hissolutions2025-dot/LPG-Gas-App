@@ -4961,12 +4961,26 @@ const CAP={
   manifold:{title:'Manifold Count',hint:'Opening = cylinders at start. Added = tap a slot to swap it — weigh the outgoing cylinder\'s residual first, then the incoming cylinder. Closing = cylinders at end.',grid:function(){return _manifoldCylLabels(capBranch);},
     header:[], gate:[], multi:false,
     toggles:[{key:'stage',label:'Stage',states:['Opening','Added','Closing']}],
-    popupFields:[{k:'brand',label:'Brand',type:'select',opts:BRANDS},
-      {k:'gasType',label:'Gas type',type:'select',opts:['LPG','Propane']},
-      {k:'scale',label:'Scale weight (kg)',type:'number'},{k:'tare',label:'Tare weight (kg)',type:'number'},
-      {k:'gasLeft',label:'Gas left (auto)',type:'auto',calc:function(d,item){return num(d.scale)-num(d.tare);}},
-      {k:'photo',label:'Photo of scale & tare',type:'photo',opt:true},
-      {k:'notes',label:'Note',type:'text',opt:true}],
+    // A function, not a plain array, because the guided swap wizard's two steps (step 1:
+    // outgoing/Removed, step 2: incoming/Added) both run while live toggleSel.stage stays
+    // 'Added' the whole time - see openManifoldSwap()/_manifoldSwapStep2() below, which pass
+    // an explicit stageOverride ('Removed'/'Added') into buildPopupForm rather than relying on
+    // the live toggle. The "Cylinder condition" field only makes sense for the INCOMING
+    // cylinder (step 2 / true Added) - a fresh-vs-used declaration on the OUTGOING cylinder's
+    // residual weigh-out (step 1) wouldn't mean anything.
+    popupFields:function(stage){
+      stage=stage||toggleSel.stage;
+      var base=[{k:'brand',label:'Brand',type:'select',opts:BRANDS},
+        {k:'gasType',label:'Gas type',type:'select',opts:['LPG','Propane']}];
+      if(stage==='Added'){
+        base=base.concat([{k:'cylState',label:'Cylinder condition',type:'tabs',opts:['Fresh (full)','Used / partial'],default:'Fresh (full)'}]);
+      }
+      return base.concat([
+        {k:'scale',label:'Scale weight (kg)',type:'number'},{k:'tare',label:'Tare weight (kg)',type:'number'},
+        {k:'gasLeft',label:'Gas left (auto)',type:'auto',calc:function(d,item){return num(d.scale)-num(d.tare);}},
+        {k:'photo',label:'Photo of scale & tare',type:'photo',opt:true},
+        {k:'notes',label:'Note',type:'text',opt:true}]);
+    },
     weigh:true, gridLabel:'cylinder', gasLeftCap:true, multiStage:true },
 };
 
@@ -5372,8 +5386,10 @@ function popCollect(){var d={};(_popupFieldsCurrent||[]).forEach(function(f){if(
 // it is deliberately NOT added to CAP.manifold.toggles[0].states, so it can never appear as a
 // manually-selectable Stage option in the header toggle.
 // Reuses buildPopupForm/popCollect/_addLineFinish (the same generic form + save path every
-// other capture already uses - CAP.manifold's popupFields are identical for every stage)
-// rather than a bespoke form or a duplicated save routine.
+// other capture already uses - each step below passes its own stageOverride into
+// buildPopupForm, so CAP.manifold.popupFields can and does vary by step: step 2/Added shows an
+// extra "Cylinder condition" field that step 1/Removed doesn't) rather than a bespoke form or a
+// duplicated save routine.
 //
 // Both step functions below call _addLineFinish() directly, bypassing addLine() entirely -
 // which means they must replicate, by hand, the two things addLine() normally does before
@@ -5443,7 +5459,7 @@ function openManifoldSwap(item){
   var c=CAP.manifold;popPhoto={};
   document.getElementById('mTitle').textContent='Removed — '+item;
   document.getElementById('mState').textContent='Step 1 of 2: weigh the OUTGOING cylinder (residual gas)';
-  buildPopupForm(c);
+  buildPopupForm(c,'Removed');
   renderModalLines({stage:'Removed'});
   document.getElementById('mAddBtn').textContent='Save & continue to incoming cylinder';
   document.getElementById('mAddBtn').setAttribute('onclick','_manifoldSwapStep1()');
@@ -5471,7 +5487,7 @@ function _manifoldSwapStep2(){
   var c=CAP.manifold;popPhoto={};
   document.getElementById('mTitle').textContent='Added — '+_manifoldSwapItem;
   document.getElementById('mState').textContent='Step 2 of 2: weigh the INCOMING (new) cylinder';
-  buildPopupForm(c);
+  buildPopupForm(c,'Added');
   renderModalLines({stage:'Added'});
   document.getElementById('mAddBtn').textContent='Save';
   document.getElementById('mAddBtn').setAttribute('onclick','_manifoldSwapStep2Save()');
