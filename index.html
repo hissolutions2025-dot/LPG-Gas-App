@@ -5335,9 +5335,10 @@ function openModal(item){
   document.getElementById('mAddBtn').setAttribute('onclick','addLine()');
   document.getElementById('capModal').classList.add('show');
 }
-function buildPopupForm(c){
+function buildPopupForm(c,stageOverride){
   var box=document.getElementById('mForm');var html='';
-  c.popupFields.forEach(function(f){
+  _popupFieldsCurrent=(typeof c.popupFields==='function')?c.popupFields(stageOverride):c.popupFields;
+  _popupFieldsCurrent.forEach(function(f){
     var hideAttr=f.showIf?' style="display:none"':'';
     html+='<div id="pfwrap-'+f.k+'"'+hideAttr+'>';
     if(f.type==='tabs'){
@@ -5361,7 +5362,7 @@ function buildPopupForm(c){
   box.innerHTML=html;
   popCalc();
 }
-function popCollect(){var c=CAP[capType];var d={};c.popupFields.forEach(function(f){if(f.type==='photo'){d[f.k]=(popPhoto[f.k]||[]).slice();return;}var el=document.getElementById('pf-'+f.k);if(el)d[f.k]=el.value;});return d;}
+function popCollect(){var d={};(_popupFieldsCurrent||[]).forEach(function(f){if(f.type==='photo'){d[f.k]=(popPhoto[f.k]||[]).slice();return;}var el=document.getElementById('pf-'+f.k);if(el)d[f.k]=el.value;});return d;}
 // Guided swap flow for a Manifold slot: tapping a cylinder tile while on the Added toggle no
 // longer opens the plain single-field popup above - it walks through weighing the OUTGOING
 // cylinder first (residual gas, closes out that slot's record for the day as stage 'Removed'),
@@ -5454,6 +5455,7 @@ function _manifoldSwapStep1(){
   d._addedBranch=capBranch;
   d._capturedModalItem=_manifoldSwapItem;
   d._capturedToggleSel={stage:'Removed'};
+  d._capturedPopupFields=_popupFieldsCurrent;
   d._swapId=_manifoldSwapId;
   _addLineFinish(c,d,function(saved){
     // Hard-ceiling block, or a flagged-band override that was declined/cancelled/rejected as
@@ -5481,6 +5483,7 @@ function _manifoldSwapStep2Save(){
   d._addedBranch=capBranch;
   d._capturedModalItem=_manifoldSwapItem;
   d._capturedToggleSel={stage:'Added'};
+  d._capturedPopupFields=_popupFieldsCurrent;
   d._swapId=_manifoldSwapId;
   _addLineFinish(c,d,function(saved){
     // Same reasoning as step 1's callback: a hard-ceiling block or declined/cancelled/busy
@@ -5501,11 +5504,19 @@ function popSetTabField(key,val){
   popCalc();
 }
 var popPhoto={};
+// The RESOLVED popupFields array for whatever form is currently on screen. Sits between
+// CAP.<type>.popupFields (which can now be a function - see buildPopupForm below) and every
+// other function that needs "does this form have field X" (popCollect, popCalc,
+// _photoMaxFor, resetPopupInputs) - those all run synchronously against whatever's CURRENTLY
+// displayed, so reading this tracked value is correct and simpler than re-resolving
+// c.popupFields(...) themselves, especially for the Manifold swap wizard where step 1 and
+// step 2 show DIFFERENT fields while live toggleSel.stage stays 'Added' for both - see
+// buildPopupForm's stageOverride param and openManifoldSwap()/_manifoldSwapStep2() below.
+var _popupFieldsCurrent=null;
 // Max photos per field defaults to 3 (Manifold's original limit, unchanged for any field
 // that doesn't specify otherwise) - a field can override via {max:N} in its popupFields spec.
 function _photoMaxFor(key){
-  var c=CAP[capType];if(!c)return 3;
-  var f=c.popupFields.filter(function(x){return x.k===key && x.type==='photo';})[0];
+  var f=(_popupFieldsCurrent||[]).filter(function(x){return x.k===key && x.type==='photo';})[0];
   return (f&&f.max)?f.max:3;
 }
 function onPhotoPick(input,key){
@@ -5528,7 +5539,7 @@ function clearPhoto(k){delete popPhoto[k];renderPhotoThumbs(k);}
 function popCalc(){
   var c=CAP[capType];var d=popCollect();
   // conditional showIf fields (e.g. Other brand name)
-  c.popupFields.forEach(function(f){
+  (_popupFieldsCurrent||[]).forEach(function(f){
     if(!f.showIf)return;
     var wrap=document.getElementById('pfwrap-'+f.k);if(!wrap)return;
     // showIf can be a single {k,eq} or an array of them (ALL must match) - e.g. Private's
@@ -5553,7 +5564,7 @@ function popCalc(){
     cb.innerHTML='<option value="">Select…</option>'+cbOpts.map(function(x){return '<option'+(x===curCb?' selected':'')+'>'+x+'</option>';}).join('');
     if(curCb && cbOpts.indexOf(curCb)===-1){cb.value='';toast('Cylinder brand reset — not linked to this supplier',true);}
   }
-  c.popupFields.filter(function(f){return f.type==='auto';}).forEach(function(f){
+  (_popupFieldsCurrent||[]).filter(function(f){return f.type==='auto';}).forEach(function(f){
     var el=document.getElementById('pf-'+f.k);var val=f.calc(popCollect(),modalItem);
     el.value=(val===''||isNaN(val))?'—':(Math.round(val*100)/100).toFixed(2);
     el.style.color=(typeof val==='number'&&val<0)?'#C0392B':'';
@@ -5632,6 +5643,7 @@ function addLine(){
   // by the time it actually runs - see there for the full reasoning.
   d._capturedModalItem=modalItem;
   if(c.toggles)d._capturedToggleSel=Object.assign({},toggleSel);
+  d._capturedPopupFields=_popupFieldsCurrent;
   // ---- SEAL ENFORCEMENT (refill only) ----
   if(capType==='refill'){
     var sres=sealValidate(capBranch, d.seal, d.brand);
@@ -5671,7 +5683,8 @@ function _addLineFinish(c,d,onDone){
     d.fullIn=num(d.fullIn);d.emptyOut=num(d.emptyOut);
     if(d.fullIn===0&&d.emptyOut===0){toast('Enter fulls received or empties returned',true);if(onDone)onDone(false);return;}
   } else {
-    for(var i=0;i<c.popupFields.length;i++){var f=c.popupFields[i];if(f.type==='auto'||f.opt||f.type==='tabs')continue;
+    var _pf=d._capturedPopupFields||(typeof c.popupFields==='function'?c.popupFields():c.popupFields);
+    for(var i=0;i<_pf.length;i++){var f=_pf[i];if(f.type==='auto'||f.opt||f.type==='tabs')continue;
       // conditional field only required when its showIf condition(s) are met
       if(f.showIf){var _conds=Array.isArray(f.showIf)?f.showIf:[f.showIf];if(!_conds.every(function(cond){return d[cond.k]===cond.eq;}))continue;}
       if(!d[f.k]||d[f.k]===''){toast('Fill in: '+f.label,true);if(onDone)onDone(false);return;}}
@@ -5741,7 +5754,7 @@ function _addLineFinishAfterCap(c,d,onDone){
   // reflect whatever the operator is looking at right now, not the captured submit-time state.
   var item=d._capturedModalItem;
   var toggles=d._capturedToggleSel; // undefined for non-toggle types - toggleKey()/dataBucket() fall back to live toggleSel there, which is correct since those types have no toggles at all
-  c.popupFields.filter(function(f){return f.type==='auto';}).forEach(function(f){d[f.k]=f.calc(d,item);});
+  (d._capturedPopupFields||(typeof c.popupFields==='function'?c.popupFields():c.popupFields)).filter(function(f){return f.type==='auto';}).forEach(function(f){d[f.k]=f.calc(d,item);});
   if(c.toggles)c.toggles.forEach(function(t){if(!d[t.key])d[t.key]=toggles[t.key];});
   var bucket=dataBucket(toggles);
   if(!bucket[item])bucket[item]=[];
@@ -5763,7 +5776,7 @@ function _addLineFinishAfterCap(c,d,onDone){
   }
   if(onDone)onDone(true);
 }
-function resetPopupInputs(c){popPhoto={};c.popupFields.forEach(function(f){
+function resetPopupInputs(c){popPhoto={};(_popupFieldsCurrent||[]).forEach(function(f){
   if(f.type==='tabs')return; // sticky across Add - e.g. Private's Us/Supplier tab stays selected until the user picks a different tab themselves, not reset on every add
   var el=document.getElementById('pf-'+f.k);if(el&&f.type!=='auto')el.value=(f.default!==undefined?f.default:'');
   var th=document.getElementById('pf-'+f.k+'-thumb');if(th)th.innerHTML='';
