@@ -5482,6 +5482,17 @@ function openModal(item){
   // incoming cylinder), not the plain single-field popup below - see openManifoldSwap().
   if(capType==='manifold' && toggleSel.stage==='Added'){openManifoldSwap(item);return;}
   _manifoldRemovedBaseline=null; // defensive - only ever meaningfully set by openManifoldSwap() for its own Removed step; clear it here so a leftover value from an earlier, abandoned swap attempt can never leak into an unrelated plain popup (Opening/Closing here, or any other capture type)
+  // Closing gets the same "what's currently in this slot" pre-fill/lock as the swap wizard's
+  // Removed step, using the exact same baseline chain (_manifoldRemovedStepBaseline) - by end
+  // of day, the cylinder being closed out IS whatever's currently in the slot, same question
+  // Removed asks. Passing null for latestAddedForItem (the swap wizard's own "operator just
+  // confirmed a redo" case, not relevant here) is fine - the function's own tier 1 already
+  // checks store.manifold for an already-COMMITTED swap from earlier today; an in-progress,
+  // not-yet-committed swap wouldn't be picked up here, but Closing normally happens after any
+  // same-day swaps are already done and committed. A dedicated variable, not
+  // _manifoldRemovedBaseline itself, so the swap wizard's own lifecycle/clearing discipline
+  // stays untouched and the two contexts can never cross-contaminate each other.
+  _manifoldClosingBaseline=(capType==='manifold' && toggleSel.stage==='Closing')?_manifoldRemovedStepBaseline(item,null):null;
   modalItem=item;var c=CAP[capType];popPhoto={};
   document.getElementById('mTitle').textContent=item;
   document.getElementById('mState').textContent=c.toggles?c.toggles.map(function(t){return t.label+': '+toggleSel[t.key];}).join(' · '):(CAP[capType].header.length?document.getElementById('hdr-'+c.header[0].k).value:'');
@@ -5528,10 +5539,16 @@ function buildPopupForm(c,stageOverride){
       // other select-type field elsewhere in this app is unaffected (stageOverride is only ever
       // 'Removed'/'Added' for Manifold's own swap wizard; every other capType's fields simply
       // never see a truthy stageOverride+baseline combination).
-      var _lockVal=(stageOverride==='Removed' && _manifoldRemovedBaseline && (f.k==='brand'||f.k==='gasType'))?_manifoldRemovedBaseline[f.k]:null;
+      // Removed uses _manifoldRemovedBaseline (swap wizard, openManifoldSwap), Closing uses the
+      // separate _manifoldClosingBaseline (plain popup, openModal) - same underlying baseline
+      // chain either way (_manifoldRemovedStepBaseline), just two different lock messages since
+      // "being replaced" only makes sense for Removed, not for weighing the slot at day's end.
+      var _lockSrc=(stageOverride==='Removed')?_manifoldRemovedBaseline:((!stageOverride && capType==='manifold' && toggleSel.stage==='Closing')?_manifoldClosingBaseline:null);
+      var _lockVal=(_lockSrc && (f.k==='brand'||f.k==='gasType'))?_lockSrc[f.k]:null;
       if(_lockVal){
+        var _lockMsg=(stageOverride==='Removed')?'Locked — this is the cylinder being replaced.':'Locked — this is the cylinder currently in this slot.';
         html+='<select class="mField" id="pf-'+f.k+'" disabled><option selected>'+_lockVal+'</option></select>'+
-          '<div class="mNote">Locked — this is the cylinder being replaced.</div>';
+          '<div class="mNote">'+_lockMsg+'</div>';
       } else {
         var _opts=(typeof f.opts==='function')?f.opts():f.opts; html+='<select class="mField" id="pf-'+f.k+'" onchange="popCalc()"><option value="">Select…</option>'+_opts.map(function(o){return '<option'+(f.default!==undefined&&o===f.default?' selected':'')+'>'+o+'</option>';}).join('')+'</select>';
       }
@@ -5598,6 +5615,10 @@ var _manifoldSwapItem=null, _manifoldSwapId=null;
 // leaves step 1 behind (moving to step 2, or opening an unrelated plain popup) so it can never
 // leak into a different slot's or a different capture type's form - see openModal()'s own clear.
 var _manifoldRemovedBaseline=null;
+// Same idea as _manifoldRemovedBaseline above, but for the plain Closing popup (openModal())
+// rather than the swap wizard's Removed step - see there for how it's computed and cleared.
+// Kept as a genuinely separate variable so neither context can ever leak into the other.
+var _manifoldClosingBaseline=null;
 // Baseline chain, most-recent-first, per the design doc: (1) this slot already had a completed
 // swap earlier today - baseline is that swap's incoming (Added) row; (2) else this slot has an
 // Opening row captured today; (3) else yesterday's Closing for this slot, if any (live, via
