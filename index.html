@@ -5729,6 +5729,14 @@ function openManifoldSwap(item){
   // leak into step 2's live tare-check via the unpairedRemoved resume branch just below, which
   // jumps straight to _manifoldSwapStep2() without ever touching this variable itself.
   _manifoldRemovedBaseline=null;
+  // Same reasoning, same fix, for the OTHER baseline variable: popCalc()'s live tare-check now
+  // reads _manifoldRemovedBaseline||_manifoldClosingBaseline (a single generalized check), so a
+  // stale _manifoldClosingBaseline left over from an earlier Closing popup (a DIFFERENT slot)
+  // could otherwise leak into THIS slot's Removed-step tare warning whenever this function's own
+  // _manifoldRemovedStepBaseline() resolves to null (a normal, common outcome for a slot with no
+  // Opening/prior-swap/prior-close data) - the OR would then silently fall through to the stale
+  // Closing value instead of correctly showing "no baseline, no check."
+  _manifoldClosingBaseline=null;
   var removedRows=((capData['Removed']&&capData['Removed'][item])||[]).filter(function(r){return (r._addedBranch||capBranch)===capBranch;});
   var addedRows=((capData['Added']&&capData['Added'][item])||[]).filter(function(r){return (r._addedBranch||capBranch)===capBranch;});
   var unpairedRemoved=removedRows.find(function(r){
@@ -6058,7 +6066,13 @@ function addLine(){
     }
   }
   _addLineFinish(c,d,function(saved){
-    if(saved && _tareMismatchNow)auditLog('Manifold tare mismatch',capBranch+' — '+modalItem+' — entered '+_enteredTare.toFixed(2)+'kg, expected '+_expectedTare.toFixed(2)+'kg (saved anyway)');
+    // d._capturedModalItem, not live modalItem - this same save can go through the async
+    // gas-left flagged-band override (password/reason prompt), during which the operator can
+    // switch to a different cylinder before it resolves (see this function's own comment above
+    // on why _capturedModalItem/_capturedToggleSel exist at all). Reading modalItem here would
+    // name the WRONG slot in the audit log if that happened while a tare mismatch was also
+    // active on this save.
+    if(saved && _tareMismatchNow)auditLog('Manifold tare mismatch',capBranch+' — '+d._capturedModalItem+' — entered '+_enteredTare.toFixed(2)+'kg, expected '+_expectedTare.toFixed(2)+'kg (saved anyway)');
   });
 }
 // onDone (optional, trailing): invoked exactly once when this call's outcome is fully known -
