@@ -5550,8 +5550,18 @@ var _manifoldRemovedBaseline=null;
 // today" row (tier 1), passed in rather than recomputed here.
 function _manifoldRemovedStepBaseline(item,latestAddedForItem){
   if(latestAddedForItem)return {brand:latestAddedForItem.brand,gasType:latestAddedForItem.gasType,tare:num(latestAddedForItem.tare)};
+  // Tier 1 continued, and tier 2's own fallback: capData only holds NOT-YET-COMMITTED rows -
+  // _clearCommittedCapData() prunes a branch's capData the moment Review & Commit succeeds, so
+  // an Opening (or an earlier Added swap) already committed earlier TODAY is gone from capData
+  // by the time this runs, even though it's still a completely valid, current baseline. Those
+  // committed rows live on in store.manifold instead (flush()/_capCommitReal never remove a
+  // committed row, only mark it _committed) - check there too before giving up on same-day data.
+  var committedAdded=(store.manifold||[]).filter(function(r){return r.branch===capBranch && (r._date||today)===today && r.stage==='Added' && r.cyl===item;});
+  if(committedAdded.length){var ca=committedAdded[committedAdded.length-1];return {brand:ca.brand,gasType:ca.gasType,tare:num(ca.tare)};}
   var openingRows=((capData['Opening']&&capData['Opening'][item])||[]).filter(function(r){return (r._addedBranch||capBranch)===capBranch;});
   if(openingRows.length)return {brand:openingRows[0].brand,gasType:openingRows[0].gasType,tare:num(openingRows[0].tare)};
+  var committedOpening=(store.manifold||[]).filter(function(r){return r.branch===capBranch && (r._date||today)===today && r.stage==='Opening' && r.cyl===item;});
+  if(committedOpening.length)return {brand:committedOpening[0].brand,gasType:committedOpening[0].gasType,tare:num(committedOpening[0].tare)};
   return _getManifoldPrevClose(capBranch,item);
 }
 // A slot's 'Removed'/'Added' capData buckets hold at most one row each (multi:false - see
