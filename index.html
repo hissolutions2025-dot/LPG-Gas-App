@@ -140,6 +140,13 @@
   .pwToggle{position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:19px;padding:6px;line-height:1;color:var(--muted);}
   .mField.auto{background:#ECEFF3;color:var(--navy);font-weight:700;}
   .mNote{font-size:11px;color:var(--muted);margin-top:4px;}
+  /* Live Gas Left ceiling/flagged-band warning (see popCalc()) - amber for the flagged band
+     (mirrors the existing --amber "pending/review" convention used elsewhere, e.g. .cCell.pending),
+     red for the hard ceiling (mirrors the existing --bad error-border convention, e.g. line ~3541's
+     badStyle). Declared after .mField.auto so equal-specificity cascade order lets these win over
+     it without !important. */
+  .mField.glWarnFlag{border:1.5px solid var(--amber);background:#FBF3E0;}
+  .mField.glWarnBad{border:2px solid var(--bad);background:#FDF3F2;}
   .lineRow{display:flex;justify-content:space-between;align-items:center;background:var(--sel);border-radius:10px;padding:10px 12px;margin-bottom:8px;font-size:13px;}
   .lineRow b{color:var(--navy);} .lineRow button{background:none;border:none;color:var(--bad);font-size:16px;cursor:pointer;font-weight:800;}
   .mAddBtn{width:100%;margin-top:12px;background:var(--steel);color:#fff;border:none;border-radius:12px;padding:14px;font-size:15px;font-weight:800;cursor:pointer;}
@@ -5429,7 +5436,11 @@ function buildPopupForm(c,stageOverride){
       return;
     }
     html+='<label class="mLabel">'+f.label+(f.opt?'':(f.type==='auto'?'':' <span style="color:#C0392B">*</span>'))+'</label>';
-    if(f.type==='auto')html+='<input class="mField auto" id="pf-'+f.k+'" readonly value="—">';
+    if(f.type==='auto')html+='<input class="mField auto" id="pf-'+f.k+'" readonly value="—">'+
+      // Live warning element for the gasLeft field only meaningfully used when c.gasLeftCap is
+      // true (see popCalc()) - harmlessly stays hidden/empty for any other auto field (e.g.
+      // Refill's own gasLeft/pumped fields, since refill never sets gasLeftCap).
+      '<div class="mNote" id="pf-'+f.k+'-warn" style="display:none"></div>';
     else if(f.type==='select'){var _opts=(typeof f.opts==='function')?f.opts():f.opts; html+='<select class="mField" id="pf-'+f.k+'" onchange="popCalc()"><option value="">Select…</option>'+_opts.map(function(o){return '<option'+(f.default!==undefined&&o===f.default?' selected':'')+'>'+o+'</option>';}).join('')+'</select>';}
     else if(f.type==='gasType')html+='<select class="mField" id="pf-'+f.k+'" onchange="popCalc()"><option value="">Select…</option></select><div class="mNote" id="pf-gasNote"></div>';
     else if(f.type==='number')html+='<input class="mField" type="number" inputmode="decimal" step="any" id="pf-'+f.k+'" oninput="popCalc()" onwheel="this.blur()">';
@@ -5648,6 +5659,30 @@ function popCalc(){
     var el=document.getElementById('pf-'+f.k);var val=f.calc(popCollect(),modalItem);
     el.value=(val===''||isNaN(val))?'—':(Math.round(val*100)/100).toFixed(2);
     el.style.color=(typeof val==='number'&&val<0)?'#C0392B':'';
+    // Live Gas Left ceiling/flagged-band warning - purely visual/informational, gated on
+    // c.gasLeftCap (today Manifold-only) and f.k==='gasLeft' so it never fires for Refill's own
+    // identically-named/calc'd gasLeft auto field (Refill has no gasLeftCap) or for any other
+    // auto field (e.g. Refill's "pumped"). Mirrors _addLineFinish's Save-time two-tier check
+    // EXACTLY - same rounding (Math.round(*100)/100), same cap (45 Propane/48 else), same
+    // boundaries (>=cap+0.2 hard ceiling, >cap+0.1 flagged band) - so this early warning can
+    // never disagree with the actual Save-time gate, which is completely untouched by this
+    // block. Requires gasType+scale+tare all non-empty first, so a half-filled-in form (e.g.
+    // the very first popCalc() run right after buildPopupForm opens the popup, before anything
+    // has been typed) never shows a false warning.
+    var warnEl=document.getElementById('pf-'+f.k+'-warn');
+    el.classList.remove('glWarnFlag','glWarnBad');
+    if(warnEl){warnEl.style.display='none';warnEl.textContent='';}
+    if(c.gasLeftCap && f.k==='gasLeft' && d.gasType && d.scale!=='' && d.tare!==''){
+      var glLive=Math.round((num(d.scale)-num(d.tare))*100)/100;
+      var capLive=(d.gasType==='Propane')?45:48;
+      if(glLive>=capLive+0.2){
+        el.classList.add('glWarnBad');
+        if(warnEl){warnEl.textContent='⚠ Exceeds '+(capLive+0.2).toFixed(1)+'kg — not possible, re-weigh';warnEl.style.color='var(--bad)';warnEl.style.display='block';}
+      } else if(glLive>capLive+0.1){
+        el.classList.add('glWarnFlag');
+        if(warnEl){warnEl.textContent='⚠ Above normal (max '+(capLive+0.1).toFixed(1)+'kg) — needs approval to save';warnEl.style.color='var(--amber)';warnEl.style.display='block';}
+      }
+    }
   });
   if(capType==='refill')_refillSealHint(d);
 }
