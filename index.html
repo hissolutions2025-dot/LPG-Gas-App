@@ -5428,7 +5428,7 @@ function openManifoldSwap(item){
     return addedRows.some(function(a){return a._swapId && a._swapId===r._swapId;});
   });
   if(hasCompleteSwap){
-    var proceed=confirm(item+' already has a completed cylinder swap recorded today (not yet committed).\n\nStarting a NEW swap for this slot will overwrite the outgoing cylinder\'s recorded weight from that swap - that reading will be lost. Once you continue, you\'ll see that reading on the next screen and can use its ✕ to remove it explicitly before entering a new one.\n\nOnly continue if you actually need to redo this swap. Start a brand-new swap for '+item+'?');
+    var proceed=confirm(item+' already has a completed cylinder swap recorded today (not yet committed).\n\nStarting a NEW swap for this slot means BOTH readings need to be recaptured. Saving the outgoing cylinder\'s weight on the next screen (step 1) replaces the old one automatically - but the old incoming-cylinder reading is left untouched until step 2 is saved too. Stopping partway, including deleting a reading with its ✕ and leaving the wizard instead of finishing both steps, leaves this slot with an incomplete swap and blocks it from being reviewed or committed until resolved.\n\nOnly continue if you actually need to redo this swap, and make sure to complete BOTH steps before leaving. Start a brand-new swap for '+item+'?');
     if(!proceed)return;
   }
   _manifoldSwapItem=item;_manifoldSwapId=_rid();
@@ -5945,20 +5945,38 @@ function capReview(){
   // into store[capType] or the Review screen is even shown - this is the primary catch,
   // before a swap is ever committed (closeDay() has a backstop check on store.manifold for
   // anything that gets past this anyway).
+  // Checked in BOTH directions: an orphaned 'Removed' row (outgoing weighed, incoming never
+  // recorded) AND an orphaned 'Added' row (incoming recorded, outgoing never weighed) - the
+  // latter is reachable via the wizard's per-row ✕ delete (removeLine(), wired in
+  // renderModalLines()): deleting the OLD 'Removed' row of a redone swap deletes that bucket
+  // key entirely (see removeLine()), so a Removed-only scan would never even look at the slot
+  // and the stale 'Added' row from before would slip through uncaught.
   if(capType==='manifold'){
-    var _unpairedSlots=[];
-    Object.keys(capData['Removed']||{}).forEach(function(item){
-      (capData['Removed'][item]||[]).filter(function(r){return (r._addedBranch||capBranch)===capBranch;}).forEach(function(r){
-        var addedForItem=(capData['Added']&&capData['Added'][item])||[];
-        var paired=addedForItem.some(function(a){return a._swapId && a._swapId===r._swapId;});
-        if(!paired && _unpairedSlots.indexOf(item)===-1)_unpairedSlots.push(item);
+    var _manifoldOrphanSlots=function(fromBucket,toBucket){
+      var slots=[];
+      Object.keys(fromBucket||{}).forEach(function(item){
+        (fromBucket[item]||[]).filter(function(r){return (r._addedBranch||capBranch)===capBranch;}).forEach(function(r){
+          var toForItem=(toBucket&&toBucket[item])||[];
+          var paired=toForItem.some(function(a){return a._swapId && a._swapId===r._swapId;});
+          if(!paired && slots.indexOf(item)===-1)slots.push(item);
+        });
       });
-    });
+      return slots;
+    };
+    var _unpairedSlots=_manifoldOrphanSlots(capData['Removed'],capData['Added']);
     if(_unpairedSlots.length){
       var _umsg=_unpairedSlots.length===1
         ? (_unpairedSlots[0]+"'s outgoing cylinder was weighed but no incoming cylinder was recorded — complete the swap or remove that reading before this can be reviewed/committed.")
         : ('These slots have an incomplete swap (outgoing cylinder weighed, incoming not recorded): '+_unpairedSlots.join(', ')+'. Complete each swap or remove the reading before this can be reviewed/committed.');
       toast('⚠ '+_umsg,true);
+      return;
+    }
+    var _unpairedAddedSlots=_manifoldOrphanSlots(capData['Added'],capData['Removed']);
+    if(_unpairedAddedSlots.length){
+      var _umsg2=_unpairedAddedSlots.length===1
+        ? (_unpairedAddedSlots[0]+"'s incoming cylinder was recorded but no outgoing cylinder weigh-out exists for it — complete the swap or remove that reading before this can be reviewed/committed.")
+        : ('These slots have an incomplete swap (incoming cylinder recorded, outgoing not weighed): '+_unpairedAddedSlots.join(', ')+'. Complete each swap or remove the reading before this can be reviewed/committed.');
+      toast('⚠ '+_umsg2,true);
       return;
     }
   }
@@ -6446,12 +6464,16 @@ function closeDay(){
   var unresolved=(store._openMismatch||[]).filter(function(m){return (!m.branch||m.branch===branch)&&!m.resolved;});
   if(unresolved.length){toast('Cannot close: '+unresolved.length+' opening line(s) unmatched. Manager/Owner must adjust them in Count History.',true);openHistory();return;}
   // #4b BLOCK: an unpaired Manifold swap (outgoing cylinder weighed, incoming cylinder never
-  // recorded - a 'Removed' row with no matching _swapId in that slot's 'Added' rows) must be
-  // resolved before the day can close. Same hard-block shape as the unresolved opening-
+  // recorded - a 'Removed' row with no matching _swapId in that slot's 'Added' rows, OR the
+  // mirror case: an 'Added' row with no matching _swapId in that slot's 'Removed' rows) must
+  // be resolved before the day can close. Same hard-block shape as the unresolved opening-
   // mismatches check just above, for the same reason: there's nothing valid to reconcile
   // here, only a missing half of an audit-trail record. capReview()'s own check on capData is
   // the primary catch, BEFORE a swap is ever committed - this is the backstop for anything
-  // that reached store.manifold anyway (e.g. captured before that check existed).
+  // that reached store.manifold anyway (e.g. captured before that check existed, or an
+  // Added-orphan left behind by deleting a 'Removed' row via the wizard's ✕ and abandoning it -
+  // see removeLine()/openManifoldSwap()). Checked both directions for the same reason
+  // capReview()'s check is: a Removed-only scan can't see an orphaned Added row.
   var _manRemoved=(store.manifold||[]).filter(function(r){return (!r.branch||r.branch===branch)&&r.stage==='Removed';});
   var _manAdded=(store.manifold||[]).filter(function(r){return (!r.branch||r.branch===branch)&&r.stage==='Added';});
   var _unpairedManifoldSlots=[];
@@ -6461,6 +6483,15 @@ function closeDay(){
   });
   if(_unpairedManifoldSlots.length){
     toast('Cannot close: '+_unpairedManifoldSlots.join(', ')+' — outgoing cylinder weighed but no incoming cylinder recorded (incomplete swap). A Manager/Owner must resolve it (Manifold capture → "Adjust an already-committed entry") before the day can be closed.',true);
+    return;
+  }
+  var _unpairedManifoldAddedSlots=[];
+  _manAdded.forEach(function(a){
+    var paired=_manRemoved.some(function(r){return r._swapId && r._swapId===a._swapId;});
+    if(!paired && _unpairedManifoldAddedSlots.indexOf(a.cyl)===-1)_unpairedManifoldAddedSlots.push(a.cyl);
+  });
+  if(_unpairedManifoldAddedSlots.length){
+    toast('Cannot close: '+_unpairedManifoldAddedSlots.join(', ')+' — incoming cylinder recorded but no outgoing cylinder weigh-out exists for it (incomplete swap). A Manager/Owner must resolve it (Manifold capture → "Adjust an already-committed entry") before the day can be closed.',true);
     return;
   }
   // Close Day requires: an authoriser WITH close-day permission + the high-risk second password
