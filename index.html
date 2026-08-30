@@ -5677,6 +5677,12 @@ function openManifoldSwap(item){
   document.getElementById('mAddBtn').setAttribute('onclick','_manifoldSwapStep1()');
   document.getElementById('capModal').classList.add('show');
 }
+// Set only by the leftover-gas branch in _addLineFinish (see there) to tell this function's own
+// onDone callback "the row DID save, but don't auto-advance to step 2 - we've already navigated
+// to Residual Gas instead." Kept separate from the saved/onDone boolean itself so a genuinely
+// successful save (including any OTHER flag stamped on the same row, e.g. a tare mismatch) is
+// never mistaken for a non-save - see the long comment at that branch for the bug this fixes.
+var _manifoldSkipStep2Advance=false;
 function _manifoldSwapStep1(){
   var c=CAP.manifold;
   var d=popCollect();
@@ -5705,6 +5711,7 @@ function _manifoldSwapStep1(){
     if(!saved)return;
     if(_tareMismatchNow)auditLog('Manifold tare mismatch',capBranch+' — '+_manifoldSwapItem+' — entered '+_enteredTare.toFixed(2)+'kg, expected '+_expectedTare.toFixed(2)+'kg (saved anyway)');
     _manifoldRemovedBaseline=null; // done with step 1 - step 2 has its own (unrelated) fields, no lock/tare-check there
+    if(_manifoldSkipStep2Advance){_manifoldSkipStep2Advance=false;return;} // navigated to Residual Gas instead - see _addLineFinish's leftover-gas branch
     _manifoldSwapStep2();
   });
 }
@@ -6074,7 +6081,16 @@ function _addLineFinish(c,d,onDone){
       d._residualFlag='LEFTOVER';
       _addLineFinishAfterCap(c,d);
       _openResidualFromManifoldRemoval(d,d._capturedModalItem,gl);
-      if(onDone)onDone(false);
+      // The row genuinely DID save (d._residualFlag is on it) - onDone(true) reflects that
+      // accurately, matching every other save-succeeded path. _manifoldSkipStep2Advance is a
+      // SEPARATE signal for "don't auto-advance to step 2" (we've navigated to Residual Gas
+      // instead) - overloading onDone's boolean to mean that too was the bug: it made
+      // _manifoldSwapStep1's callback treat this exactly like a genuine non-save and skip its
+      // own tare-mismatch audit-log call whenever BOTH a tare mismatch and a leftover-gas flag
+      // applied to the same reading, silently dropping one flag's audit trail in favour of the
+      // other's navigation. Two independent outcomes need two independent signals.
+      _manifoldSkipStep2Advance=true;
+      if(onDone)onDone(true);
       return;
     }
   }
