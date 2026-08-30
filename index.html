@@ -2598,7 +2598,7 @@ function syncRowsManifold(list,br){return list.map(function(r){var w=_who(r);
   // popupFields defines the field as k:'notes', so r.note was always undefined and the Note
   // column silently stayed blank no matter what the operator typed. Same class of bug as the
   // earlier Invoice/InvoiceNo and SupplierName/Invoice mismatches.
-  return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Stage:(r.stage||'Opening'),Cylinder:r.cyl,Brand:(r.brand||''),GasType:(r.gasType||''),Scale:r.scale,Tare:r.tare,GasLeft:r.gasLeft,FillCheck:(r._fillCheck||''),Note:(r.notes||''),PhotoLink:(r._photoLink||''),RowId:(r._rid||'')};});}
+  return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Stage:(r.stage||'Opening'),Cylinder:r.cyl,Brand:(r.brand||''),GasType:(r.gasType||''),Scale:r.scale,Tare:r.tare,GasLeft:r.gasLeft,FillCheck:(r._fillCheck||r.cylState||''),Note:(r.notes||''),PhotoLink:(r._photoLink||''),RowId:(r._rid||'')};});}
 // ----- Audit report (password-gated, search by date range/branch/person) -----
 function openAudit(){
   if(!perm('audit')){toast('You do not have Audit Log rights',true);return;}
@@ -6196,7 +6196,7 @@ function capReviewCols(type){
   // 'stage' (Opening/Added/Closing) is already on every row - capReview()'s toggle-extra
   // logic sets it from the toggle bucket key - it just was never shown in Review, so a
   // cylinder's stage was invisible right up until commit.
-  if(type==='manifold')return [{k:'stage',label:'Stage'},{k:'cyl',label:'Cylinder'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'gasLeft',label:'Gas left kg'},{k:'notes',label:'Note'},{k:'photo',label:'Photo'}];
+  if(type==='manifold')return [{k:'stage',label:'Stage'},{k:'cyl',label:'Cylinder'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'gasLeft',label:'Gas left kg'},{k:'cylState',label:'Condition'},{k:'notes',label:'Note'},{k:'photo',label:'Photo'}];
   if(type==='refill')return [{k:'size',label:'Size'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'pumped',label:'Pumped kg'},{k:'seal',label:'Seal #'},{k:'notes',label:'Notes'}];
   if(type==='private')return [{k:'cylBrand',label:'Cyl brand'},{k:'otherBrand',label:'Other name'},{k:'gasType',label:'Gas'},{k:'pumped',label:'kg'},{k:'customer',label:'Customer / notes'},{k:'filledBy',label:'Filled by'},{k:'fillSupplier',label:'Supplier'},{k:'fillSupplierOther',label:'Other supplier'},{k:'invoiceNo',label:'Invoice #'},{k:'supplierPhoto',label:'Photo'}];
   return [{k:'item',label:'Item'},{k:'brand',label:'Brand'}];
@@ -6417,7 +6417,7 @@ function openHistory(mismatchOverlayRows){
   var man=liveManifold();
   html+='<div class="histSection"><h4>Manifold — Cylinder Weights</h4>';
   if(man.length===0)html+='<div class="histEmpty">No manifold readings.</div>';
-  else{html+='<table class="htable"><tr><th>Stage</th><th>Cyl</th><th>Gas</th><th>Scale</th><th>Tare</th><th>Left</th><th>Note</th><th>Photo</th></tr>';
+  else{html+='<table class="htable"><tr><th>Stage</th><th>Cyl</th><th>Gas</th><th>Scale</th><th>Tare</th><th>Left</th><th>Condition</th><th>Note</th><th>Photo</th></tr>';
     // 'Removed' (the outgoing cylinder's residual reading from a swap - see openManifoldSwap)
     // sits between Opening and Added: it's captured mid-day, always immediately before its
     // paired Added row within the same swap, and never after Closing. Placing it here keeps
@@ -6425,7 +6425,7 @@ function openHistory(mismatchOverlayRows){
     // together as one event (matching Cyl + adjacent rows), without needing a separate visual
     // linking affordance the rest of this table doesn't otherwise have.
     ['Opening','Removed','Added','Closing'].forEach(function(stg){
-      man.filter(function(m){return (m.stage||'Opening')===stg;}).forEach(function(m){html+='<tr><td><b>'+stg+'</b></td><td>'+m.cyl+'</td><td>'+(m.gasType||'')+'</td><td class="n">'+(+m.scale).toFixed(2)+'</td><td class="n">'+(+m.tare).toFixed(2)+'</td><td class="n">'+(+m.gasLeft).toFixed(2)+'</td><td>'+(m.notes||'—')+'</td><td>'+(function(){var ph=Array.isArray(m.photo)?m.photo:(m.photo?[m.photo]:[]);return ph.length?ph.map(function(s){return '<img src="'+s+'" style="max-height:40px;border-radius:4px;margin:1px">';}).join(''):'—';})()+'</td></tr>';});
+      man.filter(function(m){return (m.stage||'Opening')===stg;}).forEach(function(m){html+='<tr><td><b>'+stg+'</b></td><td>'+m.cyl+'</td><td>'+(m.gasType||'')+'</td><td class="n">'+(+m.scale).toFixed(2)+'</td><td class="n">'+(+m.tare).toFixed(2)+'</td><td class="n">'+(+m.gasLeft).toFixed(2)+'</td><td>'+(m.cylState||'—')+'</td><td>'+(m.notes||'—')+'</td><td>'+(function(){var ph=Array.isArray(m.photo)?m.photo:(m.photo?[m.photo]:[]);return ph.length?ph.map(function(s){return '<img src="'+s+'" style="max-height:40px;border-radius:4px;margin:1px">';}).join(''):'—';})()+'</td></tr>';});
     });
     html+='</table>';
     // balance block
@@ -7927,12 +7927,12 @@ function buildCountDoc(src){
     // Photos are captured client-side as base64 data URIs (m.photo, up to 3 per cylinder) -
     // embedded directly here since the report is built entirely client-side, no upload needed.
     function _photoCell(m){var ph=Array.isArray(m.photo)?m.photo:[];return ph.length?ph.map(function(s){return '<img src="'+s+'" style="max-height:40px;border-radius:4px;margin:1px">';}).join(''):'\u2014';}
-    rows+='<h2>Manifold \u2014 Cylinder Weights</h2><table><tr><th>Stage</th><th>Cyl</th><th>Gas</th><th>Scale</th><th>Tare</th><th>Left</th><th>Note</th><th>Photo</th></tr>';
+    rows+='<h2>Manifold \u2014 Cylinder Weights</h2><table><tr><th>Stage</th><th>Cyl</th><th>Gas</th><th>Scale</th><th>Tare</th><th>Left</th><th>Condition</th><th>Note</th><th>Photo</th></tr>';
     // Same stage order/reasoning as openHistory()'s Manifold table (see its comment) -
     // Removed sits between Opening and Added so each swap's outgoing-residual block prints
     // directly above its paired incoming block.
     ['Opening','Removed','Added','Closing'].forEach(function(stg){
-      man.filter(function(m){return (m.stage||'Opening')===stg;}).forEach(function(m){rows+='<tr><td><b>'+stg+'</b></td><td>'+m.cyl+'</td><td>'+(m.gasType||'')+'</td><td class="n">'+(+m.scale).toFixed(2)+'</td><td class="n">'+(+m.tare).toFixed(2)+'</td><td class="n">'+(+m.gasLeft).toFixed(2)+'</td><td>'+(m.notes||'\u2014')+'</td><td>'+_photoCell(m)+'</td></tr>';});
+      man.filter(function(m){return (m.stage||'Opening')===stg;}).forEach(function(m){rows+='<tr><td><b>'+stg+'</b></td><td>'+m.cyl+'</td><td>'+(m.gasType||'')+'</td><td class="n">'+(+m.scale).toFixed(2)+'</td><td class="n">'+(+m.tare).toFixed(2)+'</td><td class="n">'+(+m.gasLeft).toFixed(2)+'</td><td>'+(m.cylState||'\u2014')+'</td><td>'+(m.notes||'\u2014')+'</td><td>'+_photoCell(m)+'</td></tr>';});
     });
     rows+='</table>';
     var bal=_manifoldBalFromStore(st,_b);
