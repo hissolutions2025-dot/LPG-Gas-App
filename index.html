@@ -350,7 +350,7 @@
         <input type="number" inputmode="decimal" class="mField" id="rgTare" step="0.1" oninput="residualCalcUpdate()"></div>
     </div>
     <div style="font-size:12px;color:var(--navy);margin:6px 0;padding:8px;border:1px dashed var(--steel);border-radius:8px" id="rgCalc">Gas type: — · Residual: —</div>
-    <label class="mLabel">Note (optional)</label>
+    <label class="mLabel" id="rgNoteLabel">Note (optional)</label>
     <input type="text" class="mField" id="rgNote" placeholder="Optional note">
     <label class="mLabel">Photo (optional)</label>
     <input type="file" accept="image/*" capture="environment" id="rgPhotoInput" style="display:none" onchange="rgPhotoPick(this)">
@@ -1797,9 +1797,18 @@ var RESIDUAL_SIZES=[
 var RESIDUAL_GASTYPE={};
 RESIDUAL_SIZES.forEach(function(g){g.items.forEach(function(s){RESIDUAL_GASTYPE[s]=g.group;});});
 var residualBranch='', residualList=[];
-
+// Set true only by the Manifold-removal deep-link (see _openResidualFromManifoldRemoval) to
+// make the Note field a mandatory Reason for that one hand-off - defaults false/cleared here on
+// every PLAIN entry into this screen, so a stale true from an earlier deep-link visit can never
+// leak into an ordinary Residual Gas session (e.g. logging gas left in a received cylinder).
+var _residualReasonRequired=false;
+function _residualSyncReasonLabel(){
+  var lbl=document.getElementById('rgNoteLabel');if(!lbl)return;
+  lbl.textContent=_residualReasonRequired?'Reason for removal (required)':'Note (optional)';
+}
 function openResidual(){
   if(!perm('residualGas')){toast('You do not have Residual Gas rights',true);return;}
+  _residualReasonRequired=false;_residualSyncReasonLabel();
   residualBranch=(role==='Operator')?branch:(residualBranch||branch||'Helderberg');
   applyBranchLock('rgbr-',residualBranch);
   document.getElementById('hTitle').textContent='Residual Gas';
@@ -1908,14 +1917,22 @@ function residualAdd(){
   if(brand==='Other'){brand=(document.getElementById('rgBrandOther').value||'').trim();if(!brand){toast('Enter the other brand name',true);return;}}
   var scale=num(document.getElementById('rgScale').value),tare=num(document.getElementById('rgTare').value);
   if(!(scale>0)){toast('Enter the cylinder scale weight',true);return;}
+  // Tare weighing more than the cylinder itself is physically impossible - catching it here
+  // instead of letting Math.max(0,scale-tare) below silently show "0kg residual" turns a real
+  // operator mistake (wrong reading, or scale/tare mixed up) into a clear, immediate error
+  // instead of a silently-wrong zero that looks like a normal, empty-cylinder result.
+  if(tare>scale){toast('Tare cannot be more than the scale weight — recheck the reading',true);return;}
+  var note=(document.getElementById('rgNote').value||'').trim();
+  if(_residualReasonRequired && !note){toast('Enter the reason for removal first',true);return;}
   var gasType=RESIDUAL_GASTYPE[size]||'';
   var residual=Math.max(0,scale-tare);
   // Branch is captured HERE, per row, from whatever's selected right now - never re-derived
   // later from the (possibly since-changed) branch toggle. This is what stops a cylinder
   // added under one branch from being submitted under whichever branch is selected later.
-  residualList.push({Branch:residualBranch||branch,Brand:brand,Size:size,GasType:gasType,CylScale:scale,CylTare:tare,Residual:residual,Note:(document.getElementById('rgNote').value||'').trim(),photos:rgPhoto.slice()});
+  residualList.push({Branch:residualBranch||branch,Brand:brand,Size:size,GasType:gasType,CylScale:scale,CylTare:tare,Residual:residual,Note:note,photos:rgPhoto.slice()});
   renderResidualList();
   residualResetForm();
+  _residualReasonRequired=false;_residualSyncReasonLabel(); // one-time enforcement per Manifold hand-off - back to normal/optional for whatever's added next
 }
 function residualRemove(i){
   residualList.splice(i,1);
@@ -2354,6 +2371,45 @@ function _openFaultyFromManifoldUnderfill(d,item,cap,gl){
   faultySetState('Full');
   faultyCalcUpdate();
   toast('Recheck the details below, then Log faulty cylinder to record this delivery issue');
+}
+// Deep-links from a confirmed leftover-gas-on-removal flag (the Manifold swap wizard's
+// OUTGOING/Removed step, gl>=0.2kg - see _addLineFinish) into Residual Gas, pre-filled, so the
+// operator only has to type the reason and tap Add. Unlike the underfill flow above, the
+// Removed row here has ALREADY been saved by the time this runs (a genuine leftover-gas reading
+// isn't a data-entry mistake to redo, just a fact that needs a second record) - this is purely
+// a hand-off to a second screen, not a save-blocking gate. Same wrong-branch risk as the Faulty
+// deep-link (Manager/Owner can point Manifold capture at a branch other than their own via
+// capSetBranch) - set residualBranch to capBranch BEFORE navigating, same fix pattern.
+function _openResidualFromManifoldRemoval(d,item,gl){
+  var summary=(d.brand||'unknown brand')+' '+(d.gasType||'LPG')+' cylinder removed from Manifold '+item+' — '+gl.toFixed(2)+'kg gas left';
+  if(!perm('residualGas')){
+    toast('This cylinder still has gas left — ask someone with Residual Gas rights to log it: '+summary,true);
+    return;
+  }
+  residualBranch=capBranch;
+  openResidual();
+  var capPaneEl=document.getElementById('residualView');
+  if(!capPaneEl || getComputedStyle(capPaneEl).display==='none'){
+    toast('Could not open Residual Gas — log it manually: '+summary,true);
+    return;
+  }
+  residualPopulateBrand(); // branch-dependent options - rebuild now that residualBranch is set, before picking a value below
+  var knownBrands=RESIDUAL_BRANDS_BY_BRANCH[residualBranch]||['Afrox','Oryx','Other'];
+  var brand=d.brand;
+  var rgBrandEl=document.getElementById('rgBrand'), rgBrandOtherEl=document.getElementById('rgBrandOther');
+  if(rgBrandEl){
+    if(knownBrands.indexOf(brand)>-1){rgBrandEl.value=brand;}
+    else{rgBrandEl.value='Other';if(rgBrandOtherEl)rgBrandOtherEl.value=brand||'';}
+    residualBrandChanged();
+  }
+  var sizeKey=(d.gasType==='Propane')?'45kg-Prop-DV':'48kg-DV';
+  residualPickSize(sizeKey);
+  var rgScaleEl=document.getElementById('rgScale'), rgTareEl=document.getElementById('rgTare');
+  if(rgScaleEl)rgScaleEl.value=d.scale;
+  if(rgTareEl)rgTareEl.value=d.tare;
+  residualCalcUpdate();
+  _residualReasonRequired=true;_residualSyncReasonLabel();
+  toast('Confirm the details below and enter the reason for removal, then Add');
 }
 // VOID a wrongly-captured seal. mode: 'reuse' (number returns to pool) or 'burn' (number retired).
 // Open day (today, not closed) -> seal_void_open. Closed/prior day -> seal_edit_used.
@@ -5977,6 +6033,7 @@ function _addLineFinish(c,d,onDone){
     // silently accept it as this slot's new baseline).
     var toggles=d._capturedToggleSel;
     var isIncoming=toggles && toggles.stage==='Added';
+    var isOutgoing=toggles && toggles.stage==='Removed';
     var isUsedPartial=d.cylState==='Used / partial';
     if(isIncoming && !isUsedPartial && gl<(cap-0.2)){
       var wantsFaulty=confirm('Gas left ('+gl.toFixed(2)+'kg) is below the expected fill level for a fresh cylinder from the supplier ('+(cap-0.2).toFixed(1)+'kg minimum for '+(d.gasType||'LPG')+').\n\nPress Cancel to recheck your scale/tare entry — nothing has been saved yet.\nPress OK if the numbers are correct — you\'ll be taken straight to logging this as a faulty cylinder.');
@@ -5999,6 +6056,25 @@ function _addLineFinish(c,d,onDone){
         _addLineFinishAfterCap(c,d,onDone);
       }).catch(function(){toast('Something went wrong processing the override — please try again',true);if(onDone)onDone(false);})
       .finally(function(){manifoldOverrideBusy=false;});
+      return;
+    }
+    // Leftover gas still in the OUTGOING cylinder (Removed step only, per explicit confirmation
+    // this must not affect any other stage's tolerances). Unlike underfill above, this is not a
+    // data-entry mistake to recheck - a genuine leftover reading is just a fact about this
+    // removal, so once acknowledged it proceeds and saves normally (flagged), rather than being
+    // held back for a redo. The operator is then handed straight into Residual Gas, pre-filled,
+    // to log it there too - see _openResidualFromManifoldRemoval. onDone(false) at the end is
+    // deliberate even though the row DID save (d._residualFlag is on it) - it only tells the
+    // swap wizard not to auto-advance to step 2, since we've navigated to Residual Gas instead;
+    // the operator returns to this slot later and the existing unpairedRemoved resume logic
+    // (openManifoldSwap) picks step 2 up from there with no further tracking needed here.
+    if(isOutgoing && gl>=0.2){
+      var wantsProceed=confirm('This cylinder still has '+gl.toFixed(2)+'kg of gas left ('+(d.gasType||'LPG')+').\n\nA replaced cylinder should normally be close to empty. Press Cancel to recheck your weighing.\nPress OK to confirm this is correct — you\'ll be taken to Residual Gas to log it, then can come back to finish this swap.');
+      if(!wantsProceed){if(onDone)onDone(false);return;}
+      d._residualFlag='LEFTOVER';
+      _addLineFinishAfterCap(c,d);
+      _openResidualFromManifoldRemoval(d,d._capturedModalItem,gl);
+      if(onDone)onDone(false);
       return;
     }
   }
