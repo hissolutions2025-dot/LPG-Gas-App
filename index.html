@@ -5481,18 +5481,22 @@ function openModal(item){
   // Manifold's Added stage is a guided two-step swap wizard (outgoing residual, then
   // incoming cylinder), not the plain single-field popup below - see openManifoldSwap().
   if(capType==='manifold' && toggleSel.stage==='Added'){openManifoldSwap(item);return;}
-  _manifoldRemovedBaseline=null; // defensive - only ever meaningfully set by openManifoldSwap() for its own Removed step; clear it here so a leftover value from an earlier, abandoned swap attempt can never leak into an unrelated plain popup (Opening/Closing here, or any other capture type)
+  _manifoldRemovedBaseline=null; // defensive - only ever meaningfully set by openManifoldSwap() for its own Removed step; clear it here so a leftover value from an earlier, abandoned swap attempt can never leak into an unrelated plain popup (Opening/Closing here, or any other capture type). Note this line is skipped when the Added-stage branch above already returned - harmless, since every read site re-checks toggleSel.stage/capType before trusting either baseline variable.
   // Closing gets the same "what's currently in this slot" pre-fill/lock as the swap wizard's
   // Removed step, using the exact same baseline chain (_manifoldRemovedStepBaseline) - by end
   // of day, the cylinder being closed out IS whatever's currently in the slot, same question
-  // Removed asks. Passing null for latestAddedForItem (the swap wizard's own "operator just
-  // confirmed a redo" case, not relevant here) is fine - the function's own tier 1 already
-  // checks store.manifold for an already-COMMITTED swap from earlier today; an in-progress,
-  // not-yet-committed swap wouldn't be picked up here, but Closing normally happens after any
-  // same-day swaps are already done and committed. A dedicated variable, not
-  // _manifoldRemovedBaseline itself, so the swap wizard's own lifecycle/clearing discipline
-  // stays untouched and the two contexts can never cross-contaminate each other.
-  _manifoldClosingBaseline=(capType==='manifold' && toggleSel.stage==='Closing')?_manifoldRemovedStepBaseline(item,null):null;
+  // Removed asks. Swaps are event-driven (no expected time, no nudge to commit right after) -
+  // an operator can genuinely do a swap mid-day and not commit until much later, so unlike the
+  // original version of this comment claimed, Closing can NOT assume same-day swaps are already
+  // committed by the time it opens. Check the SAME uncommitted-swap source openManifoldSwap()
+  // itself checks (capData['Added'][item]) before falling back to the committed-only tiers -
+  // mirrors that function's own hasCompleteSwap/addedRows[0] logic exactly, just without the
+  // redo-confirmation UI (Closing isn't starting a new swap, just reading what's there).
+  _manifoldClosingBaseline=null;
+  if(capType==='manifold' && toggleSel.stage==='Closing'){
+    var _closingAddedRows=((capData['Added']&&capData['Added'][item])||[]).filter(function(r){return (r._addedBranch||capBranch)===capBranch;});
+    _manifoldClosingBaseline=_manifoldRemovedStepBaseline(item,_closingAddedRows.length?_closingAddedRows[_closingAddedRows.length-1]:null);
+  }
   modalItem=item;var c=CAP[capType];popPhoto={};
   document.getElementById('mTitle').textContent=item;
   document.getElementById('mState').textContent=c.toggles?c.toggles.map(function(t){return t.label+': '+toggleSel[t.key];}).join(' · '):(CAP[capType].header.length?document.getElementById('hdr-'+c.header[0].k).value:'');
