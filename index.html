@@ -2272,9 +2272,31 @@ function manifoldWeightOverride(msg){
 // capReview()/closeDay() catches that if the operator doesn't otherwise resolve it (e.g. by
 // getting a real replacement cylinder and completing the swap properly).
 function _openFaultyFromManifoldUnderfill(d,item,cap,gl){
+  var summary=(d.brand||'unknown brand')+' '+(d.gasType||'LPG')+' cylinder on Manifold '+item+' — '+gl.toFixed(2)+'kg gas left';
+  // Gate on the exact same perm key faultyTabInit() uses to decide whether to route to the
+  // capture pane at all (see faultyTabInit() above _faultyShowSub) - checking it here, before
+  // ever navigating, gives a fast, honest rejection for both "no faulty rights at all" and the
+  // supported "faultyRegister but not faultyCapture" combination (that combination would
+  // otherwise land on faultyTabInit()'s register fallback instead of the capture pane below).
+  // Deliberately do NOT call closeModal() on this path - the capture modal (with the operator's
+  // already-entered scale/tare still in it) stays open and visible instead of being silently
+  // discarded, and the toast below carries a summary of the reading too.
+  if(!perm('faultyCapture')){
+    toast('You do not have rights to log a faulty cylinder — ask a Manager or Owner to log this one: '+summary,true);
+    return;
+  }
   closeModal();
   openAdmin();
   adminTab('faulty');
+  // Defensive backstop: the perm check above guarantees adminTab('faulty') -> faultyTabInit()
+  // routes synchronously to the capture pane with no password gate (see faultyShowSub()), so
+  // this should always be true here - but verify the actual DOM state before writing into any
+  // fc* field rather than trusting the navigation blindly, in case that chain ever changes.
+  var capPaneEl=document.getElementById('faultyCapturePane'), faultyPaneEl=document.getElementById('adminFaulty');
+  if(!capPaneEl || capPaneEl.style.display!=='block' || !faultyPaneEl || faultyPaneEl.style.display!=='block'){
+    toast('Could not open the Faulty Cylinders form — ask a Manager or Owner to log this one: '+summary,true);
+    return;
+  }
   var knownBrands=['Afrox','Oryx'];
   var brand=d.brand;
   var fcBrandEl=document.getElementById('fcBrand'), fcBrandOtherEl=document.getElementById('fcBrandOther');
