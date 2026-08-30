@@ -1041,10 +1041,40 @@ function _manifoldCylLabels(br){
   var out=[];for(var i=1;i<=n;i++)out.push('Cyl '+i);
   return out;
 }
+// Per-branch, per-gas-type Manifold weight tolerances - Owner-configurable (Admin -> Manifold
+// Slots), live-fetched/cached the same way slot count is (see _fetchManifoldSlotCount below,
+// which loads both in one query). These are today's ORIGINAL hardcoded values, now just the
+// fallback used while a branch's row hasn't loaded yet or has never been configured - every
+// read site below must go through _manifoldTol()/_manifoldTareEnabled(), never a bare number.
+var MANIFOLD_TOL_DEFAULTS={
+  lpg:{flagged:{enabled:true,kg:0.1},ceiling:{enabled:true,kg:0.2},underfill:{enabled:true,kg:0.2},leftover:{enabled:true,kg:0.2}},
+  propane:{flagged:{enabled:true,kg:0.1},ceiling:{enabled:true,kg:0.2},underfill:{enabled:true,kg:0.2},leftover:{enabled:true,kg:0.2}},
+  tare_mismatch:{enabled:true}
+};
+var _manifoldTolerances={}; // branch -> stored tolerances object (or null/partial) as loaded from Supabase
+// Merged getter: {enabled,kg} for a gas-type-specific rule, falling back field-by-field to
+// MANIFOLD_TOL_DEFAULTS so a partially-saved/older row never crashes or silently drops a field.
+function _manifoldTol(br,gasType,rule){
+  var gt=(gasType==='Propane')?'propane':'lpg';
+  var def=MANIFOLD_TOL_DEFAULTS[gt][rule];
+  var stored=_manifoldTolerances[br];
+  var s=stored&&stored[gt]&&stored[gt][rule];
+  return {
+    enabled:(s&&s.enabled!==undefined)?!!s.enabled:def.enabled,
+    kg:(s&&typeof s.kg==='number')?s.kg:def.kg
+  };
+}
+// Tare-mismatch has no kg (zero-tolerance whenever on, per explicit confirmation - the tare is
+// printed on the cylinder, not a range) - just an on/off, shared across LPG/Propane.
+function _manifoldTareEnabled(br){
+  var stored=_manifoldTolerances[br];
+  var s=stored&&stored.tare_mismatch;
+  return (s&&s.enabled!==undefined)?!!s.enabled:MANIFOLD_TOL_DEFAULTS.tare_mismatch.enabled;
+}
 function _fetchManifoldSlotCount(br){
-  return sb.from('manifold_settings').select('slot_count').eq('branch',br).maybeSingle().then(function(res){
+  return sb.from('manifold_settings').select('slot_count,tolerances').eq('branch',br).maybeSingle().then(function(res){
     if(res.error){console.error('_fetchManifoldSlotCount failed for '+br+':',res.error.message);return;}
-    if(res.data)_manifoldSlotCounts[br]=res.data.slot_count;
+    if(res.data){_manifoldSlotCounts[br]=res.data.slot_count;_manifoldTolerances[br]=res.data.tolerances||null;}
   },function(e){console.error('_fetchManifoldSlotCount rejected for '+br+':',e&&e.message);});
 }
 // Live per-branch "yesterday's Closing" cache, per Manifold slot - tier-3 fallback for the
@@ -1479,7 +1509,7 @@ function renderManifoldSlots(){
   if(role!=='Owner'){box.innerHTML='<div style="color:#9B2C2C;font-size:13px">Owner only.</div>';return;}
   var br=document.getElementById('mfBranch').value;
   box.innerHTML='<div class="histEmpty" style="text-align:center;padding:10px">Loading…</div>';
-  sb.from('manifold_settings').select('slot_count').eq('branch',br).maybeSingle().then(function(res){
+  sb.from('manifold_settings').select('slot_count,tolerances').eq('branch',br).maybeSingle().then(function(res){
     // staleness guard: if #mfBranch has moved on since this fetch was issued, a newer
     // renderManifoldSlots() call is already in flight (or already rendered) for the
     // current branch — don't let this older resolution clobber it.
@@ -1490,9 +1520,37 @@ function renderManifoldSlots(){
       return;
     }
     var n=(res.data&&res.data.slot_count)||4;
+    var tol=(res.data&&res.data.tolerances)||null;
+    function tv(gt,rule,field){
+      var d=MANIFOLD_TOL_DEFAULTS[gt][rule];
+      var s=tol&&tol[gt]&&tol[gt][rule];
+      if(field==='enabled')return (s&&s.enabled!==undefined)?s.enabled:d.enabled;
+      return (s&&typeof s.kg==='number')?s.kg:d.kg;
+    }
+    var tareEn=(tol&&tol.tare_mismatch&&tol.tare_mismatch.enabled!==undefined)?tol.tare_mismatch.enabled:MANIFOLD_TOL_DEFAULTS.tare_mismatch.enabled;
+    function ruleRow(gt,rule,label){
+      var en=tv(gt,rule,'enabled'), kg=tv(gt,rule,'kg');
+      return '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">'+
+        '<input type="checkbox" id="mfTol_'+gt+'_'+rule+'_en" '+(en?'checked':'')+' onchange="document.getElementById(\'mfTol_'+gt+'_'+rule+'_kg\').disabled=!this.checked" style="margin:0">'+
+        '<label style="font-size:11px;flex:1">'+label+'</label>'+
+        '<input class="mField" type="number" step="0.01" min="0" id="mfTol_'+gt+'_'+rule+'_kg" value="'+kg+'" style="width:70px;margin:0" '+(en?'':'disabled')+'>'+
+        '</div>';
+    }
     box.innerHTML='<label class="mLabel" style="font-size:11px">Slot count</label>'+
       '<input class="mField" type="number" min="1" max="12" id="mfSlotCount" value="'+n+'">'+
-      '<button class="saveBtn" style="margin-top:10px" onclick="saveManifoldSlots(\''+br+'\')">Save</button>';
+      '<div style="margin-top:14px;font-weight:600;font-size:12px">Weight tolerances</div>'+
+      '<div style="display:flex;gap:16px;margin-top:6px;flex-wrap:wrap">'+
+      '<div style="flex:1;min-width:150px"><div style="font-size:11px;font-weight:600;margin-bottom:4px">LPG</div>'+
+        ruleRow('lpg','flagged','Flagged band')+ruleRow('lpg','ceiling','Hard ceiling')+ruleRow('lpg','underfill','Underfill')+ruleRow('lpg','leftover','Leftover on removal')+
+      '</div>'+
+      '<div style="flex:1;min-width:150px"><div style="font-size:11px;font-weight:600;margin-bottom:4px">Propane</div>'+
+        ruleRow('propane','flagged','Flagged band')+ruleRow('propane','ceiling','Hard ceiling')+ruleRow('propane','underfill','Underfill')+ruleRow('propane','leftover','Leftover on removal')+
+      '</div></div>'+
+      '<div style="display:flex;align-items:center;gap:6px;margin-top:8px">'+
+        '<input type="checkbox" id="mfTol_tare_en" '+(tareEn?'checked':'')+' style="margin:0">'+
+        '<label style="font-size:11px">Tare mismatch check</label>'+
+      '</div>'+
+      '<button class="saveBtn" style="margin-top:12px" onclick="saveManifoldSlots(\''+br+'\')">Save</button>';
   },function(e){
     if(document.getElementById('mfBranch').value!==br)return;
     console.error('renderManifoldSlots rejected for '+br+':',e&&e.message);
@@ -1503,11 +1561,28 @@ function saveManifoldSlots(br){
   if(role!=='Owner'){toast('Owner only',true);return;}
   var n=num(document.getElementById('mfSlotCount').value);
   if(n<1||n>12||n%1!==0){toast('Enter a whole number between 1 and 12',true);return;}
-  sb.from('manifold_settings').upsert([{branch:br,slot_count:n,updated_by:currentProfile&&currentProfile.id,updated_by_name_snapshot:operator,updated_at:new Date().toISOString()}],{onConflict:'branch'}).then(function(res){
+  var RULES=['flagged','ceiling','underfill','leftover'];
+  var tolerances={lpg:{},propane:{}};
+  var badField=null;
+  ['lpg','propane'].forEach(function(gt){
+    RULES.forEach(function(rule){
+      if(badField)return;
+      var enEl=document.getElementById('mfTol_'+gt+'_'+rule+'_en');
+      var kgEl=document.getElementById('mfTol_'+gt+'_'+rule+'_kg');
+      var enabled=!!(enEl&&enEl.checked);
+      var kg=num(kgEl?kgEl.value:'');
+      if(enabled&&kg<0){badField=gt+' '+rule;return;}
+      tolerances[gt][rule]={enabled:enabled,kg:kg};
+    });
+  });
+  if(badField){toast('Enter a valid tolerance (0 or more) for '+badField,true);return;}
+  tolerances.tare_mismatch={enabled:!!(document.getElementById('mfTol_tare_en')&&document.getElementById('mfTol_tare_en').checked)};
+  sb.from('manifold_settings').upsert([{branch:br,slot_count:n,tolerances:tolerances,updated_by:currentProfile&&currentProfile.id,updated_by_name_snapshot:operator,updated_at:new Date().toISOString()}],{onConflict:'branch'}).then(function(res){
     if(res.error){toast('Could not save: '+res.error.message,true);return;}
     _manifoldSlotCounts[br]=n;
-    auditLog('Manifold slot count changed',br+' -> '+n+' slots');
-    toast('Manifold slot count saved ✓');
+    _manifoldTolerances[br]=tolerances;
+    auditLog('Manifold settings changed',br+' — slot count '+n+', tolerances updated');
+    toast('Manifold settings saved ✓');
   },function(e){toast('Network error — check your connection',true);});
 }
 function toggleSection(br,sec,val){
@@ -2315,7 +2390,8 @@ function manifoldWeightOverride(msg){
 // attempt is intentionally never saved) - the existing orphaned-Removed-row safety net in
 // capReview()/closeDay() catches that if the operator doesn't otherwise resolve it (e.g. by
 // getting a real replacement cylinder and completing the swap properly).
-function _openFaultyFromManifoldUnderfill(d,item,cap,gl){
+function _openFaultyFromManifoldUnderfill(d,item,cap,gl,underKg){
+  if(typeof underKg!=='number')underKg=0.2; // fallback matches the pre-configurable default, for safety only
   var summary=(d.brand||'unknown brand')+' '+(d.gasType||'LPG')+' cylinder on Manifold '+item+' — '+gl.toFixed(2)+'kg gas left';
   // Gate on the exact same perm key faultyTabInit() uses to decide whether to route to the
   // capture pane at all (see faultyTabInit() above _faultyShowSub) - checking it here, before
@@ -2367,7 +2443,7 @@ function _openFaultyFromManifoldUnderfill(d,item,cap,gl){
   var fcReasonEl=document.getElementById('fcReason');
   if(fcReasonEl){fcReasonEl.value='Underfilled';faultyReasonChanged();}
   var fcNoteEl=document.getElementById('fcNote');
-  if(fcNoteEl)fcNoteEl.value='Auto-logged from Manifold '+item+' — incoming cylinder weighed at '+gl.toFixed(2)+'kg gas left, below the '+(cap-0.2).toFixed(1)+'kg minimum expected for a fresh '+(d.gasType||'LPG')+' cylinder.';
+  if(fcNoteEl)fcNoteEl.value='Auto-logged from Manifold '+item+' — incoming cylinder weighed at '+gl.toFixed(2)+'kg gas left, below the '+(cap-underKg).toFixed(1)+'kg minimum expected for a fresh '+(d.gasType||'LPG')+' cylinder.';
   faultySetState('Full');
   faultyCalcUpdate();
   toast('Recheck the details below, then Log faulty cylinder to record this delivery issue');
@@ -5793,7 +5869,7 @@ function _manifoldSwapStep1(){
   // hard-blocked or pending a SEPARATE (gas-left) override for reasons that have nothing to do
   // with tare; logging "saved anyway" before knowing whether it was actually saved would lie.
   var _tareMismatchNow=false, _enteredTare, _expectedTare;
-  if(_manifoldRemovedBaseline && d.tare!==''){
+  if(_manifoldTareEnabled(capBranch) && _manifoldRemovedBaseline && d.tare!==''){
     _enteredTare=Math.round(num(d.tare)*100)/100;_expectedTare=Math.round(_manifoldRemovedBaseline.tare*100)/100;
     if(_enteredTare!==_expectedTare){d._tareFlag='MISMATCH';_tareMismatchNow=true;}
   }
@@ -5927,12 +6003,13 @@ function popCalc(){
     if(c.gasLeftCap && f.k==='gasLeft' && d.gasType && d.scale!=='' && d.tare!==''){
       var glLive=Math.round((num(d.scale)-num(d.tare))*100)/100;
       var capLive=(d.gasType==='Propane')?45:48;
-      if(glLive>=capLive+0.2){
+      var _ceilTolLive=_manifoldTol(capBranch,d.gasType,'ceiling'), _flagTolLive=_manifoldTol(capBranch,d.gasType,'flagged');
+      if(_ceilTolLive.enabled && glLive>=capLive+_ceilTolLive.kg){
         el.classList.add('glWarnBad');
-        if(warnEl){warnEl.textContent='⚠ Exceeds '+(capLive+0.2).toFixed(1)+'kg — not possible, re-weigh';warnEl.style.color='var(--bad)';warnEl.style.display='block';}
-      } else if(glLive>capLive+0.1){
+        if(warnEl){warnEl.textContent='⚠ Exceeds '+(capLive+_ceilTolLive.kg).toFixed(1)+'kg — not possible, re-weigh';warnEl.style.color='var(--bad)';warnEl.style.display='block';}
+      } else if(_flagTolLive.enabled && glLive>capLive+_flagTolLive.kg){
         el.classList.add('glWarnFlag');
-        if(warnEl){warnEl.textContent='⚠ Above normal (max '+(capLive+0.1).toFixed(1)+'kg) — needs approval to save';warnEl.style.color='var(--amber)';warnEl.style.display='block';}
+        if(warnEl){warnEl.textContent='⚠ Above normal (max '+(capLive+_flagTolLive.kg).toFixed(1)+'kg) — needs approval to save';warnEl.style.color='var(--amber)';warnEl.style.display='block';}
       }
     }
   });
@@ -5946,7 +6023,7 @@ function popCalc(){
   // _addLineFinish's actual Save-time gate is completely untouched by this block - see
   // _manifoldSwapStep1()'s (Removed) and addLine()'s (Closing) own separate, save-time
   // re-derivations of this same check, which are what actually stamp/audit-log a mismatch.
-  var _tareBaseline=_manifoldRemovedBaseline||_manifoldClosingBaseline;
+  var _tareBaseline=_manifoldTareEnabled(capBranch)?(_manifoldRemovedBaseline||_manifoldClosingBaseline):null;
   var tareEl=document.getElementById('pf-tare'), tareWarnEl=document.getElementById('pf-tare-warn');
   if(tareEl){
     tareEl.classList.remove('glWarnFlag');
@@ -6040,7 +6117,7 @@ function addLine(){
   // could still be hard-blocked or pending a gas-left override for reasons that have nothing to
   // do with tare - logging "saved anyway" before knowing whether it was actually saved would lie.
   var _tareMismatchNow=false, _enteredTare, _expectedTare;
-  if(capType==='manifold' && toggleSel.stage==='Closing' && _manifoldClosingBaseline && d.tare!==''){
+  if(capType==='manifold' && toggleSel.stage==='Closing' && _manifoldTareEnabled(capBranch) && _manifoldClosingBaseline && d.tare!==''){
     _enteredTare=Math.round(num(d.tare)*100)/100;_expectedTare=Math.round(_manifoldClosingBaseline.tare*100)/100;
     if(_enteredTare!==_expectedTare){d._tareFlag='MISMATCH';_tareMismatchNow=true;}
   }
@@ -6119,12 +6196,13 @@ function _addLineFinish(c,d,onDone){
     // d.scale/d.tare) is left at full precision; rounding this comparison copy doesn't touch it.
     gl=Math.round(gl*100)/100;
     var cap=(d.gasType==='Propane')?45:48;
-    if(gl>=cap+0.2){
-      toast('⚠ Gas left ('+gl.toFixed(2)+'kg) exceeds '+(cap+0.2).toFixed(1)+'kg — that\'s not physically possible for this cylinder. Re-weigh and correct the scale/tare before saving.',true);
+    var _ceilTol=_manifoldTol(capBranch,d.gasType,'ceiling'), _flagTol=_manifoldTol(capBranch,d.gasType,'flagged');
+    if(_ceilTol.enabled && gl>=cap+_ceilTol.kg){
+      toast('⚠ Gas left ('+gl.toFixed(2)+'kg) exceeds '+(cap+_ceilTol.kg).toFixed(1)+'kg — that\'s not physically possible for this cylinder. Re-weigh and correct the scale/tare before saving.',true);
       if(onDone)onDone(false);
       return;
     }
-    if(gl>cap+0.1){
+    if(_flagTol.enabled && gl>cap+_flagTol.kg){
       // Re-entrancy guard: manifoldWeightOverride() below runs an async auth (askPassword) +
       // reason (askText) flow that shares single global resolvers (_pwResolve/
       // _textModalResolve) across ANY concurrent call into them - a second flagged-band
@@ -6139,7 +6217,7 @@ function _addLineFinish(c,d,onDone){
       // can't collide.
       if(manifoldOverrideBusy){toast('An override is already pending for another reading — wait for it to finish, then try again',true);if(onDone)onDone(false);return;}
       manifoldOverrideBusy=true;
-      manifoldWeightOverride('Gas left '+gl.toFixed(2)+'kg for '+modalItem+' ('+(d.gasType||'LPG')+', normal range up to '+(cap+0.1).toFixed(1)+'kg)').then(function(ok){
+      manifoldWeightOverride('Gas left '+gl.toFixed(2)+'kg for '+modalItem+' ('+(d.gasType||'LPG')+', normal range up to '+(cap+_flagTol.kg).toFixed(1)+'kg)').then(function(ok){
         if(!ok){toast('Override needed to save this reading',true);if(onDone)onDone(false);return;}
         _addLineFinishAfterCap(c,d,onDone);
       }).catch(function(){toast('Something went wrong processing the override — please try again',true);if(onDone)onDone(false);})
@@ -6157,10 +6235,11 @@ function _addLineFinish(c,d,onDone){
     var isIncoming=toggles && toggles.stage==='Added';
     var isOutgoing=toggles && toggles.stage==='Removed';
     var isUsedPartial=d.cylState==='Used / partial';
-    if(isIncoming && !isUsedPartial && gl<(cap-0.2)){
-      var wantsFaulty=confirm('Gas left ('+gl.toFixed(2)+'kg) is below the expected fill level for a fresh cylinder from the supplier ('+(cap-0.2).toFixed(1)+'kg minimum for '+(d.gasType||'LPG')+').\n\nPress Cancel to recheck your scale/tare entry — nothing has been saved yet.\nPress OK if the numbers are correct — you\'ll be taken straight to logging this as a faulty cylinder.');
+    var _underTol=_manifoldTol(capBranch,d.gasType,'underfill');
+    if(isIncoming && !isUsedPartial && _underTol.enabled && gl<(cap-_underTol.kg)){
+      var wantsFaulty=confirm('Gas left ('+gl.toFixed(2)+'kg) is below the expected fill level for a fresh cylinder from the supplier ('+(cap-_underTol.kg).toFixed(1)+'kg minimum for '+(d.gasType||'LPG')+').\n\nPress Cancel to recheck your scale/tare entry — nothing has been saved yet.\nPress OK if the numbers are correct — you\'ll be taken straight to logging this as a faulty cylinder.');
       if(!wantsFaulty){if(onDone)onDone(false);return;} // stay on this step, values untouched, operator corrects and resubmits
-      _openFaultyFromManifoldUnderfill(d,d._capturedModalItem,cap,gl);
+      _openFaultyFromManifoldUnderfill(d,d._capturedModalItem,cap,gl,_underTol.kg);
       if(onDone)onDone(false); // never saved as a Manifold row for this attempt - the swap is intentionally left with only its Removed row, caught by the existing orphaned-row safety net if not otherwise resolved
       return;
     }
@@ -6190,7 +6269,8 @@ function _addLineFinish(c,d,onDone){
     // swap wizard not to auto-advance to step 2, since we've navigated to Residual Gas instead;
     // the operator returns to this slot later and the existing unpairedRemoved resume logic
     // (openManifoldSwap) picks step 2 up from there with no further tracking needed here.
-    if(isOutgoing && gl>=0.2){
+    var _leftTol=_manifoldTol(capBranch,d.gasType,'leftover');
+    if(isOutgoing && _leftTol.enabled && gl>=_leftTol.kg){
       var wantsProceed=confirm('This cylinder still has '+gl.toFixed(2)+'kg of gas left ('+(d.gasType||'LPG')+').\n\nA replaced cylinder should normally be close to empty. Press Cancel to recheck your weighing.\nPress OK to confirm this is correct — you\'ll be taken to Residual Gas to log it, then can come back to finish this swap.');
       if(!wantsProceed){if(onDone)onDone(false);return;}
       d._residualFlag='LEFTOVER';
