@@ -5569,6 +5569,13 @@ function _manifoldRemovedStepBaseline(item,latestAddedForItem){
 //     one row on purpose, instead of relying on the implicit save-time overwrite.
 //   - neither -> genuinely first swap of this slot today, no warning needed.
 function openManifoldSwap(item){
+  // Clear immediately, unconditionally - not just on the fresh-step-1 path below. Every branch
+  // below either recomputes this fresh (fresh step 1) or renders step 2 (resume/no-op decline),
+  // and step 2 has no business reading a Removed-step baseline at all - without this, a stale
+  // baseline left over from an earlier, abandoned attempt on a DIFFERENT slot could otherwise
+  // leak into step 2's live tare-check via the unpairedRemoved resume branch just below, which
+  // jumps straight to _manifoldSwapStep2() without ever touching this variable itself.
+  _manifoldRemovedBaseline=null;
   var removedRows=((capData['Removed']&&capData['Removed'][item])||[]).filter(function(r){return (r._addedBranch||capBranch)===capBranch;});
   var addedRows=((capData['Added']&&capData['Added'][item])||[]).filter(function(r){return (r._addedBranch||capBranch)===capBranch;});
   var unpairedRemoved=removedRows.find(function(r){
