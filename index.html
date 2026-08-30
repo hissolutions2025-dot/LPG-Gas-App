@@ -5928,21 +5928,23 @@ function popCalc(){
       }
     }
   });
-  // Live tare-mismatch warning for the Manifold swap wizard's Removed step (outgoing cylinder) -
-  // purely informational, never blocks Save. Gated on _manifoldRemovedBaseline (only ever set by
-  // openManifoldSwap() for its own step 1, cleared everywhere else - see there), so this is a
-  // true no-op for every other capType/field. Zero-tolerance per explicit confirmation - any
-  // difference at all flags it, compared after rounding to 2dp (this file's existing scale/tare
-  // precision convention) rather than raw float equality, to avoid a false flag from ordinary
-  // binary float representation error. _addLineFinish's actual Save-time gate is completely
-  // untouched by this block - see _manifoldSwapStep1()'s own separate, save-time re-derivation
-  // of this same check (which is what actually stamps/audit-logs a mismatch, not this).
+  // Live tare-mismatch warning for the Manifold swap wizard's Removed step OR the plain Closing
+  // popup - purely informational, never blocks Save. Whichever of the two baselines is actually
+  // active (they're mutually exclusive by construction, never both set - see openModal()/
+  // openManifoldSwap()) drives the check; a true no-op for every other capType/field/stage.
+  // Zero-tolerance per explicit confirmation - any difference at all flags it, compared after
+  // rounding to 2dp (this file's existing scale/tare precision convention) rather than raw float
+  // equality, to avoid a false flag from ordinary binary float representation error.
+  // _addLineFinish's actual Save-time gate is completely untouched by this block - see
+  // _manifoldSwapStep1()'s (Removed) and addLine()'s (Closing) own separate, save-time
+  // re-derivations of this same check, which are what actually stamp/audit-log a mismatch.
+  var _tareBaseline=_manifoldRemovedBaseline||_manifoldClosingBaseline;
   var tareEl=document.getElementById('pf-tare'), tareWarnEl=document.getElementById('pf-tare-warn');
   if(tareEl){
     tareEl.classList.remove('glWarnFlag');
     if(tareWarnEl){tareWarnEl.style.display='none';tareWarnEl.textContent='';}
-    if(_manifoldRemovedBaseline && d.tare!==''){
-      var tareLive=Math.round(num(d.tare)*100)/100, tareExp=Math.round(_manifoldRemovedBaseline.tare*100)/100;
+    if(_tareBaseline && d.tare!==''){
+      var tareLive=Math.round(num(d.tare)*100)/100, tareExp=Math.round(_tareBaseline.tare*100)/100;
       if(tareLive!==tareExp){
         tareEl.classList.add('glWarnFlag');
         if(tareWarnEl){tareWarnEl.textContent='⚠ Doesn\'t match this slot\'s tare — expected '+tareExp.toFixed(2)+'kg';tareWarnEl.style.color='var(--amber)';tareWarnEl.style.display='block';}
@@ -6024,6 +6026,16 @@ function addLine(){
   d._capturedModalItem=modalItem;
   if(c.toggles)d._capturedToggleSel=Object.assign({},toggleSel);
   d._capturedPopupFields=_popupFieldsCurrent;
+  // Tare-mismatch flag (Manifold Closing only) - same mechanism as the swap wizard's Removed
+  // step in _manifoldSwapStep1(): stamp d now so it rides along if the row DOES end up saved,
+  // but defer the audit-log call itself to the onDone(saved) callback below, since this same d
+  // could still be hard-blocked or pending a gas-left override for reasons that have nothing to
+  // do with tare - logging "saved anyway" before knowing whether it was actually saved would lie.
+  var _tareMismatchNow=false, _enteredTare, _expectedTare;
+  if(capType==='manifold' && toggleSel.stage==='Closing' && _manifoldClosingBaseline && d.tare!==''){
+    _enteredTare=Math.round(num(d.tare)*100)/100;_expectedTare=Math.round(_manifoldClosingBaseline.tare*100)/100;
+    if(_enteredTare!==_expectedTare){d._tareFlag='MISMATCH';_tareMismatchNow=true;}
+  }
   // ---- SEAL ENFORCEMENT (refill only) ----
   if(capType==='refill'){
     var sres=sealValidate(capBranch, d.seal, d.brand);
@@ -6045,7 +6057,9 @@ function addLine(){
       d._sealFlag=(sres.expected!==undefined)?'OUT_OF_SEQUENCE':'OUT_OF_RANGE';
     }
   }
-  _addLineFinish(c,d);
+  _addLineFinish(c,d,function(saved){
+    if(saved && _tareMismatchNow)auditLog('Manifold tare mismatch',capBranch+' — '+modalItem+' — entered '+_enteredTare.toFixed(2)+'kg, expected '+_expectedTare.toFixed(2)+'kg (saved anyway)');
+  });
 }
 // onDone (optional, trailing): invoked exactly once when this call's outcome is fully known -
 // onDone(true) if the reading was actually saved (either the sync normal-range path, or the
