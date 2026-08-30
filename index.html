@@ -765,7 +765,7 @@
         </div>
         <div class="adminRow">
           <div class="grow"><label class="mLabel" style="font-size:11px">Fault reason</label>
-            <select class="mField" id="fcReason" onchange="faultyReasonChanged()"><option>Leaking valve</option><option>Damaged</option><option>Rusted</option><option value="Other">Other</option></select></div>
+            <select class="mField" id="fcReason" onchange="faultyReasonChanged()"><option>Leaking valve</option><option>Damaged</option><option>Rusted</option><option>Underfilled</option><option value="Other">Other</option></select></div>
           <div class="grow" id="fcReasonOtherWrap" style="display:none"><label class="mLabel" style="font-size:11px">Other reason</label>
             <input type="text" class="mField" id="fcReasonOther" placeholder="Describe the fault"></div>
         </div>
@@ -2263,6 +2263,42 @@ function manifoldWeightOverride(msg){
       return {auth:auth,reason:reason.trim()};
     });
   });
+}
+// Deep-links from an underfilled-cylinder confirmation (inside the Manifold swap wizard's
+// incoming-cylinder step) straight into the existing Faulty Cylinders tool, pre-filled with
+// what was already captured, so the operator doesn't have to re-enter brand/scale/tare by
+// hand. Leaves the swap itself with only its Removed row saved (the Added row for THIS
+// attempt is intentionally never saved) - the existing orphaned-Removed-row safety net in
+// capReview()/closeDay() catches that if the operator doesn't otherwise resolve it (e.g. by
+// getting a real replacement cylinder and completing the swap properly).
+function _openFaultyFromManifoldUnderfill(d,item,cap,gl){
+  closeModal();
+  openAdmin();
+  adminTab('faulty');
+  var knownBrands=['Afrox','Oryx'];
+  var brand=d.brand;
+  var fcBrandEl=document.getElementById('fcBrand'), fcBrandOtherEl=document.getElementById('fcBrandOther');
+  if(fcBrandEl){
+    if(knownBrands.indexOf(brand)>-1){fcBrandEl.value=brand;}
+    else{fcBrandEl.value='Other';if(fcBrandOtherEl)fcBrandOtherEl.value=brand||'';}
+    faultyBrandChanged();
+  }
+  var sizeKey=(d.gasType==='Propane')?'45kg-Prop-DV':'48kg-DV';
+  var fcSizeEl=document.getElementById('fcSize');
+  if(fcSizeEl){
+    if(!fcSizeEl.options.length)fcSizeEl.innerHTML=COUNT_ITEMS.map(function(s){return '<option value="'+s+'">'+s+'</option>';}).join('');
+    fcSizeEl.value=sizeKey;
+  }
+  var fcScaleEl=document.getElementById('fcScale'), fcTareEl=document.getElementById('fcTare');
+  if(fcScaleEl)fcScaleEl.value=d.scale;
+  if(fcTareEl)fcTareEl.value=d.tare;
+  var fcReasonEl=document.getElementById('fcReason');
+  if(fcReasonEl){fcReasonEl.value='Underfilled';faultyReasonChanged();}
+  var fcNoteEl=document.getElementById('fcNote');
+  if(fcNoteEl)fcNoteEl.value='Auto-logged from Manifold '+item+' — incoming cylinder weighed at '+gl.toFixed(2)+'kg gas left, below the '+(cap-0.2).toFixed(1)+'kg minimum expected for a fresh '+(d.gasType||'LPG')+' cylinder.';
+  faultySetState('Full');
+  faultyCalcUpdate();
+  toast('Recheck the details below, then Log faulty cylinder to record this delivery issue');
 }
 // VOID a wrongly-captured seal. mode: 'reuse' (number returns to pool) or 'burn' (number retired).
 // Open day (today, not closed) -> seal_void_open. Closed/prior day -> seal_edit_used.
@@ -5753,6 +5789,39 @@ function _addLineFinish(c,d,onDone){
       }).catch(function(){toast('Something went wrong processing the override — please try again',true);if(onDone)onDone(false);})
       .finally(function(){manifoldOverrideBusy=false;});
       return; // async path - _addLineFinishAfterCap below continues once authorised
+    }
+    // Underfill detection - INCOMING cylinder only (Added stage), and only when the operator
+    // hasn't already declared this a deliberate used/partial cylinder (that path is handled
+    // separately below, via a Manager/Owner override instead of this recheck-or-faulty flow).
+    // Tolerance: 0.2kg under nominal (47.8kg LPG / 44.8kg Propane) - below that, a "fresh"
+    // cylinder almost certainly wasn't fully filled by the supplier, which is either a data
+    // entry mistake (recheck fixes it) or a genuine supplier defect (log it as faulty, don't
+    // silently accept it as this slot's new baseline).
+    var toggles=d._capturedToggleSel;
+    var isIncoming=toggles && toggles.stage==='Added';
+    var isUsedPartial=d.cylState==='Used / partial';
+    if(isIncoming && !isUsedPartial && gl<(cap-0.2)){
+      var wantsFaulty=confirm('Gas left ('+gl.toFixed(2)+'kg) is below the expected fill level for a fresh cylinder from the supplier ('+(cap-0.2).toFixed(1)+'kg minimum for '+(d.gasType||'LPG')+').\n\nPress Cancel to recheck your scale/tare entry — nothing has been saved yet.\nPress OK if the numbers are correct — you\'ll be taken straight to logging this as a faulty cylinder.');
+      if(!wantsFaulty){if(onDone)onDone(false);return;} // stay on this step, values untouched, operator corrects and resubmits
+      _openFaultyFromManifoldUnderfill(d,d._capturedModalItem,cap,gl);
+      if(onDone)onDone(false); // never saved as a Manifold row for this attempt - the swap is intentionally left with only its Removed row, caught by the existing orphaned-row safety net if not otherwise resolved
+      return;
+    }
+    // Used/partial cylinder, deliberately declared - skip the underfill flag entirely (any
+    // low reading is expected), but require Manager/Owner sign-off before accepting it, same
+    // reasoning and mechanism as the flagged-band override above (just a different trigger and
+    // message) - the override is on the DECISION to use a non-fresh cylinder here at all, not
+    // on any specific weight value, so it applies regardless of how low or how close-to-normal
+    // the reading is.
+    if(isIncoming && isUsedPartial){
+      if(manifoldOverrideBusy){toast('An override is already pending for another reading — wait for it to finish, then try again',true);if(onDone)onDone(false);return;}
+      manifoldOverrideBusy=true;
+      manifoldWeightOverride('Used/partial cylinder declared for '+modalItem+' — gas left '+gl.toFixed(2)+'kg ('+(d.gasType||'LPG')+')').then(function(ok){
+        if(!ok){toast('Override needed to save this reading',true);if(onDone)onDone(false);return;}
+        _addLineFinishAfterCap(c,d,onDone);
+      }).catch(function(){toast('Something went wrong processing the override — please try again',true);if(onDone)onDone(false);})
+      .finally(function(){manifoldOverrideBusy=false;});
+      return;
     }
   }
   _addLineFinishAfterCap(c,d,onDone);
