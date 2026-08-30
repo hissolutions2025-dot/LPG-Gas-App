@@ -2287,6 +2287,12 @@ function _openFaultyFromManifoldUnderfill(d,item,cap,gl){
   }
   closeModal();
   openAdmin();
+  // Pre-set faultyBranch to the branch Manifold capture is CURRENTLY pointed at (capBranch),
+  // not the user's own home/logged-in branch (branch) - for a Manager/Owner these can differ
+  // (via capSetBranch()), and faultyCaptureInit()'s own fallback below only fills faultyBranch
+  // in when it's not already set, so setting it here BEFORE adminTab('faulty') runs
+  // faultyCaptureInit() makes sure the faulty-cylinder record lands on the right branch.
+  faultyBranch=capBranch;
   adminTab('faulty');
   // Defensive backstop: the perm check above guarantees adminTab('faulty') -> faultyTabInit()
   // routes synchronously to the capture pane with no password gate (see faultyShowSub()), so
@@ -5862,6 +5868,12 @@ function _addLineFinishAfterCap(c,d,onDone){
   var item=d._capturedModalItem;
   var toggles=d._capturedToggleSel; // undefined for non-toggle types - toggleKey()/dataBucket() fall back to live toggleSel there, which is correct since those types have no toggles at all
   (d._capturedPopupFields||(typeof c.popupFields==='function'?c.popupFields():c.popupFields)).filter(function(f){return f.type==='auto';}).forEach(function(f){d[f.k]=f.calc(d,item);});
+  // _capturedPopupFields' only two readers (the required-field loop in _addLineFinish and the
+  // auto-calc-field loop directly above) are both done with it now - drop it before d gets
+  // pushed into any bucket/persisted, so this resolved field-schema array (hundreds of bytes,
+  // dead weight from here on) doesn't ride along into every localStorage write (saveDraft(),
+  // saveWorkingStore(), saveDayToHistory(), close-day snapshot) for the life of this line.
+  delete d._capturedPopupFields;
   if(c.toggles)c.toggles.forEach(function(t){if(!d[t.key])d[t.key]=toggles[t.key];});
   var bucket=dataBucket(toggles);
   if(!bucket[item])bucket[item]=[];
