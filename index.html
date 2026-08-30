@@ -2411,6 +2411,48 @@ function _openResidualFromManifoldRemoval(d,item,gl){
   _residualReasonRequired=true;_residualSyncReasonLabel();
   toast('Confirm the details below and enter the reason for removal, then Add');
 }
+// Whether this slot already has an Opening reading today - draft (capData, not yet committed)
+// takes priority since it's the most current; falls back to an already-committed row in
+// store.manifold. Same "check both sources" reasoning as the Closing baseline chain above -
+// a draft and a commit are never simultaneously the live truth for the same row, but checking
+// both means this can't miss either state. Returns the row, or null if genuinely nothing yet
+// (a brand-new slot, or a branch that's never run Opening before) - null is the ONLY case
+// where the plain Opening popup should still open normally.
+function _manifoldOpeningAlreadyCaptured(item){
+  var draftRows=((capData['Opening']&&capData['Opening'][item])||[]).filter(function(r){return (r._addedBranch||capBranch)===capBranch;});
+  if(draftRows.length)return draftRows[draftRows.length-1];
+  var committedRows=(store.manifold||[]).filter(function(r){return r.branch===capBranch && (r._date||today)===today && r.stage==='Opening' && r.cyl===item;});
+  if(committedRows.length)return committedRows[committedRows.length-1];
+  return null;
+}
+// Replaces the capture modal's content with a read-only summary of what's already there,
+// instead of the normal editable weigh-in form - same "swap the modal card's innerHTML, restore
+// it later" pattern already used by showOverridePrompt()/restoreModalShell() for Received's
+// mismatch-override screen, reused here rather than inventing a second mechanism for the same
+// kind of need (a special-purpose screen inside the same modal shell).
+function _showManifoldOpeningLocked(item,row){
+  var box=document.getElementById('capModal');
+  var card=box.querySelector('.modalCard');
+  var gl=(row.gasLeft!==undefined)?num(row.gasLeft):(num(row.scale)-num(row.tare));
+  card.innerHTML='<div class="modalHead"><span>'+item+' — Opening already captured</span><button onclick="_closeManifoldOpeningLocked()" class="mClose">✕</button></div>'+
+    '<div style="font-size:13px;color:var(--muted);margin-bottom:12px">This slot\'s Opening reading was already captured today. To record a cylinder change, use Added instead.</div>'+
+    '<div class="brandCard" style="margin-bottom:12px"><b style="color:var(--navy)">'+(row.brand||'')+' '+(row.gasType||'')+'</b>'+
+      '<div style="font-size:12px;color:var(--muted);margin-top:4px">Scale '+num(row.scale).toFixed(2)+'kg · Tare '+num(row.tare).toFixed(2)+'kg · Left '+gl.toFixed(2)+'kg</div>'+
+      (row.notes?'<div style="font-size:12px;color:var(--muted);margin-top:4px">Note: '+row.notes+'</div>':'')+
+    '</div>'+
+    '<button class="mDone" style="background:var(--navy)" onclick="_goToManifoldAdded()">Go to Added</button>'+
+    '<button class="mDone" style="background:var(--muted)" onclick="_closeManifoldOpeningLocked()">Close</button>';
+  box.classList.add('show');
+}
+function _closeManifoldOpeningLocked(){
+  restoreModalShell();
+  document.getElementById('capModal').classList.remove('show');
+}
+function _goToManifoldAdded(){
+  restoreModalShell();
+  document.getElementById('capModal').classList.remove('show');
+  setToggle('stage','Added');
+}
 // VOID a wrongly-captured seal. mode: 'reuse' (number returns to pool) or 'burn' (number retired).
 // Open day (today, not closed) -> seal_void_open. Closed/prior day -> seal_edit_used.
 // dayIsClosed: caller passes whether the target refill's day is already closed.
@@ -5478,9 +5520,29 @@ function capSummary(c,lines){
 }
 // ---------- popup ----------
 function openModal(item){
+  // Defensive, unconditional: a previous popup interaction (this new Opening-already-captured
+  // screen, or the pre-existing Received mismatch-override screen - see showOverridePrompt())
+  // can leave the modal card's innerHTML replaced with custom, non-standard content instead of
+  // the normal #mTitle/#mForm/#mAddBtn shell. Every one of those screens' own close/redirect
+  // handlers already calls restoreModalShell() first, but this guarantees the standard shell is
+  // ALWAYS in place before the rest of this function touches it, regardless of how the previous
+  // popup was left - cheap, and closes off an entire class of "assumed element that isn't there"
+  // crash rather than trying to reason about every possible path into/out of every custom screen.
+  restoreModalShell();
   // Manifold's Added stage is a guided two-step swap wizard (outgoing residual, then
   // incoming cylinder), not the plain single-field popup below - see openManifoldSwap().
   if(capType==='manifold' && toggleSel.stage==='Added'){openManifoldSwap(item);return;}
+  // Opening happens ONCE per slot per day - there's no legitimate reason to re-weigh it, unlike
+  // Removed/Closing which are always a fresh physical weigh-in. A second Opening tap for a slot
+  // that already has one today isn't a correction, it's either a mistake or an attempt to
+  // record a cylinder change the wrong way - that belongs in Added (the swap wizard), which
+  // properly tracks tare continuity/residual gas/audit trail. Show what was already captured,
+  // read-only, and point them at Added instead of opening a form that would just silently
+  // overwrite it (multi:false's usual wipe-then-push behaviour).
+  if(capType==='manifold' && toggleSel.stage==='Opening'){
+    var _alreadyOpened=_manifoldOpeningAlreadyCaptured(item);
+    if(_alreadyOpened){_showManifoldOpeningLocked(item,_alreadyOpened);return;}
+  }
   _manifoldRemovedBaseline=null; // defensive - only ever meaningfully set by openManifoldSwap() for its own Removed step; clear it here so a leftover value from an earlier, abandoned swap attempt can never leak into an unrelated plain popup (Opening/Closing here, or any other capture type). Note this line is skipped when the Added-stage branch above already returned - harmless, since every read site re-checks toggleSel.stage/capType before trusting either baseline variable.
   // Closing gets the same "what's currently in this slot" pre-fill/lock as the swap wizard's
   // Removed step, using the exact same baseline chain (_manifoldRemovedStepBaseline) - by end
