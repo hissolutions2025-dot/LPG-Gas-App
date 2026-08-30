@@ -98,7 +98,11 @@
   body[data-view="auditView"] #auditView,
   body[data-view="adminView"] #adminView,
   body[data-view="residualView"] #residualView{display:block !important;}
-  #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(80px);background:var(--ok);color:#fff;padding:14px 22px;border-radius:12px;font-weight:700;font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.25);transition:transform .3s;z-index:70;max-width:90%;text-align:center;}
+  #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(calc(100% + 40px));background:var(--ok);color:#fff;padding:14px 22px;border-radius:12px;font-weight:700;font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.25);transition:transform .3s;z-index:70;max-width:90%;text-align:center;}
+  /* Dismiss slides by the toast's OWN height (+ margin), not a fixed 80px - a fixed offset
+     hid a short one-line toast fine but left a tall, wrapped multi-line message (e.g. the
+     Manifold hard-ceiling warning) still partly visible at the bottom of a phone screen even
+     after "dismissing". calc(100%) scales with whatever content/height this toast actually has. */
   #toast.show{transform:translateX(-50%) translateY(0);} #toast.err{background:var(--bad);}
   /* generic capture (grid+popup) */
   .capHead{background:var(--card);border-bottom:1px solid var(--line);padding:14px 18px;position:sticky;top:66px;z-index:8;}
