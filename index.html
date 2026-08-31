@@ -1077,6 +1077,36 @@ function _fetchManifoldSlotCount(br){
     if(res.data){_manifoldSlotCounts[br]=res.data.slot_count;_manifoldTolerances[br]=res.data.tolerances||null;}
   },function(e){console.error('_fetchManifoldSlotCount rejected for '+br+':',e&&e.message);});
 }
+// ===== Manifold live cross-device mirror (manifold_live_rows) =====
+// Additive parallel write alongside the existing Sheet push in _capCommitReal() below -
+// never replaces it, never blocks it, and a failure here never blocks a commit from
+// completing. See docs/superpowers/specs/2026-08-31-manifold-live-cross-device-data-design.md.
+function _pushManifoldLiveRows(rows,br){
+  if(!rows||!rows.length)return;
+  var payload=rows.map(function(row){
+    return {row_id:row._rid||null, branch:br, date:row._date||today, cyl:row.cyl||null, row:row, committed_by:currentProfile&&currentProfile.id};
+  });
+  sb.from('manifold_live_rows').insert(payload).then(function(res){
+    if(res.error){console.error('_pushManifoldLiveRows failed:',res.error.message);_manifoldLiveQueue(payload);}
+  },function(e){console.error('_pushManifoldLiveRows rejected:',e&&e.message);_manifoldLiveQueue(payload);});
+}
+function _manifoldLiveQueue(payload){
+  try{
+    var q=JSON.parse(localStorage.getItem('gs_manifoldlive_queue')||'[]');
+    q.push(payload);
+    localStorage.setItem('gs_manifoldlive_queue',JSON.stringify(q.slice(-200)));
+  }catch(e){}
+}
+function _manifoldLiveFlush(){
+  var q;try{q=JSON.parse(localStorage.getItem('gs_manifoldlive_queue')||'[]');}catch(e){return;}
+  if(!q.length)return;
+  localStorage.setItem('gs_manifoldlive_queue','[]');
+  q.forEach(function(payload){
+    sb.from('manifold_live_rows').insert(payload).then(function(res){
+      if(res.error)_manifoldLiveQueue(payload);
+    },function(e){_manifoldLiveQueue(payload);});
+  });
+}
 // Live per-branch "yesterday's Closing" cache, per Manifold slot - tier-3 fallback for the
 // Removed-step baseline (see _manifoldRemovedStepBaseline/openManifoldSwap) when a slot has
 // neither an already-completed swap today nor an Opening capture today. Mirrors
@@ -2991,6 +3021,7 @@ function _finishLogin(u,b){
   cLoadDraftIntoMemory();
   rLoadDraftIntoMemory();
   syncFlush();
+  _manifoldLiveFlush();
   _closeDayFlushQueue();
   _updateCloseDayPendingBadge();
   _countFlushQueue();
@@ -6716,17 +6747,19 @@ async function _capCommitReal(){
         }
       }
     }
-    if(capType==='manifold')syncPush('Manifold',syncRowsManifold(freshRows,capBranch));
+    // Mark these rows synced so a later Review-with-nothing-new (or this whole function
+    // re-running) never re-sends them - see the freshRows guard above and capReview()'s
+    // preserve-committed-rows filter. Stamped BEFORE the pushes below (not after, like it
+    // used to be) so a row is never pushed anywhere - Sheet or Supabase - without already
+    // carrying the flag that says "this is committed data."
+    freshRows.forEach(function(r){r._committed=true;});
+    if(capType==='manifold'){syncPush('Manifold',syncRowsManifold(freshRows,capBranch));_pushManifoldLiveRows(freshRows,capBranch);}
     else if(capType==='refill'){
       // record each seal against the active roll history (dedupe handled inside)
       freshRows.filter(function(r){return r.seal;}).forEach(function(r){sealRecordUse(capBranch,num(r.seal));});
       syncPush('Refills',syncRowsRefill(freshRows,capBranch));
     }
     else if(capType==='private')syncPush('Private',syncRowsPrivate(freshRows,capBranch));
-    // Mark these rows synced so a later Review-with-nothing-new (or this whole function
-    // re-running) never re-sends them - see the freshRows guard above and capReview()'s
-    // preserve-committed-rows filter.
-    freshRows.forEach(function(r){r._committed=true;});
     _clearCommittedCapData(capBranch);
     clearDraft(capType,capBranch);draftAddCount=0;
     saveWorkingStore();auditLog(c.title+' committed',freshRows.length+' entry(ies) — '+capBranch+(mmM.length?(' · '+mmM.length+' manifold mismatch(es)'):''));
