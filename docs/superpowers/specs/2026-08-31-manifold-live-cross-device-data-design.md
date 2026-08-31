@@ -28,9 +28,12 @@ needed.
   continuously-open live connection.
 - The existing Google Sheet push (accounting record of truth) is completely unchanged —
   this adds a parallel write, not a replacement.
-- The existing same-day Adjust tool (`openCapAdjust`) needs no code change of its own — once
-  `store.manifold` is correctly hydrated from live data first, it already operates correctly
-  on whatever's actually there.
+- The existing same-day Adjust tool's own correction logic (`_openCapAdjustReal`, the picker
+  build and `openCorrection` call) needs no change — once `store.manifold` is correctly
+  hydrated from live data first, it already operates correctly on whatever's actually there.
+  (`openCapAdjust` itself does gain a thin wrapper — the same fetch-first/busy-guard/
+  staleness-check shape used for Review — but that's plumbing around the entry point, not a
+  change to the correction logic itself.)
 
 **Explicitly out of scope:** true real-time push (data appearing on an open screen without
 any action) — deferred; the Manager-override-notification screen and the Action Hub
