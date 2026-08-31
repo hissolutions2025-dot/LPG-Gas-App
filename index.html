@@ -1108,6 +1108,39 @@ function _manifoldLiveFlush(){
     },function(e){_manifoldLiveQueue(payload);});
   });
 }
+// ===== Manifold remote override approval (manifold_pending_overrides) =====
+// Additive write, same shape as _pushManifoldLiveRows above - fires alongside it at commit
+// time, never blocks the commit itself. Only rows actually stamped PENDING (by the
+// remote-submit branch in _addLineFinish) produce anything here - a normal or
+// physically-authorised row is a no-op.
+function _pushManifoldPendingOverrides(rows,br){
+  var pending=rows.filter(function(r){return r._overrideStatus==='PENDING';});
+  if(!pending.length)return;
+  var payload=pending.map(function(row){
+    return {branch:br, date:row._date||today, cyl:row.cyl||null, kind:row._overrideKind||null, row_rid:row._rid||null, gas_left:(typeof row._overrideGasLeft==='number')?row._overrideGasLeft:null, cap:(typeof row._overrideCap==='number')?row._overrideCap:null, submitted_by:currentProfile&&currentProfile.id, submitted_by_name_snapshot:operator, status:'PENDING'};
+  });
+  sb.from('manifold_pending_overrides').insert(payload).then(function(res){
+    if(res.error){console.error('_pushManifoldPendingOverrides failed:',res.error.message);_manifoldPendingQueue(payload);}
+    else{_manifoldPendingFlush();}
+  },function(e){console.error('_pushManifoldPendingOverrides rejected:',e&&e.message);_manifoldPendingQueue(payload);});
+}
+function _manifoldPendingQueue(payload){
+  try{
+    var q=JSON.parse(localStorage.getItem('gs_manifoldpending_queue')||'[]');
+    q.push(payload);
+    localStorage.setItem('gs_manifoldpending_queue',JSON.stringify(q.slice(-200)));
+  }catch(e){}
+}
+function _manifoldPendingFlush(){
+  var q;try{q=JSON.parse(localStorage.getItem('gs_manifoldpending_queue')||'[]');}catch(e){return;}
+  if(!q.length)return;
+  localStorage.setItem('gs_manifoldpending_queue','[]');
+  q.forEach(function(payload){
+    sb.from('manifold_pending_overrides').insert(payload).then(function(res){
+      if(res.error)_manifoldPendingQueue(payload);
+    },function(e){_manifoldPendingQueue(payload);});
+  });
+}
 // Pulls today's real committed Manifold truth for one branch from Supabase and merges it
 // into local store.manifold. Replace-by-scope for this branch+date (mirrors
 // loadWorkingStore()'s own local replace-by-branch merge, just sourced live) - EXCEPT any
@@ -3058,6 +3091,7 @@ function _finishLogin(u,b){
   rLoadDraftIntoMemory();
   syncFlush();
   _manifoldLiveFlush();
+  _manifoldPendingFlush();
   _closeDayFlushQueue();
   _updateCloseDayPendingBadge();
   _countFlushQueue();
@@ -6846,7 +6880,7 @@ async function _capCommitReal(){
     // used to be) so a row is never pushed anywhere - Sheet or Supabase - without already
     // carrying the flag that says "this is committed data."
     freshRows.forEach(function(r){r._committed=true;});
-    if(capType==='manifold'){syncPush('Manifold',syncRowsManifold(freshRows,capBranch));_pushManifoldLiveRows(freshRows,capBranch);}
+    if(capType==='manifold'){syncPush('Manifold',syncRowsManifold(freshRows,capBranch));_pushManifoldLiveRows(freshRows,capBranch);_pushManifoldPendingOverrides(freshRows,capBranch);}
     else if(capType==='refill'){
       // record each seal against the active roll history (dedupe handled inside)
       freshRows.filter(function(r){return r.seal;}).forEach(function(r){sealRecordUse(capBranch,num(r.seal));});
