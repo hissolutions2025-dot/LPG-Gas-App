@@ -310,6 +310,7 @@
       <button class="tile t5" data-key="received" onclick="openReceived()"><div class="ic">&#8681;</div><h3>Stock Received</h3><p>Deliveries &amp; returns</p><span class="badge" id="b-received" style="display:none">0</span></button>
       <button class="tile t6" data-key="history" onclick="openHistory()"><div class="ic">&#9776;</div><h3>Count History</h3><p>Review today's captures</p></button>
       <button class="tile t4" data-key="residual" id="tileResidual" onclick="openResidual()" style="display:none"><div class="ic">&#127766;</div><h3>Residual Gas</h3><p>Gas left in received cylinders</p></button>
+      <button class="tile t3" data-key="pendingOverrides" id="tilePendingOverrides" onclick="openPendingOverrides()" style="display:none"><div class="ic">&#9888;</div><h3>Pending Overrides</h3><p>Manager/Owner: approve or reject remote submissions</p><span class="badge" id="b-pendingOverrides" style="display:none">0</span></button>
       <button class="tile t1" data-key="users" id="tileUsers" onclick="openUsers()" style="display:none"><div class="ic">&#128100;</div><h3>Manage Users</h3><p>Owner: users, levels &amp; branches</p></button>
       <button class="tile t5" data-key="audit" id="tileAudit" onclick="openAudit()" style="display:none"><div class="ic">&#128220;</div><h3>Audit Log</h3><p>Owner only — who did what, when</p></button>
       <button class="tile t2" data-key="admin" id="tileAdmin" onclick="openAdmin()" style="display:none"><div class="ic">&#9881;</div><h3>Admin</h3><p>Seal register &amp; suppliers</p></button>
@@ -1140,6 +1141,39 @@ function _manifoldPendingFlush(){
       if(res.error)_manifoldPendingQueue(payload);
     },function(e){_manifoldPendingQueue(payload);});
   });
+}
+var _manifoldPendingOverrides=[]; // cached list of PENDING items, fetched at login for
+                                    // EVERY role (not just Manager/Owner) - Close Day's gate
+                                    // (a later task) needs this to be accurate regardless of
+                                    // who ends up authorising the close, even though only
+                                    // Manager/Owner ever sees the tile/badge built from it.
+function _fetchManifoldPendingOverrides(){
+  return sb.from('manifold_pending_overrides').select('*').eq('status','PENDING').order('submitted_at',{ascending:true}).then(function(res){
+    if(res.error){console.error('_fetchManifoldPendingOverrides failed:',res.error.message);return;}
+    // Dedup by row_rid - manifold_pending_overrides has no server-side unique constraint,
+    // and _pushManifoldPendingOverrides' retry queue can insert a duplicate PENDING row for
+    // the same underlying reading if a successful insert's response was lost before
+    // resolving (the exact same class of gap _fetchManifoldLiveRows already guards against
+    // for manifold_live_rows, via its own _rid dedup - this is the equivalent fix for this
+    // table, since it has no analogous safeguard yet). Ordered by submitted_at ascending
+    // above so "first occurrence wins" deterministically keeps the EARLIEST submission, not
+    // an arbitrary one. A row with no row_rid at all (shouldn't normally happen, but no
+    // reason to crash on it) can't be deduped this way and passes through unfiltered.
+    var seenRid={};
+    _manifoldPendingOverrides=(res.data||[]).filter(function(item){
+      if(!item.row_rid)return true;
+      if(seenRid[item.row_rid])return false;
+      seenRid[item.row_rid]=true;
+      return true;
+    });
+    _updatePendingOverridesBadge();
+  },function(e){console.error('_fetchManifoldPendingOverrides rejected:',e&&e.message);});
+}
+function _updatePendingOverridesBadge(){
+  var b=document.getElementById('b-pendingOverrides');if(!b)return;
+  var isMgr=(role==='Manager'||role==='Owner');
+  var n=isMgr?_manifoldPendingOverrides.length:0;
+  b.style.display=n?'flex':'none';b.textContent=n;
 }
 // Pulls today's real committed Manifold truth for one branch from Supabase and merges it
 // into local store.manifold. Replace-by-scope for this branch+date (mirrors
@@ -3081,6 +3115,7 @@ function _finishLogin(u,b){
   document.getElementById('tileAudit').style.display=perm('audit')?'flex':'none';
   var _ta=document.getElementById('tileAdmin');if(_ta)_ta.style.display=(perm('seal_admin')||perm('faultyCapture')||perm('faultyRegister')||perm('manageSuppliers'))?'flex':'none';
   var _trg=document.getElementById('tileResidual');if(_trg)_trg.style.display=perm('residualGas')?'flex':'none';
+  var _tpo=document.getElementById('tilePendingOverrides');if(_tpo)_tpo.style.display=(role==='Manager'||role==='Owner')?'flex':'none';
   auditLog('Login','Signed in to '+b);
   editUnlocked=false;
   loadWorkingStore();
@@ -3092,6 +3127,7 @@ function _finishLogin(u,b){
   syncFlush();
   _manifoldLiveFlush();
   _manifoldPendingFlush();
+  _fetchManifoldPendingOverrides();
   _closeDayFlushQueue();
   _updateCloseDayPendingBadge();
   _countFlushQueue();
