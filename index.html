@@ -6198,9 +6198,24 @@ function _addLineFinish(c,d,onDone){
     var cap=(d.gasType==='Propane')?45:48;
     var _ceilTol=_manifoldTol(capBranch,d.gasType,'ceiling'), _flagTol=_manifoldTol(capBranch,d.gasType,'flagged');
     if(_ceilTol.enabled && gl>=cap+_ceilTol.kg){
-      toast('⚠ Gas left ('+gl.toFixed(2)+'kg) exceeds '+(cap+_ceilTol.kg).toFixed(1)+'kg — that\'s not physically possible for this cylinder. Re-weigh and correct the scale/tare before saving.',true);
-      if(onDone)onDone(false);
-      return;
+      // Hard-ceiling reading. Re-weigh is still the first recommended action - this is exactly
+      // the shape a fat-fingered scale/tare entry produces - but a genuinely overfilled cylinder
+      // from the supplier IS real and must stay capturable, not stuck in an endless re-weigh
+      // loop with no way through (a live gap surfaced during real use). Same confirm-then-
+      // authorise shape as the underfill check below: confirm() first (a plain recheck never
+      // needs to touch the password/reason flow at all), THEN the same Manager/Owner override +
+      // reason mechanism the flagged-band tier below already uses - one mechanism, two entry
+      // points, not a new one invented here.
+      var wantsCeilOverride=confirm('Gas left ('+gl.toFixed(2)+'kg) exceeds '+(cap+_ceilTol.kg).toFixed(1)+'kg — that\'s not physically possible for a normal cylinder.\n\nPress Cancel to recheck your scale/tare entry — nothing has been saved yet.\nPress OK if the numbers are correct — a Manager or Owner will need to authorise saving this reading.');
+      if(!wantsCeilOverride){if(onDone)onDone(false);return;}
+      if(manifoldOverrideBusy){toast('An override is already pending for another reading — wait for it to finish, then try again',true);if(onDone)onDone(false);return;}
+      manifoldOverrideBusy=true;
+      manifoldWeightOverride('HARD CEILING — gas left '+gl.toFixed(2)+'kg for '+modalItem+' ('+(d.gasType||'LPG')+', exceeds '+(cap+_ceilTol.kg).toFixed(1)+'kg)').then(function(ok){
+        if(!ok){toast('Override needed to save this reading',true);if(onDone)onDone(false);return;}
+        _addLineFinishAfterCap(c,d,onDone);
+      }).catch(function(){toast('Something went wrong processing the override — please try again',true);if(onDone)onDone(false);})
+      .finally(function(){manifoldOverrideBusy=false;});
+      return; // async path - _addLineFinishAfterCap below continues once authorised
     }
     if(_flagTol.enabled && gl>cap+_flagTol.kg){
       // Re-entrancy guard: manifoldWeightOverride() below runs an async auth (askPassword) +
