@@ -6921,10 +6921,30 @@ function openMismatches(){
   _refreshMismatchPanel(histBranch);
 }
 function cBackFromMismatches(){document.getElementById('hTitle').textContent='Stock Count';document.getElementById('hSub').textContent='Tap Full or Empty on a size';cShow('countGridView');cRenderGrid();window.scrollTo(0,0);}
-function openHistory(mismatchOverlayRows){
+function openHistory(mismatchOverlayRows,_skipManifoldLiveFetch){
   _updateCloseDayPendingBadge();
   _updateCountPendingBadge();
   if(!histBranch||(role==='Operator'))histBranch=branch||'Helderberg';
+  // Manifold's live mirror only ever holds a day that isn't closed yet (see design doc) -
+  // only worth fetching when this branch's day is still open, and only re-render if the
+  // user is STILL looking at History for this exact branch by the time it resolves (same
+  // staleness-guard convention as renderManifoldSlots()/_fetchManifoldSlotCount() call
+  // sites elsewhere in this file) - a slow network response must never clobber a screen
+  // the user has already navigated away from or switched branch on. _skipManifoldLiveFetch
+  // is set true ONLY by this function's own re-render callback below, so the fetch fires
+  // once per user-initiated open/switch, never re-triggers itself on its own re-render -
+  // without this, the recursive openHistory() call on resolution would re-enter this same
+  // block and fetch again, forever, for as long as History stays open on an unclosed day.
+  // Placed AFTER the histBranch normalization above (not before, like an earlier version of
+  // this fix had it) - otherwise an Operator's histBranch could still be pre-normalization
+  // stale value at the moment this check runs, fetching/gating on the wrong branch.
+  if(!_skipManifoldLiveFetch && !loadSavedDay(today,histBranch)){
+    (function(br){
+      _fetchManifoldLiveRows(br,today).then(function(){
+        if(histBranch===br && document.getElementById('historyView') && document.getElementById('historyView').classList.contains('active'))openHistory(mismatchOverlayRows,true);
+      });
+    })(histBranch);
+  }
   applyBranchLock('hbr-',histBranch);
   document.getElementById('hCtx').innerHTML='';document.getElementById('hCtx').style.display='none';
   document.getElementById('hTitle').textContent='Count History';document.getElementById('hSub').textContent=histBranch||"";
