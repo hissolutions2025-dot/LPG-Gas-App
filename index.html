@@ -1088,6 +1088,7 @@ function _pushManifoldLiveRows(rows,br){
   });
   sb.from('manifold_live_rows').insert(payload).then(function(res){
     if(res.error){console.error('_pushManifoldLiveRows failed:',res.error.message);_manifoldLiveQueue(payload);}
+    else{_manifoldLiveFlush();}
   },function(e){console.error('_pushManifoldLiveRows rejected:',e&&e.message);_manifoldLiveQueue(payload);});
 }
 function _manifoldLiveQueue(payload){
@@ -5517,7 +5518,14 @@ function openCapAdjust(){
   if(capType==='manifold'){
     if(openCapAdjustBusy)return;
     openCapAdjustBusy=true;
-    _fetchManifoldLiveRows(capBranch,today).then(function(){openCapAdjustBusy=false;_openCapAdjustReal();},function(){openCapAdjustBusy=false;_openCapAdjustReal();});
+    var _openCapAdjustFetchType=capType,_openCapAdjustFetchBranch=capBranch;
+    _fetchManifoldLiveRows(capBranch,today).then(function(){
+      openCapAdjustBusy=false;
+      if(capType===_openCapAdjustFetchType&&capBranch===_openCapAdjustFetchBranch)_openCapAdjustReal();
+    },function(){
+      openCapAdjustBusy=false;
+      if(capType===_openCapAdjustFetchType&&capBranch===_openCapAdjustFetchBranch)_openCapAdjustReal();
+    });
     return;
   }
   _openCapAdjustReal();
@@ -6597,7 +6605,14 @@ function capReview(){
   if(capType==='manifold'){
     if(capReviewBusy)return;
     capReviewBusy=true;
-    _fetchManifoldLiveRows(capBranch,today).then(function(){capReviewBusy=false;_capReviewReal();},function(){capReviewBusy=false;_capReviewReal();});
+    var _capReviewFetchType=capType,_capReviewFetchBranch=capBranch;
+    _fetchManifoldLiveRows(capBranch,today).then(function(){
+      capReviewBusy=false;
+      if(capType===_capReviewFetchType&&capBranch===_capReviewFetchBranch)_capReviewReal();
+    },function(){
+      capReviewBusy=false;
+      if(capType===_capReviewFetchType&&capBranch===_capReviewFetchBranch)_capReviewReal();
+    });
     return;
   }
   _capReviewReal();
@@ -8306,17 +8321,33 @@ function liveCounts(){
   return out;
 }
 function liveManifold(){
-  if(capData._type==='manifold'){
-    var arr=[];
+  var draftKeys={}; // stage|cyl pairs currently being actively drafted on this device - these
+                     // supersede any committed row for the same slot+stage (an in-progress redo
+                     // shows the in-progress value, not the stale committed one), but must not
+                     // hide committed data for every OTHER slot/stage - see the bug this fixes.
+                     // Gated on capBranch===histBranch below - capData carries no branch tag of
+                     // its own, and a device can have an in-progress draft for one branch while
+                     // History is showing a DIFFERENT branch (capBranch/histBranch are
+                     // independent globals, and capData isn't cleared on navigating away) - an
+                     // ungated version would leak that other branch's uncommitted draft into
+                     // this branch's History table, and could hide real committed rows here too
+                     // on a stage+cyl collision.
+  var arr=[];
+  if(capData._type==='manifold' && capBranch===histBranch){
     Object.keys(capData).forEach(function(k){
       if(k==='_type')return;
       Object.keys(capData[k]).forEach(function(cyl){
+        draftKeys[k+'|'+cyl]=true;
         capData[k][cyl].forEach(function(l){arr.push(Object.assign({cyl:cyl},l));});
       });
     });
-    if(arr.length)return arr;
   }
-  return store.manifold.filter(function(r){return !r.branch||!histBranch||r.branch===histBranch;});
+  var committed=store.manifold.filter(function(r){
+    if(r.branch&&histBranch&&r.branch!==histBranch)return false;
+    if(draftKeys[(r.stage||'Opening')+'|'+r.cyl])return false;
+    return true;
+  });
+  return arr.concat(committed);
 }
 function liveReceived(){
   var out={};
