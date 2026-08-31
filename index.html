@@ -1107,6 +1107,41 @@ function _manifoldLiveFlush(){
     },function(e){_manifoldLiveQueue(payload);});
   });
 }
+// Pulls today's real committed Manifold truth for one branch from Supabase and merges it
+// into local store.manifold. Replace-by-scope for this branch+date (mirrors
+// loadWorkingStore()'s own local replace-by-branch merge, just sourced live) - EXCEPT any
+// of THIS device's own committed rows that haven't round-tripped into the mirror table
+// yet (a failed push queued it, or a push is simply still in flight) are kept, not discarded -
+// otherwise a row this device just committed would flicker out of its own screen the
+// moment this fetch resolves, purely because of a transient network hiccup on the write
+// side. Every row this pulls in is forced _committed=true regardless of what's stored -
+// this table only ever holds already-committed rows by construction, and a device that
+// later commits something else must never mistake one of these for "still needs sending."
+function _fetchManifoldLiveRows(br,date){
+  return sb.from('manifold_live_rows').select('row').eq('branch',br).eq('date',date).then(function(res){
+    if(res.error){console.error('_fetchManifoldLiveRows failed for '+br+'/'+date+':',res.error.message);return;}
+    var liveRows=(res.data||[]).map(function(r){var row=r.row||{};row._committed=true;return row;});
+    // Dedup by _rid before use - a retried-but-already-succeeded push (a connection drop
+    // mid-round-trip in _pushManifoldLiveRows/_manifoldLiveFlush, no unique constraint on
+    // row_id server-side) can leave two rows with the same _rid in the table; without this,
+    // both copies would flow into store.manifold and show/total the same committed row
+    // twice downstream. A row with no _rid at all can't be deduped this way and just passes
+    // through.
+    var _seenRid={};
+    liveRows=liveRows.filter(function(r){
+      if(!r._rid)return true;
+      if(_seenRid[r._rid])return false;
+      _seenRid[r._rid]=true;
+      return true;
+    });
+    var liveRids={};liveRows.forEach(function(r){if(r._rid)liveRids[r._rid]=true;});
+    var localPending=(store.manifold||[]).filter(function(r){
+      return r.branch===br && (r._date||today)===date && r._committed && r._rid && !liveRids[r._rid];
+    });
+    var others=(store.manifold||[]).filter(function(r){return !(r.branch===br && (r._date||today)===date);});
+    store.manifold=others.concat(liveRows).concat(localPending);
+  },function(e){console.error('_fetchManifoldLiveRows rejected for '+br+'/'+date+':',e&&e.message);});
+}
 // Live per-branch "yesterday's Closing" cache, per Manifold slot - tier-3 fallback for the
 // Removed-step baseline (see _manifoldRemovedStepBaseline/openManifoldSwap) when a slot has
 // neither an already-completed swap today nor an Opening capture today. Mirrors
