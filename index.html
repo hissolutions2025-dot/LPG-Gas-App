@@ -6292,6 +6292,17 @@ function _addLineFinish(c,d,onDone){
       // points, not a new one invented here.
       var wantsCeilOverride=confirm('Gas left ('+gl.toFixed(2)+'kg) exceeds '+(cap+_ceilTol.kg).toFixed(1)+'kg — that\'s not physically possible for a normal cylinder.\n\nPress Cancel to recheck your scale/tare entry — nothing has been saved yet.\nPress OK if the numbers are correct — a Manager or Owner will need to authorise saving this reading.');
       if(!wantsCeilOverride){if(onDone)onDone(false);return;}
+      // Remote-approval branch: a Manager/Owner isn't always physically present to authorise
+      // on the spot (a real operational gap found in live use - see the design doc for this
+      // feature). Cancel here means "submit for remote approval" (save now, flagged PENDING,
+      // resolved later by any Manager/Owner from the Pending Overrides screen) - OK means
+      // "authorise now", which is today's exact existing flow, completely unchanged below.
+      var mgrHereNow=confirm('Is a Manager or Owner here right now to authorise this?\n\nOK = they\'ll enter their password now.\nCancel = submit for remote approval and continue — a Manager or Owner will review it from the Pending Overrides screen.');
+      if(!mgrHereNow){
+        d._overrideStatus='PENDING';d._overrideKind='HARD_CEILING';d._overrideGasLeft=gl;d._overrideCap=cap;
+        _addLineFinishAfterCap(c,d,onDone);
+        return;
+      }
       if(manifoldOverrideBusy){toast('An override is already pending for another reading — wait for it to finish, then try again',true);if(onDone)onDone(false);return;}
       manifoldOverrideBusy=true;
       manifoldWeightOverride('HARD CEILING — gas left '+gl.toFixed(2)+'kg for '+modalItem+' ('+(d.gasType||'LPG')+', exceeds '+(cap+_ceilTol.kg).toFixed(1)+'kg)').then(function(ok){
@@ -6314,6 +6325,12 @@ function _addLineFinish(c,d,onDone){
       // swap wizard's own two saves (both call _addLineFinish, same shared flag), so a swap's
       // step 1/step 2 and any other in-flight override anywhere in Manifold capture still
       // can't collide.
+      var mgrHereNowFlag=confirm('Is a Manager or Owner here right now to authorise this?\n\nOK = they\'ll enter their password now.\nCancel = submit for remote approval and continue — a Manager or Owner will review it from the Pending Overrides screen.');
+      if(!mgrHereNowFlag){
+        d._overrideStatus='PENDING';d._overrideKind='FLAGGED_BAND';d._overrideGasLeft=gl;d._overrideCap=cap;
+        _addLineFinishAfterCap(c,d,onDone);
+        return;
+      }
       if(manifoldOverrideBusy){toast('An override is already pending for another reading — wait for it to finish, then try again',true);if(onDone)onDone(false);return;}
       manifoldOverrideBusy=true;
       manifoldWeightOverride('Gas left '+gl.toFixed(2)+'kg for '+modalItem+' ('+(d.gasType||'LPG')+', normal range up to '+(cap+_flagTol.kg).toFixed(1)+'kg)').then(function(ok){
@@ -6349,6 +6366,12 @@ function _addLineFinish(c,d,onDone){
     // on any specific weight value, so it applies regardless of how low or how close-to-normal
     // the reading is.
     if(isIncoming && isUsedPartial){
+      var mgrHereNowPartial=confirm('Is a Manager or Owner here right now to authorise this?\n\nOK = they\'ll enter their password now.\nCancel = submit for remote approval and continue — a Manager or Owner will review it from the Pending Overrides screen.');
+      if(!mgrHereNowPartial){
+        d._overrideStatus='PENDING';d._overrideKind='USED_PARTIAL';d._overrideGasLeft=gl;d._overrideCap=cap;
+        _addLineFinishAfterCap(c,d,onDone);
+        return;
+      }
       if(manifoldOverrideBusy){toast('An override is already pending for another reading — wait for it to finish, then try again',true);if(onDone)onDone(false);return;}
       manifoldOverrideBusy=true;
       manifoldWeightOverride('Used/partial cylinder declared for '+modalItem+' — gas left '+gl.toFixed(2)+'kg ('+(d.gasType||'LPG')+')').then(function(ok){
