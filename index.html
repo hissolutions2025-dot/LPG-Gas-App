@@ -7445,7 +7445,15 @@ function closeDay(_skipPendingOverridesRefresh){
     'Both signatures are on file. Once closed, the day is marked final for this demo.';
   if(!confirm(summary))return;
   if(!confirm('FINAL STEP — This will CLOSE and ZERO the day for '+branch+'. The count cannot be added to after this. Are you sure?'))return;
-  _closeDayFinalize(bal);
+  // One last live refresh of store.manifold itself (not just the pending-overrides worklist
+  // Task 5 already refreshes) before the snapshot is taken - without this, every override
+  // row's _overrideStatus in the frozen day_closes snapshot would stay whatever was last
+  // known locally (almost always still 'PENDING', stamped at capture time and never cleared
+  // locally), even though Task 5's gate above guarantees every one of them is actually
+  // resolved server-side by now. The 48-hour historical correction tool reuses corrLines()
+  // (same as same-day Adjust) and would otherwise show a permanently-misleading "still
+  // pending" marker on an already-resolved, closed record.
+  _fetchManifoldLiveRows(branch,today).then(function(){_closeDayFinalize(bal);},function(){_closeDayFinalize(bal);});
 }
 // Split out so a retry (from the pending-sync queue, added in the next task)
 // can re-run the actual close without re-asking the two confirm() dialogs above.
@@ -7779,7 +7787,14 @@ function corrLines(st,section,br){
     // fixed anchor and scale is back-computed (scale=gasLeft+tare) so the three stay
     // arithmetically consistent, rather than leaving a stale scale reading sitting there.
     (st.manifold||[]).filter(inBr).forEach(function(r,idx){
-      out.push({label:(r.stage||'Opening')+' \u00b7 '+r.cyl+' \u00b7 gas left='+r.gasLeft+'kg (edit)', get:function(){return r.gasLeft;}, set:function(v){r.gasLeft=v;r.scale=num(v)+num(r.tare);}, tag:'Manifold '+(r.stage||'Opening')+' '+r.cyl+' gasLeft', row:r});
+      // A row a Manager/Owner rejected via the Pending Overrides screen surfaces here with
+      // an explicit marker + their note, so the operator notices it among the list and
+      // recheck/corrects it themselves - see the remote-override-approval design doc's
+      // "Rejection handling" section. A row still genuinely PENDING (not yet resolved) is
+      // shown too, but as an informational note only - it isn't this picker's job to
+      // resolve it, only to make its state visible if someone happens to be looking here.
+      var _rejTxt=(r._overrideStatus==='REJECTED')?(' \u26a0 REJECTED'+(r._overrideResolutionNote?(': '+r._overrideResolutionNote):'')):((r._overrideStatus==='PENDING')?' \u23f3 pending approval':'');
+      out.push({label:(r.stage||'Opening')+' \u00b7 '+r.cyl+' \u00b7 gas left='+r.gasLeft+'kg (edit)'+_rejTxt, get:function(){return r.gasLeft;}, set:function(v){r.gasLeft=v;r.scale=num(v)+num(r.tare);}, tag:'Manifold '+(r.stage||'Opening')+' '+r.cyl+' gasLeft', row:r});
     });
   }
   return out;
