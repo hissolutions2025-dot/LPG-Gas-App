@@ -322,6 +322,11 @@
   </div>
 </div>
 
+<!-- MANIFOLD PENDING OVERRIDES -->
+<div id="pendingOverridesView" class="view"><div class="wrap">
+  <div id="pendingOverridesBody"></div>
+</div></div>
+
 <!-- RESIDUAL GAS (main section) -->
 <div id="residualView" class="view"><div class="wrap">
   <div class="cgRow" style="margin-bottom:10px"><label>Branch</label><div class="cgToggle">
@@ -1174,6 +1179,93 @@ function _updatePendingOverridesBadge(){
   var isMgr=(role==='Manager'||role==='Owner');
   var n=isMgr?_manifoldPendingOverrides.length:0;
   b.style.display=n?'flex':'none';b.textContent=n;
+}
+function openPendingOverrides(){
+  if(!(role==='Manager'||role==='Owner')){toast('Manager or Owner only',true);return;}
+  document.getElementById('hTitle').textContent='Pending Overrides';
+  document.getElementById('hSub').textContent='Approve or reject remote submissions';
+  show('pendingOverridesView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);
+  _saveCurrentSection('pendingOverrides');
+  _fetchManifoldPendingOverrides().then(renderPendingOverrides);
+  renderPendingOverrides();
+}
+var _PENDING_OVERRIDE_KIND_LABELS={HARD_CEILING:'Hard ceiling',FLAGGED_BAND:'Flagged band',USED_PARTIAL:'Used/partial cylinder'};
+function renderPendingOverrides(){
+  var box=document.getElementById('pendingOverridesBody');if(!box)return;
+  if(!_manifoldPendingOverrides.length){box.innerHTML='<div class="histEmpty" style="text-align:center;padding:20px">No pending overrides ✓</div>';return;}
+  var html='';
+  _manifoldPendingOverrides.forEach(function(item){
+    var kindLabel=_PENDING_OVERRIDE_KIND_LABELS[item.kind]||item.kind||'';
+    html+='<div class="histSection" style="border:2px solid var(--amber)">'+
+      '<div style="font-weight:700">'+(item.branch||'')+' — '+(item.cyl||'')+' — '+kindLabel+'</div>'+
+      '<div style="font-size:12px;color:var(--muted);margin:4px 0">'+(item.gas_left!=null?('Gas left '+num(item.gas_left).toFixed(2)+'kg'+(item.cap!=null?(' (cap '+item.cap+'kg)'):'')):'')+'</div>'+
+      '<div style="font-size:11px;color:var(--muted)">Submitted by '+(item.submitted_by_name_snapshot||'—')+' · '+(item.submitted_at?new Date(item.submitted_at).toLocaleString():'')+'</div>'+
+      '<div style="display:flex;gap:8px;margin-top:10px">'+
+        '<button class="saveBtn" onclick="resolvePendingOverride(\''+item.id+'\',\'APPROVED\')">Approve</button>'+
+        '<button class="saveBtn" style="background:#C0392B" onclick="resolvePendingOverride(\''+item.id+'\',\'REJECTED\')">Reject</button>'+
+      '</div></div>';
+  });
+  box.innerHTML=html;
+}
+// Updates the corresponding manifold_live_rows mirror row's _overrideStatus/note so a
+// THIRD device (neither the one that captured it nor the one resolving it) sees the
+// resolved status the next time it fetches live Manifold data - without this, the mirror
+// row would say PENDING forever regardless of what actually happened, and the same-day
+// Adjust tool on another device would never see a rejection to surface. Deliberately a
+// scoped exception to the earlier live-cross-device-data feature's "an Adjust correction
+// doesn't update the mirror row" limitation - that limitation is about VALUE corrections
+// (a manager typing a new weight), not about this feature's own PENDING/APPROVED/REJECTED
+// status, which this feature's own write path is responsible for keeping current.
+function _updateManifoldLiveRowOverrideStatus(rowRid,status,note){
+  if(!rowRid)return Promise.resolve();
+  return sb.from('manifold_live_rows').select('id,row').eq('row_id',rowRid).then(function(res){
+    if(res.error){console.error('_updateManifoldLiveRowOverrideStatus select failed:',res.error.message);return;}
+    if(!res.data||!res.data.length)return;
+    return Promise.all(res.data.map(function(rec){
+      var updatedRow=Object.assign({},rec.row,{_overrideStatus:status,_overrideResolutionNote:note||''});
+      return sb.from('manifold_live_rows').update({row:updatedRow}).eq('id',rec.id).then(function(ures){
+        if(ures.error)console.error('_updateManifoldLiveRowOverrideStatus update failed:',ures.error.message);
+      });
+    }));
+  },function(e){console.error('_updateManifoldLiveRowOverrideStatus rejected:',e&&e.message);});
+}
+function resolvePendingOverride(id,decision){
+  if(!(role==='Manager'||role==='Owner')){toast('Manager or Owner only',true);return;}
+  var item=_manifoldPendingOverrides.filter(function(x){return x.id===id;})[0];
+  if(!item){toast('Item no longer pending',true);return;}
+  var qualifies=function(p){return p.level==='Manager'||p.level==='Owner';};
+  var authPromise=(currentProfile && qualifies(currentProfile))?_selfReauth((decision==='APPROVED'?'Approve':'Reject')+' this override?'):_borrowAuth('Manager or Owner',(decision==='APPROVED'?'Approve':'Reject')+' this override?',qualifies);
+  authPromise.then(function(auth){
+    if(!auth){toast('Manager or Owner password required',true);return;}
+    var note='';
+    if(decision==='REJECTED'){
+      note=prompt('Reason for rejecting this reading (required):')||'';
+      if(!note.trim()){toast('A reason is required to reject',true);return;}
+    } else {
+      note=prompt('Optional note (leave blank to skip):')||'';
+    }
+    sb.from('manifold_pending_overrides').update({status:decision,resolved_by:auth.id,resolved_by_name_snapshot:auth.name,resolved_at:new Date().toISOString(),resolution_note:note.trim()}).eq('id',id).eq('status','PENDING').select().then(function(res){
+      if(res.error){toast('Could not save: '+res.error.message,true);return;}
+      // .eq('status','PENDING') above means this update only actually applies if the item
+      // was STILL pending at the moment it ran - if someone else (or a second tap from this
+      // same device) already resolved it, zero rows match and .select() comes back empty.
+      // Without this, two competing resolutions would silently overwrite each other with no
+      // warning to either person.
+      if(!res.data||!res.data.length){
+        toast('This item was already resolved by someone else — refreshing the list',true);
+        _manifoldPendingOverrides=_manifoldPendingOverrides.filter(function(x){return x.id!==id;});
+        _updatePendingOverridesBadge();
+        renderPendingOverrides();
+        return;
+      }
+      _updateManifoldLiveRowOverrideStatus(item.row_rid,decision,note.trim());
+      auditLog('Manifold override '+decision.toLowerCase(),(item.branch||'')+' — '+(item.cyl||'')+' — '+(item.kind||'')+' — by '+auth.name+(note.trim()?(' — '+note.trim()):''));
+      toast('Override '+decision.toLowerCase()+' ✓');
+      _manifoldPendingOverrides=_manifoldPendingOverrides.filter(function(x){return x.id!==id;});
+      _updatePendingOverridesBadge();
+      renderPendingOverrides();
+    },function(e){toast('Network error — check your connection',true);});
+  });
 }
 // Pulls today's real committed Manifold truth for one branch from Supabase and merges it
 // into local store.manifold. Replace-by-scope for this branch+date (mirrors
