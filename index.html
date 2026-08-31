@@ -7351,7 +7351,7 @@ function applyManifoldOverride(){
   document.getElementById('capModal').classList.remove('show');
   closeDay();
 }
-function closeDay(){
+function closeDay(_skipPendingOverridesRefresh){
   var total=Object.keys(store).filter(function(k){return k[0]!=='_';}).reduce(function(a,k){return a+(Array.isArray(store[k])?store[k].length:0);},0);
   if(total===0){toast('Nothing captured to close the day',true);return;}
   if(!sigData.sigOp){toast('Operator signature box must be signed first',true);return;}
@@ -7388,6 +7388,26 @@ function closeDay(){
   });
   if(_unpairedManifoldAddedSlots.length){
     toast('Cannot close: '+_unpairedManifoldAddedSlots.join(', ')+' — incoming cylinder recorded but no outgoing cylinder weigh-out exists for it (incomplete swap). A Manager/Owner must resolve it (Manifold capture → "Adjust an already-committed entry") before the day can be closed.',true);
+    return;
+  }
+  // #4c BLOCK: any Manifold reading still awaiting remote Manager/Owner approval. Unlike the
+  // opening-count-mismatch check above (whose cache-staleness risk is self-healing via a
+  // later Adjust), this gate does a live re-fetch FIRST before checking - Close Day is
+  // explicitly irreversible ("cannot be added to after this" a few lines below), so a stale
+  // cache here could let a branch close right past a pending item another device just
+  // created, and once that day is closed the item's date can never again match today - it
+  // would sit unresolved forever with no way to surface it through this gate again. Same
+  // one-shot-recursion-guard shape already used elsewhere in this file (openHistory()'s
+  // _skipManifoldLiveFetch) - refetch once, then re-enter this same function with the skip
+  // flag set so the second pass actually checks against what was just fetched instead of
+  // fetching forever.
+  if(!_skipPendingOverridesRefresh){
+    _fetchManifoldPendingOverrides().then(function(){closeDay(true);},function(){closeDay(true);});
+    return;
+  }
+  var _pendingForBranch=(_manifoldPendingOverrides||[]).filter(function(p){return p.branch===branch&&(p.date||today)===today;});
+  if(_pendingForBranch.length){
+    toast('Cannot close: '+_pendingForBranch.length+' Manifold override(s) still awaiting Manager/Owner approval — see the Pending Overrides screen.',true);
     return;
   }
   // Close Day requires: an authoriser WITH close-day permission + the high-risk second password
