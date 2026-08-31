@@ -5512,7 +5512,17 @@ function renderGrid(){
 // No mismatch-style validate() hook here - unlike Received's Full-in/Empty-out, none of these
 // three have an equivalent "two sides must balance" concept to re-check.
 var CAP_ADJUST_SECTION={refill:'Refills',private:'Private',manifold:'Manifold'};
+var openCapAdjustBusy=false;
 function openCapAdjust(){
+  if(capType==='manifold'){
+    if(openCapAdjustBusy)return;
+    openCapAdjustBusy=true;
+    _fetchManifoldLiveRows(capBranch,today).then(function(){openCapAdjustBusy=false;_openCapAdjustReal();},function(){openCapAdjustBusy=false;_openCapAdjustReal();});
+    return;
+  }
+  _openCapAdjustReal();
+}
+function _openCapAdjustReal(){
   var sectionName=CAP_ADJUST_SECTION[capType];
   if(!sectionName){toast('Not available for this section',true);return;}
   if(loadSavedDay(today,capBranch)){toast('Day already closed for '+capBranch+' - use the correction tool from Count History instead',true);return;}
