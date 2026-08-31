@@ -6582,7 +6582,17 @@ function receivedMismatches(){
   return out;
 }
 var pendingOverride=null;
+var capReviewBusy=false;
 function capReview(){
+  if(capType==='manifold'){
+    if(capReviewBusy)return;
+    capReviewBusy=true;
+    _fetchManifoldLiveRows(capBranch,today).then(function(){capReviewBusy=false;_capReviewReal();},function(){capReviewBusy=false;_capReviewReal();});
+    return;
+  }
+  _capReviewReal();
+}
+function _capReviewReal(){
   var c=CAP[capType];
   // received per-size match check (only applies to received, but kept for safety)
   if(c.receivedMatch){
