@@ -1153,7 +1153,14 @@ var _manifoldPendingOverrides=[]; // cached list of PENDING items, fetched at lo
                                     // who ends up authorising the close, even though only
                                     // Manager/Owner ever sees the tile/badge built from it.
 function _fetchManifoldPendingOverrides(){
-  return sb.from('manifold_pending_overrides').select('*').eq('status','PENDING').order('submitted_at',{ascending:true}).then(function(res){
+  // Scoped to branches this session can actually act on - matches the exact branch-access
+  // pattern already used throughout this file (a restricted Manager's _curUser().branches,
+  // Owner sees every branch, an Operator's single locked branch - Operators never see this
+  // data in any UI, but their OWN branch's Close Day gate still needs it in the cache).
+  var _q=sb.from('manifold_pending_overrides').select('*').eq('status','PENDING').order('submitted_at',{ascending:true});
+  if(role==='Manager'){_q=_q.in('branch',(_curUser().branches&&_curUser().branches.length)?_curUser().branches:['__none__']);}
+  else if(role!=='Owner'){_q=_q.eq('branch',branch||'__none__');}
+  return _q.then(function(res){
     if(res.error){console.error('_fetchManifoldPendingOverrides failed:',res.error.message);return;}
     // Dedup by row_rid - manifold_pending_overrides has no server-side unique constraint,
     // and _pushManifoldPendingOverrides' retry queue can insert a duplicate PENDING row for
@@ -1220,7 +1227,7 @@ function _updateManifoldLiveRowOverrideStatus(rowRid,status,note){
   if(!rowRid)return Promise.resolve();
   return sb.from('manifold_live_rows').select('id,row').eq('row_id',rowRid).then(function(res){
     if(res.error){console.error('_updateManifoldLiveRowOverrideStatus select failed:',res.error.message);return;}
-    if(!res.data||!res.data.length)return;
+    if(!res.data||!res.data.length){console.error('_updateManifoldLiveRowOverrideStatus: no manifold_live_rows match for row_id',rowRid,'- mirror status not updated (the original row may not have finished syncing yet)');return;}
     return Promise.all(res.data.map(function(rec){
       var updatedRow=Object.assign({},rec.row,{_overrideStatus:status,_overrideResolutionNote:note||''});
       return sb.from('manifold_live_rows').update({row:updatedRow}).eq('id',rec.id).then(function(ures){
@@ -1233,6 +1240,7 @@ function resolvePendingOverride(id,decision){
   if(!(role==='Manager'||role==='Owner')){toast('Manager or Owner only',true);return;}
   var item=_manifoldPendingOverrides.filter(function(x){return x.id===id;})[0];
   if(!item){toast('Item no longer pending',true);return;}
+  if(role==='Manager' && (_curUser().branches||[]).indexOf(item.branch)===-1){toast('Not your branch',true);return;}
   var qualifies=function(p){return p.level==='Manager'||p.level==='Owner';};
   var authPromise=(currentProfile && qualifies(currentProfile))?_selfReauth((decision==='APPROVED'?'Approve':'Reject')+' this override?'):_borrowAuth('Manager or Owner',(decision==='APPROVED'?'Approve':'Reject')+' this override?',qualifies);
   authPromise.then(function(auth){
