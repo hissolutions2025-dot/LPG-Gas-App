@@ -120,6 +120,7 @@
   .csize{background:var(--card);border:1.5px solid var(--line);border-radius:14px;padding:14px 12px;text-align:left;cursor:pointer;min-height:64px;display:flex;flex-direction:column;gap:4px;transition:transform .08s;}
   .csize:active{transform:scale(.97);} .csize.done{border-color:var(--ok);background:#F1F8F3;}
   .csize.timerisk{border:2px solid var(--alert);}
+  .csize.overrideRejected{border:2px solid #C0392B;}
   .csize .sz{font-size:15px;font-weight:800;color:var(--navy);}
   .csize .det{font-size:11px;color:var(--muted);line-height:1.4;} .csize.done .det{color:var(--ok);font-weight:600;}
   .csize .det .bl{display:block;}
@@ -5681,6 +5682,20 @@ function renderGrid(){
       } else _twb.style.display='none';
     } else _twb.style.display='none';
   }
+  // Rejected-override marker: a Manager/Owner may have rejected today's reading for this
+  // exact cyl+stage via the Pending Overrides screen (see resolvePendingOverride()) -
+  // surfaces it directly on the tile the operator is already looking at, not just buried in
+  // the Adjust picker, so a rejection doesn't silently sit unresolved with nobody noticing.
+  // Scoped to the CURRENT toggle stage - the same cyl name means a different underlying row
+  // per stage (Opening/Added/Closing/Removed), and only the actually-rejected stage's row
+  // should show it.
+  var _rejectedCyls={};
+  if(capType==='manifold'){
+    var _curStage=(toggleSel&&toggleSel.stage)||'Opening';
+    (store.manifold||[]).forEach(function(r){
+      if(r.branch===capBranch && (r._date||today)===today && (r.stage||'Opening')===_curStage && r._overrideStatus==='REJECTED')_rejectedCyls[r.cyl]=true;
+    });
+  }
   document.getElementById('capGrid').innerHTML=(typeof c.grid==='function'?c.grid():c.grid).map(function(item){
     // Show only THIS branch's lines - the bucket itself can hold lines from more than one
     // branch (switched mid-capture without reviewing/committing), so an unfiltered read here
@@ -5692,7 +5707,8 @@ function renderGrid(){
       return '<button class="csize" style="background:#EDEDED;color:#B0B0B0;opacity:.7;cursor:not-allowed" onclick="toast(\''+item+' is deactivated for this branch/user\',true)"><span class="sz" style="color:#B0B0B0">'+item+'</span><span class="det" style="font-size:10px">—</span></button>';
     }
     var det=done?capSummary(c,lines):(c.gridLabel==='cylinder'?'tap to weigh':'tap to add');
-    return '<button class="csize'+(done?' done':'')+(capTimerisk?' timerisk':'')+'" onclick="openModal(\''+item+'\')"><span class="sz">'+item+'</span><span class="det">'+det+'</span></button>';
+    var _isRejected=_rejectedCyls[item];
+    return '<button class="csize'+(done?' done':'')+(capTimerisk?' timerisk':'')+(_isRejected?' overrideRejected':'')+'" onclick="openModal(\''+item+'\')"><span class="sz">'+item+(_isRejected?' ⚠':'')+'</span><span class="det">'+det+(_isRejected?'<br>⚠ rejected — recheck':'')+'</span></button>';
   }).join('');
 }
 // Same-day correction for Manifold/Refill/Private, same pattern as openReceivedAdjust() -
