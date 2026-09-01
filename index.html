@@ -97,7 +97,8 @@
   body[data-view="userEditView"] #userEditView,
   body[data-view="auditView"] #auditView,
   body[data-view="adminView"] #adminView,
-  body[data-view="residualView"] #residualView{display:block !important;}
+  body[data-view="residualView"] #residualView,
+  body[data-view="pendingOverridesView"] #pendingOverridesView{display:block !important;}
   #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(calc(100% + 40px));background:var(--ok);color:#fff;padding:14px 22px;border-radius:12px;font-weight:700;font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.25);transition:transform .3s;z-index:70;max-width:90%;text-align:center;}
   /* Dismiss slides by the toast's OWN height (+ margin), not a fixed 80px - a fixed offset
      hid a short one-line toast fine but left a tall, wrapped multi-line message (e.g. the
