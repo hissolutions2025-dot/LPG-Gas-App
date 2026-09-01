@@ -1193,7 +1193,25 @@ function openPendingOverrides(){
   document.getElementById('hSub').textContent='Approve or reject remote submissions';
   show('pendingOverridesView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);
   _saveCurrentSection('pendingOverrides');
-  _fetchManifoldPendingOverrides().then(renderPendingOverrides);
+  // Hardened against a silent blank screen: a live report showed the screen opening with
+  // zero content (not even the "No pending overrides" empty-state text), which only happens
+  // if this function exits before ever reaching renderPendingOverrides() below - meaning
+  // something in the fetch-trigger call threw synchronously, or the fetch's own success
+  // handler threw and produced an unhandled rejection with no visible sign of failure. Both
+  // are now caught and surfaced as a toast (so a real error message is visible next time
+  // instead of a mysteriously blank screen), and the synchronous renderPendingOverrides()
+  // call is unconditional regardless of what happens above it, so the screen always shows
+  // at least the current cached state, never nothing at all.
+  try{
+    _fetchManifoldPendingOverrides().then(renderPendingOverrides,function(e){
+      console.error('openPendingOverrides: fetch chain failed:',e&&e.message);
+      toast('Could not refresh pending overrides — showing last known list',true);
+      renderPendingOverrides();
+    });
+  }catch(e){
+    console.error('openPendingOverrides: _fetchManifoldPendingOverrides threw:',e&&e.message);
+    toast('Could not load pending overrides — '+(e&&e.message||'unknown error'),true);
+  }
   renderPendingOverrides();
 }
 var _PENDING_OVERRIDE_KIND_LABELS={HARD_CEILING:'Hard ceiling',FLAGGED_BAND:'Flagged band',USED_PARTIAL:'Used/partial cylinder'};
