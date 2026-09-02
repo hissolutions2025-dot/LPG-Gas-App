@@ -1344,7 +1344,11 @@ function _fetchManifoldPrevClose(br){
     if(!res.data){delete _manifoldPrevClose[br];return;} // no prior close - tier 3 has nothing, tier 4 (no baseline) applies
     var exp={};
     ((res.data.store_snapshot&&res.data.store_snapshot.manifold)||[]).filter(function(r){return r.stage==='Closing';}).forEach(function(r){
-      exp[r.cyl]={brand:r.brand,gasType:r.gasType,tare:num(r.tare)};
+      // scale/gasLeft added for the Opening-discipline live check (see popCalc()) - the
+      // Removed-step baseline chain that originally built this cache only ever needed
+      // brand/gasType/tare, gasLeft is derived defensively (r.gasLeft may be absent on an
+      // older row that predates the field) rather than assumed present.
+      exp[r.cyl]={brand:r.brand,gasType:r.gasType,tare:num(r.tare),scale:num(r.scale),gasLeft:(r.gasLeft!==undefined?num(r.gasLeft):(num(r.scale)-num(r.tare)))};
     });
     _manifoldPrevClose[br]=exp;
   },function(e){console.error('_fetchManifoldPrevClose rejected for '+br+':',e&&e.message);});
