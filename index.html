@@ -2148,6 +2148,7 @@ function openResidual(){
   renderResidualList();
   renderResidualCommitted();
   show('residualView');window.scrollTo(0,0);
+  _saveCurrentSection('residual');
 }
 function residualSetBranch(b){
   if(role==='Manager' && (_curUser().branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
@@ -2259,12 +2260,14 @@ function residualAdd(){
   // added under one branch from being submitted under whichever branch is selected later.
   residualList.push({Branch:residualBranch||branch,Brand:brand,Size:size,GasType:gasType,CylScale:scale,CylTare:tare,Residual:residual,Note:note,photos:rgPhoto.slice()});
   renderResidualList();
+  residualSaveDraft();
   residualResetForm();
   _residualReasonRequired=false;_residualSyncReasonLabel(); // one-time enforcement per Manifold hand-off - back to normal/optional for whatever's added next
 }
 function residualRemove(i){
   residualList.splice(i,1);
   renderResidualList();
+  residualSaveDraft();
 }
 function renderResidualList(){
   var box=document.getElementById('residualListBox');if(!box)return;
@@ -2343,6 +2346,7 @@ async function residualSubmit(){
     store.residual=(store.residual||[]).concat(committedRows);
     saveWorkingStore();
     residualList=[];
+    residualClearDraft();
     renderResidualList();
     renderResidualCommitted();
   }catch(e){
@@ -3239,11 +3243,13 @@ function _finishLogin(u,b){
   auditLog('Login','Signed in to '+b);
   editUnlocked=false;
   loadWorkingStore();
-  // Load today's saved Stock Count / Stock Received drafts into memory regardless of which
-  // screen we land on below - so they're already there if the user navigates to that section
-  // manually later this session, not only if it happens to be the one being auto-resumed.
+  // Load today's saved Stock Count / Stock Received / Residual Gas drafts into memory
+  // regardless of which screen we land on below - so they're already there if the user
+  // navigates to that section manually later this session, not only if it happens to be the
+  // one being auto-resumed.
   cLoadDraftIntoMemory();
   rLoadDraftIntoMemory();
+  residualLoadDraftIntoMemory();
   syncFlush();
   _manifoldLiveFlush();
   _manifoldPendingFlush();
@@ -7720,6 +7726,27 @@ function rLoadDraftIntoMemory(){
     return true;
   }catch(e){return false;}
 }
+// Residual Gas had NO draft persistence at all until this fix - residualList was a plain
+// in-memory array, so any interruption (switch screens, phone backgrounds and the OS kills
+// the tab, battery dies) before tapping Submit silently lost every cylinder already added,
+// with no resume prompt and no warning - the exact same class of bug already fixed for
+// Count/Received/Manifold/Refill/Private earlier this session, just missed for this section.
+// Same shape as rDraftKey/rSaveDraft/rLoadDraftIntoMemory above, not a new pattern.
+function residualDraftKey(){return 'gs_residualdraft_'+today;}
+function residualSaveDraft(){
+  try{ if(!today)return;
+    localStorage.setItem(residualDraftKey(),JSON.stringify({list:residualList,ts:nowStamp(),by:operator}));
+  }catch(e){}
+}
+function residualLoadDraftIntoMemory(){
+  try{
+    var raw=localStorage.getItem(residualDraftKey());if(!raw)return false;
+    var d=JSON.parse(raw);if(!d||d.by!==operator)return false;
+    residualList=d.list||[];
+    return true;
+  }catch(e){return false;}
+}
+function residualClearDraft(){try{localStorage.removeItem(residualDraftKey());}catch(e){}}
 // ---- "WHERE WAS I" - resume the same screen (with its data) on the next login ----
 // Scoped to this operator+today+branch so a different person signing into the same device
 // never lands in someone else's still-open, uncommitted capture. Updated on every section
@@ -7751,6 +7778,7 @@ function _restoreCurrentSection(){
     return true;
   }
   if(s.section==='received'){openReceived();return true;}
+  if(s.section==='residual'){openResidual();return true;}
   if(s.section==='history'){openHistory();return true;}
   if(s.section==='manifold'||s.section==='refill'||s.section==='private'){openCap(s.section,{silent:true});return true;}
   return false;
