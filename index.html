@@ -6406,6 +6406,44 @@ function popCalc(){
       }
     }
   }
+  // Opening-discipline live flags (Manifold Opening stage only) - zero tolerance, blind entry
+  // (never pre-filled/locked - see design doc). As the operator types, compares what they
+  // just entered against yesterday's Closing for this exact slot. Brand/Gas Type/Tare/Gas
+  // Left each get their own independent flag - a wrong brand and a leaking cylinder are two
+  // different problems, both worth surfacing separately. Purely informational, never blocks
+  // Save - addLine()'s own save-time re-derivation of this same check is what actually
+  // stamps/audit-logs a save-anyway (see there).
+  if(capType==='manifold' && toggleSel.stage==='Opening'){
+    var _prevClose=_getManifoldPrevClose(capBranch,modalItem);
+    [
+      {k:'brand',match:function(){return d.brand===_prevClose.brand;},exp:function(){return _prevClose.brand;}},
+      {k:'gasType',match:function(){return d.gasType===_prevClose.gasType;},exp:function(){return _prevClose.gasType;}},
+      {k:'tare',match:function(){return Math.round(num(d.tare)*100)/100===Math.round(_prevClose.tare*100)/100;},exp:function(){return num(_prevClose.tare).toFixed(2)+'kg';}}
+    ].forEach(function(fld){
+      var fEl=document.getElementById('pf-'+fld.k), fWarnEl=document.getElementById('pf-'+fld.k+'-warn');
+      if(!fEl)return;
+      fEl.classList.remove('glWarnFlag');
+      if(fWarnEl){fWarnEl.style.display='none';fWarnEl.textContent='';}
+      if(_prevClose && d[fld.k]!=='' && d[fld.k]!==undefined && !fld.match()){
+        fEl.classList.add('glWarnFlag');
+        if(fWarnEl){fWarnEl.textContent='⚠ Doesn\'t match yesterday\'s close — expected '+fld.exp();fWarnEl.style.color='var(--amber)';fWarnEl.style.display='block';}
+      }
+    });
+    // Gas Left shares the auto field's existing warning slot (pf-gasLeft/pf-gasLeft-warn,
+    // already populated above by the ceiling/flagged-band block) - only writes to it if that
+    // block left it untouched, so a physically-impossible reading (hard-ceiling/flagged-band)
+    // always keeps priority over a same-severity consistency flag, matching this file's
+    // existing "explicit priority, not accidental clobbering" convention (e.g. .timerisk
+    // yielding to an inline bad-data style elsewhere in this same file).
+    var glEl=document.getElementById('pf-gasLeft'), glWarnEl=document.getElementById('pf-gasLeft-warn');
+    if(glEl && _prevClose && d.scale!=='' && d.tare!=='' && !glEl.classList.contains('glWarnBad') && !glEl.classList.contains('glWarnFlag')){
+      var glLiveOD=Math.round((num(d.scale)-num(d.tare))*100)/100, glExpOD=Math.round(num(_prevClose.gasLeft)*100)/100;
+      if(glLiveOD!==glExpOD){
+        glEl.classList.add('glWarnFlag');
+        if(glWarnEl){glWarnEl.textContent='⚠ Doesn\'t match yesterday\'s close — expected '+glExpOD.toFixed(2)+'kg';glWarnEl.style.color='var(--amber)';glWarnEl.style.display='block';}
+      }
+    }
+  }
   if(capType==='refill')_refillSealHint(d);
 }
 // Show the roll's next-in-sequence seal number as a reference, but only once per day per
