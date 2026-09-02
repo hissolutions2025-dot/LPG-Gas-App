@@ -5689,11 +5689,13 @@ function renderGrid(){
   // Scoped to the CURRENT toggle stage - the same cyl name means a different underlying row
   // per stage (Opening/Added/Closing/Removed), and only the actually-rejected stage's row
   // should show it.
-  var _rejectedCyls={};
+  var _rejectedCyls={}, _approvedCyls={};
   if(capType==='manifold'){
     var _curStage=(toggleSel&&toggleSel.stage)||'Opening';
     (store.manifold||[]).forEach(function(r){
-      if(r.branch===capBranch && (r._date||today)===today && (r.stage||'Opening')===_curStage && r._overrideStatus==='REJECTED')_rejectedCyls[r.cyl]=true;
+      if(r.branch!==capBranch || (r._date||today)!==today || (r.stage||'Opening')!==_curStage)return;
+      if(r._overrideStatus==='REJECTED')_rejectedCyls[r.cyl]=true;
+      else if(r._overrideStatus==='APPROVED')_approvedCyls[r.cyl]=true;
     });
   }
   document.getElementById('capGrid').innerHTML=(typeof c.grid==='function'?c.grid():c.grid).map(function(item){
@@ -5707,9 +5709,73 @@ function renderGrid(){
       return '<button class="csize" style="background:#EDEDED;color:#B0B0B0;opacity:.7;cursor:not-allowed" onclick="toast(\''+item+' is deactivated for this branch/user\',true)"><span class="sz" style="color:#B0B0B0">'+item+'</span><span class="det" style="font-size:10px">—</span></button>';
     }
     var det=done?capSummary(c,lines):(c.gridLabel==='cylinder'?'tap to weigh':'tap to add');
-    var _isRejected=_rejectedCyls[item];
-    return '<button class="csize'+(done?' done':'')+(capTimerisk?' timerisk':'')+(_isRejected?' overrideRejected':'')+'" onclick="openModal(\''+item+'\')"><span class="sz">'+item+(_isRejected?' ⚠':'')+'</span><span class="det">'+det+(_isRejected?'<br>⚠ rejected — recheck':'')+'</span></button>';
+    var _isRejected=_rejectedCyls[item], _isApproved=_approvedCyls[item];
+    // A rejected tile routes to a dedicated recheck-and-correct flow instead of the normal
+    // capture popup - the cylinder still needs a real count on record, so the fix is
+    // correcting the existing reading in place, not starting a fresh capture from scratch.
+    // See _openManifoldRejectedRecheck().
+    var _clickFn=_isRejected?'_openManifoldRejectedRecheck':'openModal';
+    return '<button class="csize'+(done?' done':'')+(capTimerisk?' timerisk':'')+(_isRejected?' overrideRejected':'')+'" onclick="'+_clickFn+'(\''+item+'\')"><span class="sz">'+item+(_isRejected?' ⚠':'')+'</span><span class="det">'+det+(_isRejected?'<br>⚠ Count rejected — tap to correct':'')+(_isApproved?'<br>✓ Count approved':'')+'</span></button>';
   }).join('');
+}
+// Finds the exact Manifold row a rejected-tile tap refers to - branch/date/stage/cyl all
+// pinned to what's currently selected, plus the REJECTED status itself, so a stale tile
+// (rendered before the row changed underneath it) can never be silently mismatched against
+// the wrong row.
+function _findManifoldRejectedRow(item){
+  var _curStage=(toggleSel&&toggleSel.stage)||'Opening';
+  return (store.manifold||[]).filter(function(r){return r.branch===capBranch && (r._date||today)===today && (r.stage||'Opening')===_curStage && r.cyl===item && r._overrideStatus==='REJECTED';})[0]||null;
+}
+// Recheck-and-correct flow for a rejected reading - deliberately does NOT require another
+// Manager/Owner password, unlike every other same-day correction in this app. The rejection
+// itself was already the authorisation decision; requiring a second one here would just
+// reintroduce the physical-presence friction this whole feature exists to remove, for a
+// correction the Manager already explicitly asked the operator to make. Still fully
+// audit-logged and pushed to the Adjustments sheet tab, same as any other correction - only
+// the extra password prompt is skipped, nothing about traceability is.
+function _openManifoldRejectedRecheck(item){
+  var row=_findManifoldRejectedRow(item);
+  if(!row){toast('Could not find the rejected reading — try refreshing',true);return;}
+  restoreModalShell();
+  var box=document.getElementById('capModal');
+  var card=box.querySelector('.modalCard');
+  card.innerHTML='<div class="modalHead"><span>'+item+' — recheck rejected reading</span><button onclick="_closeManifoldRejectedRecheck()" class="mClose">✕</button></div>'+
+    '<div style="font-size:13px;color:var(--muted);margin-bottom:12px">A Manager or Owner rejected this reading'+(row._overrideResolutionNote?(': "'+row._overrideResolutionNote+'"'):'')+'. Re-weigh the cylinder and save the correct figures below.</div>'+
+    '<div class="brandCard" style="margin-bottom:12px"><b style="color:var(--navy)">Previously recorded</b>'+
+      '<div style="font-size:12px;color:var(--muted);margin-top:4px">Scale '+num(row.scale).toFixed(2)+'kg · Tare '+num(row.tare).toFixed(2)+'kg · Left '+num(row.gasLeft).toFixed(2)+'kg</div>'+
+    '</div>'+
+    '<label class="mLabel" style="font-size:11px">New scale weight (kg)</label>'+
+    '<input type="number" inputmode="decimal" class="mField" id="rrScale" value="'+num(row.scale).toFixed(2)+'">'+
+    '<label class="mLabel" style="font-size:11px;margin-top:8px;display:block">New tare weight (kg)</label>'+
+    '<input type="number" inputmode="decimal" class="mField" id="rrTare" value="'+num(row.tare).toFixed(2)+'">'+
+    '<button class="mDone" style="background:var(--navy);margin-top:14px" onclick="_saveManifoldRejectedRecheck(\''+item+'\')">Save correction</button>'+
+    '<button class="mDone" style="background:var(--muted)" onclick="_closeManifoldRejectedRecheck()">Cancel</button>';
+  box.classList.add('show');
+}
+function _closeManifoldRejectedRecheck(){
+  restoreModalShell();
+  document.getElementById('capModal').classList.remove('show');
+}
+function _saveManifoldRejectedRecheck(item){
+  var row=_findManifoldRejectedRow(item);
+  if(!row){toast('Could not find the rejected reading — try refreshing',true);return;}
+  var newScale=num(document.getElementById('rrScale').value);
+  var newTare=num(document.getElementById('rrTare').value);
+  if(newScale<newTare){toast('Scale cannot be less than tare',true);return;}
+  var oldGasLeft=num(row.gasLeft);
+  row.scale=newScale;row.tare=newTare;row.gasLeft=newScale-newTare;
+  row._overrideStatus=null;row._overrideResolutionNote=null;
+  saveWorkingStore();
+  syncPush('Adjustments',[{date:today,branch:capBranch,Kind:'RejectedOverrideCorrection',Line:(row.stage||'Opening')+' '+item+' gasLeft',From:oldGasLeft,To:row.gasLeft,Reason:'Operator re-weigh after rejection',By:operator+' ('+role+')'}]);
+  auditLog('Manifold rejected reading corrected',capBranch+' — '+item+' — '+(row.stage||'Opening')+' — gas left '+oldGasLeft.toFixed(2)+'kg → '+row.gasLeft.toFixed(2)+'kg');
+  if(row._rid){
+    adjustSheetRow('Manifold',row._rid,{GasLeft:row.gasLeft,Scale:row.scale});
+    _updateManifoldLiveRowOverrideStatus(row._rid,null,'');
+  }
+  toast('Corrected — gas left '+row.gasLeft.toFixed(2)+'kg ✓');
+  restoreModalShell();
+  document.getElementById('capModal').classList.remove('show');
+  renderGrid();
 }
 // Same-day correction for Manifold/Refill/Private, same pattern as openReceivedAdjust() -
 // reuses the existing Manager/Owner-password + reason + audit-logged picker (openCorrection/
