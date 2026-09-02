@@ -6057,10 +6057,15 @@ function buildPopupForm(c,stageOverride){
         html+='<select class="mField" id="pf-'+f.k+'" disabled><option selected>'+_lockVal+'</option></select>'+
           '<div class="mNote">'+_lockMsg+'</div>';
       } else {
-        var _opts=(typeof f.opts==='function')?f.opts():f.opts; html+='<select class="mField" id="pf-'+f.k+'" onchange="popCalc()"><option value="">Select…</option>'+_opts.map(function(o){return '<option'+(f.default!==undefined&&o===f.default?' selected':'')+'>'+o+'</option>';}).join('')+'</select>';
+        var _opts=(typeof f.opts==='function')?f.opts():f.opts; html+='<select class="mField" id="pf-'+f.k+'" onchange="popCalc()"><option value="">Select…</option>'+_opts.map(function(o){return '<option'+(f.default!==undefined&&o===f.default?' selected':'')+'>'+o+'</option>';}).join('')+'</select>'+
+          // Live warning slot for the Manifold Opening-discipline check (see popCalc()) - same
+          // shape as the tare field's own -warn div below, harmlessly hidden/unused for every
+          // other field/capType/stage this shared form renders.
+          '<div class="mNote" id="pf-'+f.k+'-warn" style="display:none"></div>';
       }
     }
-    else if(f.type==='gasType')html+='<select class="mField" id="pf-'+f.k+'" onchange="popCalc()"><option value="">Select…</option></select><div class="mNote" id="pf-gasNote"></div>';
+    else if(f.type==='gasType')html+='<select class="mField" id="pf-'+f.k+'" onchange="popCalc()"><option value="">Select…</option></select><div class="mNote" id="pf-gasNote"></div>'+
+      '<div class="mNote" id="pf-'+f.k+'-warn" style="display:none"></div>';
     else if(f.type==='number')html+='<input class="mField" type="number" inputmode="decimal" step="any" id="pf-'+f.k+'" oninput="popCalc()" onwheel="this.blur()">'+
       // Live tare-mismatch warning slot - only field:'tare' gets one (mirrors the gasLeft auto
       // field's own -warn div above), harmlessly stays hidden/empty unless popCalc() finds an
