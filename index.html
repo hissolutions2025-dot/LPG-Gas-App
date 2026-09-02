@@ -6529,6 +6529,27 @@ function addLine(){
     _enteredTare=Math.round(num(d.tare)*100)/100;_expectedTare=Math.round(_manifoldClosingBaseline.tare*100)/100;
     if(_enteredTare!==_expectedTare){d._tareFlag='MISMATCH';_tareMismatchNow=true;}
   }
+  // Opening-discipline stamp - same mechanism as the Closing tare-stamp just above: stamp d
+  // now so it rides along if the row DOES end up saved, defer the audit-log call itself to
+  // the onDone(saved) callback below (this same d could still be hard-blocked or pending a
+  // gas-left override for reasons unrelated to Opening-discipline). Reuses _tareFlag for the
+  // tare mismatch specifically (same meaning as the Removed/Closing checks - "didn't match
+  // what it should have"), and three new flags for Brand/Gas Type/Gas Left, since those are
+  // Opening-discipline-specific concerns _tareFlag/_residualFlag don't cover.
+  var _odMismatchNow=false, _odDetails=[];
+  if(capType==='manifold' && toggleSel.stage==='Opening'){
+    var _odPrevClose=_getManifoldPrevClose(capBranch,d._capturedModalItem);
+    if(_odPrevClose){
+      if(d.brand!=='' && d.brand!==_odPrevClose.brand){d._openingBrandFlag='MISMATCH';_odMismatchNow=true;_odDetails.push('brand '+d.brand+' (expected '+_odPrevClose.brand+')');}
+      if(d.gasType!=='' && d.gasType!==_odPrevClose.gasType){d._openingGasTypeFlag='MISMATCH';_odMismatchNow=true;_odDetails.push('gas type '+d.gasType+' (expected '+_odPrevClose.gasType+')');}
+      var _odTareEntered=Math.round(num(d.tare)*100)/100, _odTareExp=Math.round(_odPrevClose.tare*100)/100;
+      if(d.tare!=='' && _odTareEntered!==_odTareExp){d._tareFlag='MISMATCH';_odMismatchNow=true;_odDetails.push('tare '+_odTareEntered.toFixed(2)+'kg (expected '+_odTareExp.toFixed(2)+'kg)');}
+      if(d.scale!=='' && d.tare!==''){
+        var _odGlEntered=Math.round((num(d.scale)-num(d.tare))*100)/100, _odGlExp=Math.round(num(_odPrevClose.gasLeft)*100)/100;
+        if(_odGlEntered!==_odGlExp){d._openingGasLeftFlag='MISMATCH';_odMismatchNow=true;_odDetails.push('gas left '+_odGlEntered.toFixed(2)+'kg (expected '+_odGlExp.toFixed(2)+'kg)');}
+      }
+    }
+  }
   // ---- SEAL ENFORCEMENT (refill only) ----
   if(capType==='refill'){
     var sres=sealValidate(capBranch, d.seal, d.brand);
@@ -6558,6 +6579,7 @@ function addLine(){
     // name the WRONG slot in the audit log if that happened while a tare mismatch was also
     // active on this save.
     if(saved && _tareMismatchNow)auditLog('Manifold tare mismatch',capBranch+' — '+d._capturedModalItem+' — entered '+_enteredTare.toFixed(2)+'kg, expected '+_expectedTare.toFixed(2)+'kg (saved anyway)');
+    if(saved && _odMismatchNow)auditLog('Manifold Opening discipline mismatch',capBranch+' — '+d._capturedModalItem+' — '+_odDetails.join(', ')+' (saved anyway)');
   });
 }
 // onDone (optional, trailing): invoked exactly once when this call's outcome is fully known -
