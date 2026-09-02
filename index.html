@@ -5708,7 +5708,21 @@ function renderGrid(){
       else if(r._overrideStatus==='APPROVED')_approvedCyls[r.cyl]=true;
     });
   }
-  document.getElementById('capGrid').innerHTML=(typeof c.grid==='function'?c.grid():c.grid).map(function(item){
+  var _gridItems=(typeof c.grid==='function'?c.grid():c.grid);
+  // Sequential order lock (Manifold Opening stage only) - operational discipline, confirmed
+  // explicitly: "operator subjected to discipline [rather] than confusion trying to figure
+  // out what fits where" - hard-blocked, no override. Pre-computed once per render as a
+  // doneMap (same "done" definition _manifoldOpeningAlreadyCaptured/the existing done check
+  // already use - draft OR committed counts), not re-derived per tile, so each tile's lock
+  // check is just a backward scan through this map instead of recomputing "is slot X done"
+  // from scratch for every other tile on every render.
+  var _openingDoneMap={};
+  if(capType==='manifold' && toggleSel.stage==='Opening'){
+    _gridItems.forEach(function(gi){
+      _openingDoneMap[gi]=!!_manifoldOpeningAlreadyCaptured(gi);
+    });
+  }
+  document.getElementById('capGrid').innerHTML=_gridItems.map(function(item,_idx){
     // Show only THIS branch's lines - the bucket itself can hold lines from more than one
     // branch (switched mid-capture without reviewing/committing), so an unfiltered read here
     // would show another branch's already-added item as "done" for the current branch.
@@ -5717,6 +5731,17 @@ function renderGrid(){
     var act=canUseItem(branch||'Helderberg',_secKey,item);
     if(!act){
       return '<button class="csize" style="background:#EDEDED;color:#B0B0B0;opacity:.7;cursor:not-allowed" onclick="toast(\''+item+' is deactivated for this branch/user\',true)"><span class="sz" style="color:#B0B0B0">'+item+'</span><span class="det" style="font-size:10px">—</span></button>';
+    }
+    if(capType==='manifold' && toggleSel.stage==='Opening'){
+      var _orderBlocker=null;
+      for(var _pi=0;_pi<_idx;_pi++){
+        var _prevItem=_gridItems[_pi];
+        if(!canUseItem(branch||'Helderberg',_secKey,_prevItem))continue;
+        if(!_openingDoneMap[_prevItem]){_orderBlocker=_prevItem;break;}
+      }
+      if(_orderBlocker){
+        return '<button class="csize" style="background:#EDEDED;color:#B0B0B0;opacity:.7;cursor:not-allowed" onclick="toast(\'Complete '+_orderBlocker+' first — Opening must be captured in order\',true)"><span class="sz" style="color:#B0B0B0">'+item+'</span><span class="det" style="font-size:10px">locked — do '+_orderBlocker+' first</span></button>';
+      }
     }
     var det=done?capSummary(c,lines):(c.gridLabel==='cylinder'?'tap to weigh':'tap to add');
     var _isRejected=_rejectedCyls[item], _isApproved=_approvedCyls[item];
