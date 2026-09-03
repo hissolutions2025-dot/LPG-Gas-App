@@ -1247,19 +1247,40 @@ function openPendingOverrides(){
   renderPendingOverrides();
 }
 var _PENDING_OVERRIDE_KIND_LABELS={HARD_CEILING:'Hard ceiling',FLAGGED_BAND:'Flagged band',USED_PARTIAL:'Used/partial cylinder'};
+var _PENDING_OVERRIDE_KIND_ICON={HARD_CEILING:'🔴',FLAGGED_BAND:'🟠',USED_PARTIAL:'🔵'};
+var _PENDING_OVERRIDE_KIND_COLOR={HARD_CEILING:'var(--bad)',FLAGGED_BAND:'var(--amber)',USED_PARTIAL:'var(--navy)'};
+function _pendingOverrideExpectedLine(item){
+  if(item.kind==='USED_PARTIAL'){
+    return 'Declared used/partial cylinder — '+(item.gas_left!=null?num(item.gas_left).toFixed(2)+'kg':'—');
+  }
+  if(item.gas_left==null||item.cap==null)return '';
+  return 'Expected ≤ '+num(item.cap).toFixed(1)+'kg → Got '+num(item.gas_left).toFixed(2)+'kg';
+}
 function renderPendingOverrides(){
   var box=document.getElementById('pendingOverridesBody');if(!box)return;
   if(!_manifoldPendingOverrides.length){box.innerHTML='<div class="histEmpty" style="text-align:center;padding:20px">No pending overrides ✓</div>';return;}
   var html='';
   _manifoldPendingOverrides.forEach(function(item){
     var kindLabel=_PENDING_OVERRIDE_KIND_LABELS[item.kind]||item.kind||'';
-    html+='<div class="histSection" style="border:2px solid var(--amber)">'+
-      '<div style="font-weight:700">'+(item.branch||'')+' — '+(item.cyl||'')+' — '+kindLabel+'</div>'+
-      '<div style="font-size:12px;color:var(--muted);margin:4px 0">'+(item.gas_left!=null?('Gas left '+num(item.gas_left).toFixed(2)+'kg'+(item.cap!=null?(' (cap '+item.cap+'kg)'):'')):'')+'</div>'+
-      '<div style="font-size:11px;color:var(--muted)">Submitted by '+(item.submitted_by_name_snapshot||'—')+' · '+(item.submitted_at?new Date(item.submitted_at).toLocaleString():'')+'</div>'+
-      '<div style="display:flex;gap:8px;margin-top:10px">'+
+    var icon=_PENDING_OVERRIDE_KIND_ICON[item.kind]||'⚪';
+    var color=_PENDING_OVERRIDE_KIND_COLOR[item.kind]||'var(--amber)';
+    var expLine=_pendingOverrideExpectedLine(item);
+    var hasDetail=item._liveBrand!==undefined||item._liveScale!==undefined;
+    var detailLine=hasDetail?((item._liveBrand||'')+' '+(item._liveGasType||'')+' · Scale '+(item._liveScale!=null?num(item._liveScale).toFixed(2):'—')+'kg · Tare '+(item._liveTare!=null?num(item._liveTare).toFixed(2):'—')+'kg'):'';
+    var photoHtml=(item._livePhoto&&item._livePhoto.length)?('<div style="margin:6px 0">'+item._livePhoto.map(function(s){return '<img src="'+s+'" style="max-height:70px;border-radius:6px;margin-right:4px">';}).join('')+'</div>'):'';
+    var othersCount=_manifoldPendingOverrides.filter(function(x){return x.id!==item.id && x.branch===item.branch && item.submitted_by_name_snapshot && x.submitted_by_name_snapshot===item.submitted_by_name_snapshot;}).length;
+    var patternNote=othersCount?('<div style="font-size:11px;color:var(--amber);margin-top:4px">'+othersCount+' other pending item'+(othersCount===1?'':'s')+' from this operator/branch</div>'):'';
+    html+='<div class="histSection" style="border-left:4px solid '+color+';border-top:1px solid var(--line);border-right:1px solid var(--line);border-bottom:1px solid var(--line)">'+
+      '<div style="font-weight:700">'+icon+' '+(item.branch||'')+' — '+(item.cyl||'')+' — '+kindLabel+'</div>'+
+      (expLine?('<div style="font-size:12px;color:var(--ink);margin:4px 0;font-weight:600">'+expLine+'</div>'):'')+
+      (detailLine?('<div style="font-size:12px;color:var(--muted)">'+detailLine+'</div>'):'')+
+      photoHtml+
+      '<div style="font-size:11px;color:var(--muted);margin-top:4px">Submitted by '+(item.submitted_by_name_snapshot||'—')+' · '+(item.submitted_at?new Date(item.submitted_at).toLocaleString():'')+'</div>'+
+      patternNote+
+      '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">'+
         '<button class="saveBtn" onclick="resolvePendingOverride(\''+item.id+'\',\'APPROVED\')">Approve</button>'+
-        '<button class="saveBtn" style="background:#C0392B" onclick="resolvePendingOverride(\''+item.id+'\',\'REJECTED\')">Reject</button>'+
+        '<button class="saveBtn" style="background:var(--bad)" onclick="resolvePendingOverride(\''+item.id+'\',\'REJECTED\')">Reject</button>'+
+        (item.row_rid?('<button class="saveBtn" style="background:var(--steel)" onclick="_fixManifoldReading(\''+item.id+'\')">Fix reading</button>'):'')+
       '</div></div>';
   });
   box.innerHTML=html;
