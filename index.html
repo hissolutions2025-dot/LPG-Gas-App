@@ -1183,6 +1183,34 @@ function _fetchManifoldPendingOverrides(){
     _updatePendingOverridesBadge();
   },function(e){console.error('_fetchManifoldPendingOverrides rejected:',e&&e.message);});
 }
+// Joins full capture detail (brand/gasType/scale/tare/photo/stage) from manifold_live_rows
+// onto each already-fetched pending item, keyed by row_rid===row_id - manifold_pending_overrides
+// only ever stored gas_left/cap (the two numbers the threshold check needed), never the whole
+// line, so this is a real second query, not just a display change. Called only from the
+// Pending Overrides screen's own open path (NOT from _fetchManifoldPendingOverrides itself,
+// which also runs at login for every role just to populate the badge count - adding this join
+// there would fire an extra query on every login even when the screen is never opened).
+// Same graceful-degradation shape as the rest of this feature: a row whose live-mirror hasn't
+// finished syncing yet (or was never found) simply renders without the extra detail below,
+// not an error.
+function _fetchPendingOverrideLiveDetails(){
+  var rids=_manifoldPendingOverrides.map(function(p){return p.row_rid;}).filter(Boolean);
+  if(!rids.length)return Promise.resolve();
+  return sb.from('manifold_live_rows').select('row_id,row').in('row_id',rids).then(function(res){
+    if(res.error){console.error('_fetchPendingOverrideLiveDetails failed:',res.error.message);return;}
+    var byRid={};
+    // A duplicate row_id here (same retry-insert gap _fetchManifoldLiveRows dedups for -
+    // see its comment above) is a retry of the same payload, so last-wins is safe: both
+    // copies carry identical content.
+    (res.data||[]).forEach(function(rec){byRid[rec.row_id]=rec.row||{};});
+    _manifoldPendingOverrides.forEach(function(p){
+      var live=p.row_rid&&byRid[p.row_rid];
+      if(!live)return;
+      p._liveBrand=live.brand;p._liveGasType=live.gasType;p._liveScale=live.scale;
+      p._liveTare=live.tare;p._livePhoto=Array.isArray(live.photo)?live.photo:[];p._liveStage=live.stage||'Opening';
+    });
+  },function(e){console.error('_fetchPendingOverrideLiveDetails rejected:',e&&e.message);});
+}
 function _updatePendingOverridesBadge(){
   var b=document.getElementById('b-pendingOverrides');if(!b)return;
   var isMgr=(role==='Manager'||role==='Owner');
@@ -1205,7 +1233,9 @@ function openPendingOverrides(){
   // call is unconditional regardless of what happens above it, so the screen always shows
   // at least the current cached state, never nothing at all.
   try{
-    _fetchManifoldPendingOverrides().then(renderPendingOverrides,function(e){
+    _fetchManifoldPendingOverrides().then(function(){
+      return _fetchPendingOverrideLiveDetails();
+    }).then(renderPendingOverrides,function(e){
       console.error('openPendingOverrides: fetch chain failed:',e&&e.message);
       toast('Could not refresh pending overrides — showing last known list',true);
       renderPendingOverrides();
