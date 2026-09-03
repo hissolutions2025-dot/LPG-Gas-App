@@ -1316,35 +1316,39 @@ function resolvePendingOverride(id,decision){
   var authPromise=(currentProfile && qualifies(currentProfile))?_selfReauth((decision==='APPROVED'?'Approve':'Reject')+' this override?'):_borrowAuth('Manager or Owner',(decision==='APPROVED'?'Approve':'Reject')+' this override?',qualifies);
   authPromise.then(function(auth){
     if(!auth){toast('Manager or Owner password required',true);return;}
-    var note='';
-    if(decision==='REJECTED'){
-      note=prompt('Reason for rejecting this reading (required):')||'';
-      if(!note.trim()){toast('A reason is required to reject',true);return;}
-    } else {
-      note=prompt('Optional note (leave blank to skip):')||'';
-    }
-    sb.from('manifold_pending_overrides').update({status:decision,resolved_by:auth.id,resolved_by_name_snapshot:auth.name,resolved_at:new Date().toISOString(),resolution_note:note.trim()}).eq('id',id).eq('status','PENDING').select().then(function(res){
-      if(res.error){toast('Could not save: '+res.error.message,true);return;}
-      // .eq('status','PENDING') above means this update only actually applies if the item
-      // was STILL pending at the moment it ran - if someone else (or a second tap from this
-      // same device) already resolved it, zero rows match and .select() comes back empty.
-      // Without this, two competing resolutions would silently overwrite each other with no
-      // warning to either person.
-      if(!res.data||!res.data.length){
-        toast('This item was already resolved by someone else — refreshing the list',true);
-        _manifoldPendingOverrides=_manifoldPendingOverrides.filter(function(x){return x.id!==id;});
-        _updatePendingOverridesBadge();
-        renderPendingOverrides();
-        return;
-      }
-      _updateManifoldLiveRowOverrideStatus(item.row_rid,decision,note.trim());
-      auditLog('Manifold override '+decision.toLowerCase(),(item.branch||'')+' — '+(item.cyl||'')+' — '+(item.kind||'')+' — by '+auth.name+(note.trim()?(' — '+note.trim()):''));
-      toast('Override '+decision.toLowerCase()+' ✓');
+    var notePromise=(decision==='REJECTED')
+      ? askText('Reason for rejecting this reading','Required before this can be rejected:','')
+      : askText('Optional note','Leave blank to skip:','');
+    notePromise.then(function(noteRaw){
+      if(noteRaw===null){toast('Cancelled — nothing changed');return;}
+      var note=(noteRaw||'').trim();
+      if(decision==='REJECTED' && !note){toast('A reason is required to reject',true);return;}
+      _resolvePendingOverrideFinish(id,decision,note,auth,item);
+    });
+  });
+}
+function _resolvePendingOverrideFinish(id,decision,note,auth,item){
+  sb.from('manifold_pending_overrides').update({status:decision,resolved_by:auth.id,resolved_by_name_snapshot:auth.name,resolved_at:new Date().toISOString(),resolution_note:note}).eq('id',id).eq('status','PENDING').select().then(function(res){
+    if(res.error){toast('Could not save: '+res.error.message,true);return;}
+    // .eq('status','PENDING') above means this update only actually applies if the item
+    // was STILL pending at the moment it ran - if someone else (or a second tap from this
+    // same device) already resolved it, zero rows match and .select() comes back empty.
+    // Without this, two competing resolutions would silently overwrite each other with no
+    // warning to either person.
+    if(!res.data||!res.data.length){
+      toast('This item was already resolved by someone else — refreshing the list',true);
       _manifoldPendingOverrides=_manifoldPendingOverrides.filter(function(x){return x.id!==id;});
       _updatePendingOverridesBadge();
       renderPendingOverrides();
-    },function(e){toast('Network error — check your connection',true);});
-  });
+      return;
+    }
+    _updateManifoldLiveRowOverrideStatus(item.row_rid,decision,note);
+    auditLog('Manifold override '+decision.toLowerCase(),(item.branch||'')+' — '+(item.cyl||'')+' — '+(item.kind||'')+' — by '+auth.name+(note?(' — '+note):''));
+    toast('Override '+decision.toLowerCase()+' ✓');
+    _manifoldPendingOverrides=_manifoldPendingOverrides.filter(function(x){return x.id!==id;});
+    _updatePendingOverridesBadge();
+    renderPendingOverrides();
+  },function(e){toast('Network error — check your connection',true);});
 }
 // Pulls today's real committed Manifold truth for one branch from Supabase and merges it
 // into local store.manifold. Replace-by-scope for this branch+date (mirrors
