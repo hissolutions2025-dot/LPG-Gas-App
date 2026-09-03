@@ -1285,6 +1285,29 @@ function renderPendingOverrides(){
   });
   box.innerHTML=html;
 }
+// "Fix reading" from Pending Overrides: navigates into Manifold capture for the item's own
+// branch+stage (a Manager/Owner reviewing overrides may be looking at a DIFFERENT branch's
+// item than whichever branch capture last had open - capSetBranch() below already blocks an
+// Operator from doing this, but this whole screen is Manager/Owner-only anyway), then opens
+// the existing same-day Adjust tool jumped straight to this exact row instead of a fresh
+// unfiltered picker. Deliberately does NOT auto-resolve the pending item - correcting the
+// number and authorising the reading are kept as two distinct, separately-audited actions;
+// the Manager returns to this screen afterward and taps Approve normally, now approving the
+// corrected value.
+function _fixManifoldReading(id){
+  var item=_manifoldPendingOverrides.filter(function(x){return x.id===id;})[0];
+  if(!item){toast('Item no longer pending',true);return;}
+  if(!item.row_rid){toast('No linked reading to fix — the original capture may not have finished syncing yet',true);return;}
+  var p=openCap('manifold',{gateBranch:item.branch,silent:true});
+  if(!p){toast('Cannot open Manifold capture from your current branch/access — switch to a branch with Manifold access first',true);return;}
+  p.then(function(ok){
+    if(!ok)return; // requireEdit() was declined - openCap() bailed before setting up Manifold capture, its own flow already handled telling the user why
+    if(capBranch!==item.branch)capSetBranch(item.branch);
+    var stage=(item._liveStage==='Opening'||item._liveStage==='Added'||item._liveStage==='Closing')?item._liveStage:'Opening';
+    if(toggleSel.stage!==stage)setToggle('stage',stage);
+    openCapAdjust(item.row_rid);
+  });
+}
 // Updates the corresponding manifold_live_rows mirror row's _overrideStatus/note so a
 // THIRD device (neither the one that captured it nor the one resolving it) sees the
 // resolved status the next time it fetches live Manifold data - without this, the mirror
@@ -5608,8 +5631,12 @@ function _draftHasContent(data){
   });
 }
 function openCap(type,opts){
-  if(!canUseSection(branch||'Helderberg',type)){toast(sectionActive(branch||'Helderberg',type)?(type+' is not enabled for your user'):(type+' is deactivated for '+(branch||'this branch')),true);return;}
-  requireEdit().then(function(ok){
+  var _gateBr=(opts&&opts.gateBranch)||branch||'Helderberg';
+  if(!canUseSection(_gateBr,type)){toast(sectionActive(_gateBr,type)?(type+' is not enabled for your user'):(type+' is deactivated for '+_gateBr),true);return;}
+  // Returns its promise so a caller like _fixManifoldReading can safely chain work that
+  // depends on capType/capBranch/toggleSel having actually been set, instead of racing ahead
+  // of this async setup.
+  return requireEdit().then(function(ok){
   if(!ok)return;
   capType=type; var c=CAP[type];
   if(!capData||capData._type!==type){capData={_type:type};}
@@ -5641,6 +5668,7 @@ function openCap(type,opts){
   if(type==='private')loadPrivateSuppliers(); // populate the Supplier/redistributor dropdown
   show('capView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);
   _saveCurrentSection(type);
+  return true;
   });
 }
 // Same backend-synced list Manage Suppliers/Stock Received use - kept as its own module var
@@ -5875,23 +5903,23 @@ function _saveManifoldRejectedRecheck(item){
 // three have an equivalent "two sides must balance" concept to re-check.
 var CAP_ADJUST_SECTION={refill:'Refills',private:'Private',manifold:'Manifold'};
 var openCapAdjustBusy=false;
-function openCapAdjust(){
+function openCapAdjust(jumpToRid){
   if(capType==='manifold'){
     if(openCapAdjustBusy)return;
     openCapAdjustBusy=true;
     var _openCapAdjustFetchType=capType,_openCapAdjustFetchBranch=capBranch;
     _fetchManifoldLiveRows(capBranch,today).then(function(){
       openCapAdjustBusy=false;
-      if(capType===_openCapAdjustFetchType&&capBranch===_openCapAdjustFetchBranch)_openCapAdjustReal();
+      if(capType===_openCapAdjustFetchType&&capBranch===_openCapAdjustFetchBranch)_openCapAdjustReal(jumpToRid);
     },function(){
       openCapAdjustBusy=false;
-      if(capType===_openCapAdjustFetchType&&capBranch===_openCapAdjustFetchBranch)_openCapAdjustReal();
+      if(capType===_openCapAdjustFetchType&&capBranch===_openCapAdjustFetchBranch)_openCapAdjustReal(jumpToRid);
     });
     return;
   }
-  _openCapAdjustReal();
+  _openCapAdjustReal(jumpToRid);
 }
-function _openCapAdjustReal(){
+function _openCapAdjustReal(jumpToRid){
   var sectionName=CAP_ADJUST_SECTION[capType];
   if(!sectionName){toast('Not available for this section',true);return;}
   if(loadSavedDay(today,capBranch)){toast('Day already closed for '+capBranch+' - use the correction tool from Count History instead',true);return;}
@@ -5900,7 +5928,7 @@ function _openCapAdjustReal(){
   todaysStore[capType]=(store[capType]||[]).filter(function(r){return r.branch===capBranch && (r._date||today)===today;});
   openCorrection({
     title:'Adjust '+c.title+' — '+capBranch+' (today, before close)',
-    store:todaysStore, branch:capBranch, sections:[sectionName],
+    store:todaysStore, branch:capBranch, sections:[sectionName], jumpToRid:jumpToRid||null,
     onApply:function(sel,oldVal,newVal,reason,auth){
       syncPush('Adjustments',[{date:today,branch:capBranch,Kind:'SameDay'+sectionName+'Adjustment',Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:auth.name+' ('+auth.level+')'}]);
       saveWorkingStore();
@@ -8106,6 +8134,18 @@ function openCorrection(cfg){
     corrCfg=cfg;corrAuth=auth;
     document.getElementById('corrTitle').textContent=cfg.title||'Log a correction';
     document.getElementById('corrModal').classList.add('show');
+    // Deep-link support: when the caller already knows exactly which line needs fixing
+    // (Pending Overrides' "Fix reading" button), skip the section-and-line pickers entirely
+    // and land straight on that line's edit screen - only meaningful when there's exactly one
+    // section to search (Manifold, here), matching how this is actually invoked.
+    if(cfg.jumpToRid && cfg.sections && cfg.sections.length===1){
+      corrStepLines(cfg.sections[0]);
+      var _lines=corrCfg._lines||[];
+      var _idx=-1;
+      for(var i=0;i<_lines.length;i++){ if(_lines[i].row && _lines[i].row._rid===cfg.jumpToRid){_idx=i;break;} }
+      if(_idx>-1){corrStepEdit(_idx);return;}
+      toast('Could not find that exact line — showing the full list instead',true);
+    }
     corrStepSection();
   });
 }
