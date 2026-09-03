@@ -7619,7 +7619,11 @@ function closeDay(_skipPendingOverridesRefresh){
     toast('Cannot close: '+_pendingForBranch.length+' Manifold override(s) still awaiting Manager/Owner approval — see the Pending Overrides screen.',true);
     return;
   }
-  // Close Day requires: an authoriser WITH close-day permission + the high-risk second password
+  // Close Day requires: an authoriser WITH close-day permission. The high-risk second
+  // password gate was removed here 2026-09-03 per owner request (it was rejecting a
+  // correct password live - see checkHighRisk()) - only the Manager/Owner primary auth
+  // above remains. checkHighRisk()/the high-risk password itself is untouched and still
+  // settable in Manage Users; it just has no caller left in this file right now.
   if(!store._closeAuth){
     var closeQualifies=function(p){return userPerms(p).closeday;};
     var closeAuthPromise=(currentProfile && closeQualifies(currentProfile))
@@ -7627,11 +7631,8 @@ function closeDay(_skipPendingOverridesRefresh){
       : _borrowAuth('Manager or Owner','Close Day for '+branch+'?',closeQualifies);
     closeAuthPromise.then(function(auth){
       if(!auth){toast('A Close-Day-authorised password is required',true);return;}
-      checkHighRisk('Close Day').then(function(ok){
-        if(!ok)return;
-        store._closeAuth=auth.name+' ('+auth.level+')';
-        closeDay();
-      });
+      store._closeAuth=auth.name+' ('+auth.level+')';
+      closeDay();
     });
     return;
   }
