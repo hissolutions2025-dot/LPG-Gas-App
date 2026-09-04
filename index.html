@@ -6523,10 +6523,17 @@ function popCalc(){
   // stamps/audit-logs a save-anyway (see there).
   if(capType==='manifold' && toggleSel.stage==='Opening'){
     var _prevClose=_getManifoldPrevClose(capBranch,modalItem);
+    // Deliberately no expected value in any of these messages, live - showing "expected Xkg"
+    // while the operator is still typing would let them just edit their entry to match the
+    // shown figure, defeating the entire point of blind entry (catching a genuine overnight
+    // leak). Only WHICH field is wrong is surfaced here; the real expected value still reaches
+    // Manager/Owner via the save-time audit log and History/Count Doc markers (see addLine()),
+    // which is the correct place for it - an investigation trail, not something visible to the
+    // person being tested against it.
     [
-      {k:'brand',match:function(){return d.brand===_prevClose.brand;},exp:function(){return _prevClose.brand;}},
-      {k:'gasType',match:function(){return d.gasType===_prevClose.gasType;},exp:function(){return _prevClose.gasType;}},
-      {k:'tare',match:function(){return Math.round(num(d.tare)*100)/100===Math.round(_prevClose.tare*100)/100;},exp:function(){return num(_prevClose.tare).toFixed(2)+'kg';}}
+      {k:'brand',match:function(){return d.brand===_prevClose.brand;}},
+      {k:'gasType',match:function(){return d.gasType===_prevClose.gasType;}},
+      {k:'tare',match:function(){return Math.round(num(d.tare)*100)/100===Math.round(_prevClose.tare*100)/100;}}
     ].forEach(function(fld){
       var fEl=document.getElementById('pf-'+fld.k), fWarnEl=document.getElementById('pf-'+fld.k+'-warn');
       if(!fEl)return;
@@ -6534,21 +6541,31 @@ function popCalc(){
       if(fWarnEl){fWarnEl.style.display='none';fWarnEl.textContent='';}
       if(_prevClose && d[fld.k]!=='' && d[fld.k]!==undefined && !fld.match()){
         fEl.classList.add('glWarnFlag');
-        if(fWarnEl){fWarnEl.textContent='⚠ Doesn\'t match yesterday\'s close — expected '+fld.exp();fWarnEl.style.color='var(--amber)';fWarnEl.style.display='block';}
+        if(fWarnEl){fWarnEl.textContent='⚠ Doesn\'t match yesterday\'s close';fWarnEl.style.color='var(--amber)';fWarnEl.style.display='block';}
       }
     });
     // Gas Left shares the auto field's existing warning slot (pf-gasLeft/pf-gasLeft-warn,
-    // already populated above by the ceiling/flagged-band block) - only writes to it if that
-    // block left it untouched, so a physically-impossible reading (hard-ceiling/flagged-band)
-    // always keeps priority over a same-severity consistency flag, matching this file's
-    // existing "explicit priority, not accidental clobbering" convention (e.g. .timerisk
-    // yielding to an inline bad-data style elsewhere in this same file).
+    // already populated above by the ceiling/flagged-band block). The ceiling/flagged-band
+    // check keeps priority for the BORDER COLOR/class when it also fires - that's the more
+    // urgent, actionable signal (physically-impossible reading, needs re-weigh or approval) -
+    // but the "doesn't match yesterday" fact is always appended to the message text regardless,
+    // rather than silently dropped, so a reading that's both physically implausible AND
+    // inconsistent with yesterday's close doesn't hide the second problem. Previously this
+    // whole check was skipped whenever the ceiling/band check had already claimed the slot,
+    // which meant Gas Left (and by extension Scale, since it's the same figure) looked like it
+    // never flagged at all whenever a mismatch was also large enough to trip that check.
     var glEl=document.getElementById('pf-gasLeft'), glWarnEl=document.getElementById('pf-gasLeft-warn');
-    if(glEl && _prevClose && d.scale!=='' && d.tare!=='' && !glEl.classList.contains('glWarnBad') && !glEl.classList.contains('glWarnFlag')){
+    if(glEl && _prevClose && d.scale!=='' && d.tare!==''){
       var glLiveOD=Math.round((num(d.scale)-num(d.tare))*100)/100, glExpOD=Math.round(num(_prevClose.gasLeft)*100)/100;
       if(glLiveOD!==glExpOD){
-        glEl.classList.add('glWarnFlag');
-        if(glWarnEl){glWarnEl.textContent='⚠ Doesn\'t match yesterday\'s close — expected '+glExpOD.toFixed(2)+'kg';glWarnEl.style.color='var(--amber)';glWarnEl.style.display='block';}
+        if(!glEl.classList.contains('glWarnBad') && !glEl.classList.contains('glWarnFlag')){
+          glEl.classList.add('glWarnFlag');
+          if(glWarnEl){glWarnEl.style.color='var(--amber)';}
+        }
+        if(glWarnEl){
+          glWarnEl.textContent+=(glWarnEl.textContent?' · ':'')+'⚠ Doesn\'t match yesterday\'s close';
+          glWarnEl.style.display='block';
+        }
       }
     }
   }
