@@ -9722,6 +9722,7 @@ function syncCfg(){return { url: 'https://script.google.com/macros/s/AKfycbx_L_P
       lines.push('cHasPrevClose(cBranch)='+safe(function(){return cHasPrevClose(cBranch);}));
       lines.push('_liveExpectedOpening keys='+safe(function(){return JSON.stringify(Object.keys(_liveExpectedOpening));}));
       lines.push('_liveExpectedOpening[cBranch]='+safe(function(){return JSON.stringify(_liveExpectedOpening[cBranch]);}));
+      lines.push('LOCAL gs_expopen_'+safe(function(){return cBranch;})+'='+safe(function(){return localStorage.getItem('gs_expopen_'+cBranch);}));
       lines.push('store._openMismatch (cBranch, unresolved)='+safe(function(){return JSON.stringify((store._openMismatch||[]).filter(function(m){return m.branch===cBranch&&!m.resolved;}).map(function(m){return m.size+'|'+m.state+'|'+m.brand+'|date='+m.date;}));}));
       lines.push('cIsFlagged(cBranch,Full,9kg)='+safe(function(){return cIsFlagged(cBranch,'Full','9kg');})+' cIsFlagged(cBranch,Empty,9kg)='+safe(function(){return cIsFlagged(cBranch,'Empty','9kg');}));
       if(errs.length)lines.push('--- errors ---',errs.join('\n'));
