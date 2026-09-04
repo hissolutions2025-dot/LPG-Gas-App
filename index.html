@@ -944,6 +944,20 @@
   <button class="sigClear" style="width:100%;margin-top:8px" onclick="mmResolveCancel()">Cancel</button>
 </div></div>
 
+<!-- Pending Overrides Approve/Reject: reason box bunched together with the actual decision
+     button on one screen, instead of a separate askText() prompt after auth - password
+     entry (via _selfReauth/_borrowAuth) still happens first as its own step, unchanged. -->
+<div id="overrideResolveModal" class="modal"><div class="modalCard">
+  <div class="modalHead"><span id="overrideResolveTitle">Approve override</span><button onclick="overrideResolveCancel()" class="mClose">&#10005;</button></div>
+  <div style="padding:4px 0 10px">
+    <div id="overrideResolveMsg" style="font-size:13px;color:var(--navy);white-space:pre-line;margin-bottom:10px"></div>
+    <label class="mLabel" id="overrideResolveReasonLabel">Optional note</label>
+    <textarea class="mField" id="overrideResolveReason" rows="3" placeholder="Note (optional)"></textarea>
+  </div>
+  <button class="saveBtn" id="overrideResolveConfirmBtn" onclick="overrideResolveConfirm()">Confirm</button>
+  <button class="sigClear" style="width:100%;margin-top:8px" onclick="overrideResolveCancel()">Cancel</button>
+</div></div>
+
 <div id="toast"></div>
 
 <!-- IDLE LOCK OVERLAY - covers the entire app after inactivity to prevent "pocket edits".
@@ -1339,16 +1353,49 @@ function resolvePendingOverride(id,decision){
   var authPromise=(currentProfile && qualifies(currentProfile))?_selfReauth((decision==='APPROVED'?'Approve':'Reject')+' this override?'):_borrowAuth('Manager or Owner',(decision==='APPROVED'?'Approve':'Reject')+' this override?',qualifies);
   authPromise.then(function(auth){
     if(!auth){toast('Manager or Owner password required',true);return;}
-    var notePromise=(decision==='REJECTED')
-      ? askText('Reason for rejecting this reading','Required before this can be rejected:','')
-      : askText('Optional note','Leave blank to skip:','');
-    notePromise.then(function(noteRaw){
+    var isReject=decision==='REJECTED';
+    var kindLabel=_PENDING_OVERRIDE_KIND_LABELS[item.kind]||item.kind||'';
+    var summary=(item.branch||'')+' — '+(item.cyl||'')+' — '+kindLabel+(item.gas_left!=null?('\nGas left '+num(item.gas_left).toFixed(2)+'kg'):'');
+    askOverrideResolution(isReject?'Reject this reading':'Approve this reading',summary,isReject?'Confirm reject':'Confirm approve',isReject).then(function(noteRaw){
       if(noteRaw===null){toast('Cancelled — nothing changed');return;}
-      var note=(noteRaw||'').trim();
-      if(decision==='REJECTED' && !note){toast('A reason is required to reject',true);return;}
-      _resolvePendingOverrideFinish(id,decision,note,auth,item);
+      _resolvePendingOverrideFinish(id,decision,noteRaw,auth,item);
     });
   });
+}
+// Bunches the reason box together with the actual Approve/Reject confirmation into one
+// screen, instead of a separate askText() prompt appearing after auth - same "one combined
+// screen, not two sequential prompts" pattern as askMismatchResolution(). Resolves the
+// trimmed reason string, or null on Cancel. required=true (Reject) blocks Confirm until a
+// non-empty reason is entered, rather than letting an empty required reason through and
+// only catching it after the fact.
+var _orResolveResolve=null;
+function askOverrideResolution(title,msg,confirmLabel,required){
+  return new Promise(function(resolve){
+    _orResolveResolve=resolve;
+    document.getElementById('overrideResolveTitle').textContent=title||'';
+    document.getElementById('overrideResolveMsg').textContent=msg||'';
+    document.getElementById('overrideResolveReasonLabel').textContent=required?'Reason (required)':'Optional note';
+    var reasonEl=document.getElementById('overrideResolveReason');
+    reasonEl.value='';
+    reasonEl.setAttribute('data-required',required?'1':'');
+    reasonEl.placeholder=required?'Why this reading is being rejected...':'Note (optional)';
+    var btn=document.getElementById('overrideResolveConfirmBtn');
+    btn.textContent=confirmLabel||'Confirm';
+    btn.style.background=required?'var(--bad)':'';
+    document.getElementById('overrideResolveModal').classList.add('show');
+    setTimeout(function(){reasonEl.focus();},50);
+  });
+}
+function overrideResolveConfirm(){
+  var reasonEl=document.getElementById('overrideResolveReason');
+  var reason=(reasonEl.value||'').trim();
+  if(reasonEl.getAttribute('data-required')==='1' && !reason){toast('A reason is required to reject',true);return;}
+  document.getElementById('overrideResolveModal').classList.remove('show');
+  if(_orResolveResolve){_orResolveResolve(reason);_orResolveResolve=null;}
+}
+function overrideResolveCancel(){
+  document.getElementById('overrideResolveModal').classList.remove('show');
+  if(_orResolveResolve){_orResolveResolve(null);_orResolveResolve=null;}
 }
 function _resolvePendingOverrideFinish(id,decision,note,auth,item){
   sb.from('manifold_pending_overrides').update({status:decision,resolved_by:auth.id,resolved_by_name_snapshot:auth.name,resolved_at:new Date().toISOString(),resolution_note:note}).eq('id',id).eq('status','PENDING').select().then(function(res){
