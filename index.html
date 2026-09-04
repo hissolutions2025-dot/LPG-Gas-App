@@ -9973,6 +9973,35 @@ function syncCfg(){return { url: SUPABASE_URL+'/functions/v1/sheets-sync' };}
     setInterval(render,1000);
   }catch(e){}
 })();
+
+// ---- Service worker registration: keeps a home-screen ("standalone") install of
+// this app from silently running stale code after a new version is deployed - see
+// sw.js for the caching strategy itself. Registers unconditionally (no feature
+// flag) since every supported mobile browser here has supported service workers
+// for years; an older/unsupported browser just skips this block via the 'in'
+// check and behaves exactly as before (no service worker, ordinary HTTP caching).
+if('serviceWorker' in navigator){
+  window.addEventListener('load', function(){
+    navigator.serviceWorker.register('./sw.js').then(function(reg){
+      var hadController=!!navigator.serviceWorker.controller;
+      reg.addEventListener('updatefound', function(){
+        var nw=reg.installing;
+        if(!nw)return;
+        nw.addEventListener('statechange', function(){
+          if(nw.state==='activated' && hadController){
+            // A NEW version just took over control while this tab was already open -
+            // reload to actually run it. Every committed capture already persists
+            // through an app restart the same way (localStorage), so this only
+            // costs a form/popup left open mid-edit - the same loss a manual
+            // refresh would already cause today.
+            toast('A new version of the app is available — reloading…');
+            setTimeout(function(){location.reload();},1200);
+          }
+        });
+      });
+    }).catch(function(){});
+  });
+}
 </script>
 </body>
 </html>
