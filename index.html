@@ -3155,7 +3155,22 @@ function apiPost(action,extra){
   // wire field name changed here.
   var payload={type:action,caller:operator};
   if(extra){for(var k in extra){if(extra.hasOwnProperty(k))payload[k]=extra[k];}}
-  return _sheetsSyncSend(cfg.url,payload).then(function(r){return r.json();});
+  return _sheetsSyncSend(cfg.url,payload).then(function(r){
+    if(r.status===401){
+      // Same auth-layer rejection syncPush/syncFlush handle by queuing (missing/expired
+      // Supabase session) - apiPost has no retry queue of its own though, every caller here
+      // is an immediate one-shot request/response (Faulty Cylinders actions, photo uploads,
+      // Suppliers saves), not an offline-safe commit path. So the right fix is different:
+      // surface it clearly and immediately, right here in one shared place, instead of
+      // leaving it to look like an ordinary backend error to whichever of apiPost's several,
+      // inconsistently-error-handled callers happened to trigger it. Deliberately still
+      // RESOLVES (not rejects) the promise - several callers have no .catch() at all, and
+      // turning this into a rejection would risk an unhandled-rejection console error for
+      // them instead of this clear, actionable toast.
+      toast('Your session has expired — please log in again, then retry.',true);
+    }
+    return r.json();
+  });
 }
 // Uploads each captured photo (data URI) to Drive via the shared 'photoUpload' backend
 // action, returns a comma-joined string of the links that succeeded. Never throws - a
