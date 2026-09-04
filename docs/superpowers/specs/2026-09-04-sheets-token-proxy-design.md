@@ -3,8 +3,8 @@
 ## Why this phase
 
 `syncCfg()` (`index.html`) hardcodes the Google Apps Script webapp URL and its auth token
-directly in client-side source: `{url:'https://script.google.com/macros/s/.../exec',
-token:"GasSales2026"}`. Anyone who views-source the deployed page gets both. Since the token
+directly in client-side source: `{url:'https://script.google.com/macros/s/<real deployment id>/exec',
+token:"<real token>"}`. Anyone who views-source the deployed page gets both. Since the token
 is a single shared secret (not per-user), anyone with it could POST arbitrary rows into the
 business's Google Sheet directly, bypassing the app entirely. This was the top finding of the
 architecture review conducted 2026-09-03.

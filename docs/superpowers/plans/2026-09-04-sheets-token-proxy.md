@@ -109,9 +109,14 @@ Task 3 until this is confirmed done.
 
 - [ ] **Step 2:** Go to **Project Settings → Edge Functions → Secrets** (or the CLI equivalent,
   `supabase secrets set`). Add two secrets:
-  - `SHEETS_WEBAPP_URL` = the real Apps Script URL currently hardcoded in `index.html`'s
-    `syncCfg()` (before Task 3 removes it) — `https://script.google.com/macros/s/AKfycbx_L_PHF-pTKhbc3YMnWSEfhdV57zMMr6Sg7FLpxK2RsAchgzYtwMVzXNkQSU4CaSxG/exec`
-  - `SHEETS_WEBAPP_TOKEN` = the real token currently hardcoded there too — `GasSales2026`
+  - `SHEETS_WEBAPP_URL` = the real Apps Script deployment URL (get it from the Apps Script
+    project's own Deploy → Manage deployments screen, or from `index.html` git history before
+    this feature — do NOT write the real value into this doc; it must never appear in a
+    committed file again)
+  - `SHEETS_WEBAPP_TOKEN` = the real token the Apps Script backend checks incoming requests
+    against (same rule — never write the real value into a committed file; if the value that
+    used to be hardcoded here was ever exposed publicly, treat it as compromised and rotate it
+    in the Apps Script code first, matching the new value here)
 
 - [ ] **Step 3:** Confirm the function actually works, standalone, BEFORE any client code
   changes go live. From a logged-in browser console (same technique used earlier this
@@ -234,9 +239,10 @@ function apiPost(action,extra){
 
 - [ ] **Step 2: Replace `syncCfg()` itself**
 
-Find:
+Find (the real URL/token values are redacted here - match against the actual line in
+`index.html`, not this placeholder text):
 ```javascript
-function syncCfg(){return { url: 'https://script.google.com/macros/s/AKfycbx_L_PHF-pTKhbc3YMnWSEfhdV57zMMr6Sg7FLpxK2RsAchgzYtwMVzXNkQSU4CaSxG/exec', token: "GasSales2026" };}
+function syncCfg(){return { url: '<real Apps Script deployment URL>', token: "<real token>" };}
 ```
 Change to:
 ```javascript
@@ -279,9 +285,11 @@ No automated test suite exists - verification is live and direct, on the real de
 
 - [ ] **Step 1: Confirm the token is genuinely gone from client source**
 
+Replace `<old token value>` below with the actual retired token before running this check -
+do not write the real value back into this file.
 ```js
 fetch('https://hissolutions2025-dot.github.io/LPG-Gas-App/?_='+Date.now()).then(r=>r.text()).then(t=>({
-  hasOldToken: t.includes('GasSales2026'),
+  hasOldToken: t.includes('<old token value>'),
   hasOldUrl: t.includes('script.google.com'),
   hasNewProxy: t.includes('/functions/v1/sheets-sync')
 }))
