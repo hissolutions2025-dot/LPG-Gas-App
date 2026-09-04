@@ -7434,6 +7434,13 @@ function _mismatchPanelHtml(branch){
   var html='<div class="histSection" style="border:2px solid #C0392B"><h4 style="color:#C0392B">⚠ Opening count incorrect</h4>';
   if(isMgr){
     html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px">These lines block Close Day until a Manager or Owner logs an adjustment (note required). The signed close is not changed - only today opening.</div>';
+    // "Accept all as correct" - one password + one shared reason instead of tapping through
+    // every line individually (a real operational pain when a stale comparison baseline
+    // flags nearly every size at once, not genuine per-line counting mistakes - see
+    // bulkAcceptMismatches()). Stock-Count-kind only, and only shown once there's more than
+    // one to bulk-accept - a single mismatch is already just as fast via its own button.
+    var unresolvedCountKind=mmList.filter(function(m){return !m.resolved && m.kind!=='manifold';}).length;
+    if(unresolvedCountKind>1)html+='<button class="sigClear" style="background:var(--steel);color:#fff;margin-bottom:8px" onclick="bulkAcceptMismatches()">Accept all '+unresolvedCountKind+' as correct (one password, one reason)</button>';
     html+='<table class="htable"><tr><th>Item</th><th>Prev close</th><th>Counted</th><th>Status</th></tr>';
     mmList.forEach(function(m,i){
       var item=(m.kind==='manifold')?('Manifold · '+m.cyl):(m.size+' · '+m.state+' · '+m.brand);
@@ -8571,6 +8578,94 @@ function _mismatchesResolveDone(overlayRows){
   var onScreen=document.querySelector('.view.active')&&document.querySelector('.view.active').id==='mismatchesView';
   if(container&&onScreen)container.innerHTML=_mismatchPanelHtml(histBranch)||'<div class="histEmpty">No opening mismatches for '+histBranch+'.</div>';
   _refreshMismatchPanel(histBranch,overlayRows);
+}
+// Bulk twin of adjustMismatch()'s "Accept as correct" path, Stock-Count-kind only (Manifold
+// mismatches stay one-at-a-time for now - see the design note on this feature). One password
+// + one shared reason applied to EVERY unresolved line at once, instead of tapping through
+// each individually - built for exactly the situation that prompted it: a stale local
+// comparison baseline flagging nearly every size/brand as "incorrect" when the operator's
+// actual count was fine. Reuses the same write targets adjustMismatch() does (store.count,
+// Adjustments sheet, Counts sheet, stock_counts, count_mismatches) so a bulk-accepted line is
+// indistinguishable downstream from one accepted individually - just tagged "[bulk]" in its
+// note for traceability. Deliberately skips adjustMismatch()'s per-item hand-off into the
+// 48-hour historical tool for yesterday's Closing (viewSavedDay) - doing that 23 times in a
+// row isn't practical - see the toast below instead.
+function bulkAcceptMismatches(){
+  if(!(role==='Manager'||role==='Owner')){toast('Manager or Owner only',true);return;}
+  if(!perm('adjust')){toast('You do not have adjust rights',true);return;}
+  var bc=histBranch;
+  var mmList=(store._openMismatch||[]).filter(function(m){return m.branch===bc && !m.resolved && m.kind!=='manifold';});
+  if(!mmList.length){toast('No unresolved Stock Count mismatches for '+bc,true);return;}
+  var mySessionGen=_sessionGen;
+  var qualifiesAdjust=function(p){return userPerms(p).adjust;};
+  var authPromise=(currentProfile && qualifiesAdjust(currentProfile))
+    ? _selfReauth('Accept all '+mmList.length+' opening mismatches as correct?')
+    : _borrowAuth('Manager or Owner','Accept all '+mmList.length+' opening mismatches as correct?',qualifiesAdjust);
+  authPromise.then(function(auth){
+    if(!auth){toast('An adjust-authorised password is required',true);return;}
+    if(_sessionGen!==mySessionGen){toast('Session changed - nothing saved, please try again',true);return;}
+    askText('Reason for accepting all as correct',mmList.length+' lines will be marked correct as counted - required before this can be saved:','').then(function(reasonRaw){
+      if(reasonRaw===null)return;
+      var reason=(reasonRaw||'').trim();
+      if(!reason){toast('A reason is required',true);return;}
+      if(_sessionGen!==mySessionGen){toast('Session changed - nothing saved, please try again',true);return;}
+      _bulkAcceptRun(mmList,bc,auth,reason);
+    });
+  });
+}
+function _bulkAcceptRun(mmList,bc,auth,reason){
+  var overlayRows=[], sheetRows=[];
+  mmList.forEach(function(m){
+    var st=m.state, sz=m.size, br=m.brand, correct=num(m.counted);
+    var row=store.count.filter(function(r){return r.countType==='Opening'&&r.state===st&&r.size===sz&&r.brand===br&&(!r.branch||r.branch===bc);})[0];
+    var oldVal=row?row.qty:m.counted;
+    if(row){row.qty=correct;row._adjusted=true;}
+    else{row={countType:'Opening',state:st,size:sz,brand:br,qty:correct,branch:bc,_adjusted:true,_date:today};store.count.push(row);}
+    row._correctedFrom=oldVal;row._correctedBy=auth.name;row._correctedTime=nowStamp();
+    overlayRows.push({branch:bc,size:sz,state:st,brand:br,qty:correct});
+    sheetRows.push({date:today,branch:bc,Kind:'OpeningMismatch',Line:sz+' '+st+' '+br,From:oldVal,To:correct,Reason:reason,By:auth.name+' ('+auth.level+')'});
+    m.resolved=true;m.counted=correct;m.adjustedTo=correct;
+    m.adjustNote='Accepted as correct by '+auth.name+' ('+auth.level+') [bulk]: '+reason;
+    m.adjustedBy=auth.name;m.adjustedAt=nowStamp();
+    var lockKey=bc+'|Opening|'+st+'|'+sz+'|'+br;
+    delete cLocked[lockKey];cTries[lockKey]=0;
+    auditLog('Opening mismatch accepted as correct (bulk)',sz+' '+st+' '+br+' — prev close '+m.expected+', counted '+oldVal+', confirmed at '+correct+' · '+reason,
+      {prevClose:m.expected,counted:oldVal},{correctedOpening:correct,reason:reason});
+  });
+  syncPush('Adjustments',sheetRows);
+  var rowsForBn=syncRowsCount(store.count.filter(function(r){return r.branch===bc;}),bc);
+  syncPush('Counts', rowsForBn.map(function(x){x._replaceKey=(x.date+'|'+x.branch);return x;}));
+  var freshRows=store.count.filter(function(r){return r.branch===bc && overlayRows.some(function(o){return o.size===r.size&&o.state===r.state&&o.brand===r.brand;});});
+  try{_stockCountsUpsert(freshRows);}catch(e){console.error('_stockCountsUpsert threw synchronously (bulk accept):',e.message);}
+  // Same per-branch chain adjustMismatch() itself uses - guarantees this write never
+  // interleaves with a concurrent _refreshCountMismatches(bc) for the same branch.
+  var _priorMismatchChain=_refreshCountMismatchesChains[bc]||Promise.resolve();
+  var _resolveUpsertChain=_priorMismatchChain.then(function(){
+    return sb.from('count_mismatches').upsert(mmList.map(function(m){
+      return {branch:bc, date:m.date||today, size:m.size, state:m.state, brand:m.brand,
+        expected:num(m.expected), counted:num(m.adjustedTo),
+        resolved:true, resolved_by:(auth&&auth.id)||null,
+        resolved_by_name_snapshot:auth.name, resolved_at:new Date().toISOString(),
+        corrected_to:m.adjustedTo, resolution_reason:reason};
+    }),{onConflict:'branch,date,size,state,brand'});
+  }).then(function(res){
+    if(res.error){
+      console.error('count_mismatches bulk resolve upsert failed:',res.error.message);
+      toast('Counts corrected locally, but the shared mismatch records could not all be marked resolved - please tell Freddie: '+res.error.message,true);
+    } else {
+      toast(mmList.length+' mismatches accepted as correct ✓ — if any still look wrong tomorrow, yesterday\'s Closing figure may need its own correction (Count History → Past)');
+    }
+    saveWorkingStore();
+    _mismatchesResolveDone(overlayRows);
+  },function(e){
+    console.error('count_mismatches bulk resolve upsert failed unexpectedly:',e&&e.message);
+    toast('Counts corrected locally, but the shared mismatch records could not all be marked resolved - please tell Freddie: '+(e&&e.message||'unknown error'),true);
+    saveWorkingStore();
+    _mismatchesResolveDone(overlayRows);
+  }).catch(function(e){
+    console.error('count_mismatches bulk resolve-upsert chain link failed unexpectedly:',e&&e.message);
+  });
+  _refreshCountMismatchesChains[bc]=_resolveUpsertChain;
 }
 // #4 Manager/Owner resolves an opening mismatch (adjusts OPENING only, close stays signed)
 function adjustMismatch(i){
