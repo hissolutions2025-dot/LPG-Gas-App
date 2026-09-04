@@ -6030,10 +6030,22 @@ function _openCapAdjustReal(jumpToRid){
       saveWorkingStore();
       auditLog(c.title+' adjusted (same day)',capBranch+' '+sel.tag+': '+oldVal+' → '+newVal+' by '+auth.name+' - '+reason,{was:oldVal},{now:newVal});
       // Also correct the ORIGINAL row on its actual sheet tab, not just the local copy +
-      // the Adjustments side-note - see adjustSheetRow(). Manifold pushes Scale too since
-      // corrLines' set() already back-computed it (scale=gasLeft+tare) before this runs.
+      // the Adjustments side-note - see adjustSheetRow(). Manifold can now correct Brand,
+      // Gas type, Scale, or Tare individually (corrApplyManifoldEdit calls this once per
+      // changed field, via sel.field) - Scale/Tare each also push the row's just-recomputed
+      // GasLeft (scale-tare), same "keep the sheet's three figures in arithmetic sync"
+      // reasoning the old gas-left-only corrector already used.
       if(sel.row){
-        var updates=(capType==='manifold')?{GasLeft:newVal,Scale:sel.row.scale}:{Pumped:newVal};
+        var updates;
+        if(capType==='manifold'){
+          if(sel.field==='brand')updates={Brand:newVal};
+          else if(sel.field==='gasType')updates={GasType:newVal};
+          else if(sel.field==='scale')updates={Scale:newVal,GasLeft:sel.row.gasLeft};
+          else if(sel.field==='tare')updates={Tare:newVal,GasLeft:sel.row.gasLeft};
+          else updates={GasLeft:newVal,Scale:sel.row.scale}; // defensive fallback, shouldn't occur
+        } else {
+          updates={Pumped:newVal};
+        }
         adjustSheetRow(sectionName,sel.row._rid,updates);
       }
     },
@@ -8229,7 +8241,13 @@ function corrLines(st,section,br){
       // shown too, but as an informational note only - it isn't this picker's job to
       // resolve it, only to make its state visible if someone happens to be looking here.
       var _rejTxt=(r._overrideStatus==='REJECTED')?(' \u26a0 REJECTED'+(r._overrideResolutionNote?(': '+r._overrideResolutionNote):'')):((r._overrideStatus==='PENDING')?' \u23f3 pending approval':'');
-      out.push({label:(r.stage||'Opening')+' \u00b7 '+r.cyl+' \u00b7 gas left='+r.gasLeft+'kg (edit)'+_rejTxt, get:function(){return r.gasLeft;}, set:function(v){r.gasLeft=v;r.scale=num(v)+num(r.tare);}, tag:'Manifold '+(r.stage||'Opening')+' '+r.cyl+' gasLeft', row:r});
+      // Brand/Gas type/Scale/Tare/Gas left are ALL editable here (see corrStepManifoldEdit/
+      // corrApplyManifoldEdit below, which bypass the generic single-field corrStepEdit/
+      // corrApply entirely for this section) - any one of them can be the actual mistake and
+      // each affects everything downstream (manifoldBalance(), computeManifoldMismatches()).
+      // get/set kept here only so a row can still be located by _rid (jumpToRid) and so the
+      // picker label reflects the live value - they're not used to apply an edit.
+      out.push({label:(r.stage||'Opening')+' \u00b7 '+r.cyl+' \u00b7 '+(r.brand||'?')+' '+(r.gasType||'?')+' \u00b7 scale '+r.scale+'kg tare '+r.tare+'kg (edit)'+_rejTxt, get:function(){return r.gasLeft;}, set:function(v){r.gasLeft=v;r.scale=num(v)+num(r.tare);}, tag:'Manifold '+(r.stage||'Opening')+' '+r.cyl, row:r});
     });
   }
   return out;
@@ -8263,7 +8281,10 @@ function openCorrection(cfg){
       var _lines=corrCfg._lines||[];
       var _idx=-1;
       for(var i=0;i<_lines.length;i++){ if(_lines[i].row && _lines[i].row._rid===cfg.jumpToRid){_idx=i;break;} }
-      if(_idx>-1){corrStepEdit(_idx);return;}
+      if(_idx>-1){
+        if(cfg.sections[0]==='Manifold')corrStepManifoldEdit(_idx);else corrStepEdit(_idx);
+        return;
+      }
       toast('Could not find that exact line — showing the full list instead',true);
     }
     corrStepSection();
@@ -8283,6 +8304,7 @@ function corrStepLines(section){
   corrCfg._section=section;corrCfg._lines=lines;
   if(section==='Received'){corrStepReceivedGroups();return;}
   if(section==='Opening'||section==='Closing'){corrStepCountGroups(section);return;}
+  if(section==='Manifold'){corrStepManifoldList();return;}
   var html='<div style="font-size:12px;color:var(--muted);margin-bottom:6px"><button class="sigClear" onclick="corrStepSection()">\u2039 Back</button> &nbsp; <b>'+section+'</b> \u2014 tap the line to correct:</div>';
   lines.forEach(function(l,i){
     html+='<button class="sigClear" style="width:100%;margin-bottom:6px;text-align:left" onclick="corrStepEdit('+i+')">'+l.label+'</button>';
@@ -8502,6 +8524,90 @@ function corrApplyCountGroup(){
   toast('Correction logged ✓');
   setTimeout(function(){corrApplyBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}},600);
   corrStepCountGroups(corrCfg._countGroupSection); // rebuild+redisplay the list with the new values, modal stays open for further corrections
+}
+// Manifold's flat picker - same shape as the generic fallback list in corrStepLines, but
+// every row opens the dedicated multi-field editor below (corrStepManifoldEdit) instead of
+// the generic single-field corrStepEdit, since Brand/Gas type/Scale/Tare are all correctable
+// here, not just Gas left (see corrLines' Manifold branch above).
+function corrStepManifoldList(){
+  var lines=corrCfg._lines;
+  var html='<div style="font-size:12px;color:var(--muted);margin-bottom:6px"><button class="sigClear" onclick="corrStepSection()">‹ Back</button> &nbsp; <b>Manifold</b> — tap the line to correct:</div>';
+  lines.forEach(function(l,i){
+    html+='<button class="sigClear" style="width:100%;margin-bottom:6px;text-align:left" onclick="corrStepManifoldEdit('+i+')">'+l.label+'</button>';
+  });
+  if(!lines.length)html+='<div class="histEmpty">No populated lines in this section.</div>';
+  document.getElementById('corrBody').innerHTML=html;
+}
+function corrStepManifoldEdit(i){
+  var l=corrCfg._lines[i];corrPick=l;
+  var r=l.row;
+  corrCfg._mfActive=i;
+  // If the row's current value isn't in the standard list (older/unusual data), prepend it
+  // as an extra option so opening this screen can never silently change a value nobody
+  // actually touched just because the select had to land on SOMETHING.
+  function opts(list,cur){
+    var o=(list.indexOf(cur)>-1)?list:[cur].concat(list);
+    return o.map(function(v){return '<option value="'+v+'"'+(v===cur?' selected':'')+'>'+v+'</option>';}).join('');
+  }
+  var byline=_stockCountByline(r,r.gasLeft);
+  var html='<div style="font-size:12px;color:var(--muted);margin-bottom:8px"><button class="sigClear" onclick="corrStepManifoldList()">‹ Back</button></div>'+
+    '<div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:8px">'+(r.stage||'Opening')+' · '+r.cyl+'</div>'+
+    (byline?'<div style="font-size:10px;color:var(--muted);margin-bottom:8px">'+byline+'</div>':'')+
+    '<label class="mLabel">Brand</label><select class="mField" id="corrMfBrand" data-orig="'+(r.brand||'')+'" style="margin-bottom:8px">'+opts(BRANDS,r.brand||'')+'</select>'+
+    '<label class="mLabel">Gas type</label><select class="mField" id="corrMfGasType" data-orig="'+(r.gasType||'')+'" style="margin-bottom:8px">'+opts(['LPG','Propane'],r.gasType||'')+'</select>'+
+    '<label class="mLabel">Scale weight (kg)</label><input class="mField" id="corrMfScale" type="number" inputmode="decimal" data-orig="'+r.scale+'" value="'+r.scale+'" oninput="_corrMfRecalc()" style="margin-bottom:8px">'+
+    '<label class="mLabel">Tare weight (kg)</label><input class="mField" id="corrMfTare" type="number" inputmode="decimal" data-orig="'+r.tare+'" value="'+r.tare+'" oninput="_corrMfRecalc()" style="margin-bottom:8px">'+
+    '<label class="mLabel">Gas left (auto)</label><input class="mField auto" id="corrMfGasLeft" readonly value="'+r.gasLeft+'">'+
+    '<textarea id="corrReason" placeholder="Reason for correction (required)" style="width:100%;min-height:60px;border:1px solid var(--line);border-radius:10px;padding:8px;font:inherit;box-sizing:border-box;margin-top:8px"></textarea>'+
+    '<button class="mDone" id="corrApplyBtn" style="margin-top:8px" onclick="corrApplyManifoldEdit()">Apply correction</button>';
+  document.getElementById('corrBody').innerHTML=html;
+}
+function _corrMfRecalc(){
+  var s=document.getElementById('corrMfScale'),t=document.getElementById('corrMfTare'),g=document.getElementById('corrMfGasLeft');
+  if(s&&t&&g)g.value=(num(s.value)-num(t.value));
+}
+function corrApplyManifoldEdit(){
+  if(corrApplyBusy)return;
+  var r=corrCfg._lines[corrCfg._mfActive].row;
+  var brandEl=document.getElementById('corrMfBrand'),typeEl=document.getElementById('corrMfGasType'),
+      scaleEl=document.getElementById('corrMfScale'),tareEl=document.getElementById('corrMfTare');
+  var changes=[]; // {field,oldVal,newVal}
+  if(brandEl.value!==brandEl.getAttribute('data-orig'))changes.push({field:'brand',oldVal:brandEl.getAttribute('data-orig'),newVal:brandEl.value});
+  if(typeEl.value!==typeEl.getAttribute('data-orig'))changes.push({field:'gasType',oldVal:typeEl.getAttribute('data-orig'),newVal:typeEl.value});
+  var scaleChanged=num(scaleEl.value)!==num(scaleEl.getAttribute('data-orig'));
+  var tareChanged=num(tareEl.value)!==num(tareEl.getAttribute('data-orig'));
+  if(scaleChanged)changes.push({field:'scale',oldVal:num(scaleEl.getAttribute('data-orig')),newVal:num(scaleEl.value)});
+  if(tareChanged)changes.push({field:'tare',oldVal:num(tareEl.getAttribute('data-orig')),newVal:num(tareEl.value)});
+  if(!changes.length){toast('Nothing changed',true);return;}
+  var reasonEl=document.getElementById('corrReason');
+  var reason=(reasonEl.value||'').trim();
+  if(!reason){toast('A reason is required',true);return;}
+  corrApplyBusy=true;
+  var btn=document.getElementById('corrApplyBtn');if(btn){btn.disabled=true;btn.style.opacity='.6';}
+  if(r){r._correctedFrom=r.gasLeft;r._correctedBy=corrAuth.name;r._correctedTime=nowStamp();}
+  // Apply every changed field to the row FIRST, so Gas left (scale-tare) reflects the FINAL
+  // combined state before any onApply call reads it - matters when both scale and tare are
+  // corrected together in one Apply (recomputing after each individually would use a
+  // half-updated tare/scale pair for the first one).
+  changes.forEach(function(c){
+    if(c.field==='brand')r.brand=c.newVal;
+    else if(c.field==='gasType')r.gasType=c.newVal;
+    else if(c.field==='scale')r.scale=c.newVal;
+    else if(c.field==='tare')r.tare=c.newVal;
+  });
+  if(scaleChanged||tareChanged)r.gasLeft=num(r.scale)-num(r.tare);
+  // Reuses each entry point's own onApply exactly as corrApplyCountGroup already does (once
+  // per changed field) - _openCapAdjustReal's onApply re-syncs the Manifold sheet row +
+  // audits (branching per sel.field so a Brand/Gas-type/Scale/Tare correction each push the
+  // right column), and correctSavedLine's onApply pushes into the shared
+  // day_closes.corrections + audits, unchanged.
+  changes.forEach(function(c){
+    var sel={tag:'Manifold '+(r.stage||'Opening')+' '+r.cyl+' '+c.field,section:corrCfg._section,row:r,field:c.field};
+    corrCfg.onApply(sel,c.oldVal,c.newVal,reason,corrAuth);
+  });
+  toast('Correction logged ✓');
+  setTimeout(function(){corrApplyBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}},600);
+  corrStepManifoldList(); // rebuild+redisplay the list with the new values, modal stays open for further corrections
 }
 function corrStepEdit(i){
   var l=corrCfg._lines[i];corrPick=l;
