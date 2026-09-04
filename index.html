@@ -3096,16 +3096,43 @@ function auditLog(action,detail,before,after,outcome){
     });
   }catch(e){}
 }
-// ===== GOOGLE SHEETS SYNC (Apps Script Web App) =====
+// ===== GOOGLE SHEETS SYNC (via sheets-sync Edge Function - see
+// docs/superpowers/specs/2026-09-04-sheets-token-proxy-design.md) =====
 // Configure once in Manage Users. URL + token stored locally.
 function setSyncCfg(url,token){try{localStorage.setItem('gs_sync_cfg',JSON.stringify({url:url||'',token:token||''}));}catch(e){}}
+// Every syncPush/syncFlush/apiPost call now goes through this - attaches the caller's own
+// Supabase session token (same convention _callVerifyHighRisk already uses) and posts to the
+// Edge Function normally (no mode:'no-cors' needed - the fetch is still genuinely cross-origin
+// to *.supabase.co, but CORS is fully controllable server-side since it's our own function
+// answering, unlike Google's Apps Script). Resolves on ANY completed HTTP response regardless
+// of status code, rejects only on a genuine network failure - a pure send, no interpretation
+// of the response - callers below decide what a given status means.
+function _sheetsSyncSend(url,payload){
+  return sb.auth.getSession().then(function(sres){
+    var token=sres.data&&sres.data.session&&sres.data.session.access_token;
+    return fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.assign({},payload,{callerToken:token}))});
+  });
+}
 function syncPush(type,rows){
   var cfg=syncCfg();
   if(!cfg.url||!rows||!rows.length)return;
-  var payload={token:cfg.token,type:type,rows:rows};
+  var payload={type:type,rows:rows};
   try{
-    fetch(cfg.url,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)})
-      .then(function(){syncFlush();})
+    _sheetsSyncSend(cfg.url,payload)
+      .then(function(res){
+        // A 401 here means OUR OWN auth layer rejected the call (missing/expired Supabase
+        // session on this device) - a failure mode that didn't exist under the old
+        // direct-to-Google fetch, which had no auth dependency at all. Treat it the same as a
+        // network failure so the row queues and retries, instead of a lapsed session silently
+        // dropping captured data - session expiry is exactly the kind of transient state this
+        // queue already exists to ride out. Every OTHER status is left alone (still just
+        // "resolved = assume sent"), matching the old opaque no-cors blind spot exactly -
+        // this is scoped only to the new auth-dependency gap this proxy introduced, not a
+        // general "start checking Apps Script's own response" improvement (explicitly out of
+        // scope this round - see the design doc).
+        if(res.status===401){syncQueue(payload);return;}
+        syncFlush();
+      })
       .catch(function(){syncQueue(payload);});
   }catch(e){syncQueue(payload);}
 }
@@ -3115,9 +3142,9 @@ function syncFlush(){
   var q;try{q=JSON.parse(localStorage.getItem('gs_sync_queue')||'[]');}catch(e){return;}
   if(!q.length)return;
   localStorage.setItem('gs_sync_queue','[]');
-  q.forEach(function(p){try{fetch(cfg.url,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(p)}).catch(function(){syncQueue(p);});}catch(e){syncQueue(p);}});
+  q.forEach(function(p){try{_sheetsSyncSend(cfg.url,p).then(function(res){if(res.status===401)syncQueue(p);}).catch(function(){syncQueue(p);});}catch(e){syncQueue(p);}});
 }
-// Real request/response POST (separate from syncPush's fire-and-forget 'no-cors' pushes above).
+// Real request/response POST (separate from syncPush's fire-and-forget pushes above).
 // Used by the Faulty Cylinders feature, which needs actual {ok,...} replies from the backend.
 function apiPost(action,extra){
   var cfg=syncCfg();
@@ -3126,10 +3153,9 @@ function apiPost(action,extra){
   // {type:...} at least gets the value echoed back, e.g. "unknown type: suppliersList").
   // Kept the function's own "action" parameter name/call sites unchanged - only the
   // wire field name changed here.
-  var payload={type:action,token:cfg.token,caller:operator};
+  var payload={type:action,caller:operator};
   if(extra){for(var k in extra){if(extra.hasOwnProperty(k))payload[k]=extra[k];}}
-  return fetch(cfg.url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)})
-    .then(function(r){return r.json();});
+  return _sheetsSyncSend(cfg.url,payload).then(function(r){return r.json();});
 }
 // Uploads each captured photo (data URI) to Drive via the shared 'photoUpload' backend
 // action, returns a comma-joined string of the links that succeeded. Never throws - a
@@ -9792,7 +9818,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 // deployment already confirmed serving the current v11 code. If you ever re-deploy via
 // "Manage deployments" again, double check which entry you're editing - there is more than
 // one "Untitled" deployment in that list, and only one of them is the one this app calls.
-function syncCfg(){return { url: 'https://script.google.com/macros/s/AKfycbx_L_PHF-pTKhbc3YMnWSEfhdV57zMMr6Sg7FLpxK2RsAchgzYtwMVzXNkQSU4CaSxG/exec', token: "GasSales2026" };}
+function syncCfg(){return { url: SUPABASE_URL+'/functions/v1/sheets-sync' };}
 
 // TEMPORARY, remote-debug-only. Only activates with ?debug=1 on the URL - invisible in
 // normal use. On-screen panel + captured errors so an issue can be diagnosed from a
