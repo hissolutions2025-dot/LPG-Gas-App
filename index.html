@@ -9434,9 +9434,20 @@ function _openDoc(doc){
   else toast('Allow popups to open the PDF',true);
 }
 function downloadCountPDF(){ _openDoc(buildCountDoc(_todaySrc())); }
+// Prefer the already-fetched SHARED record (set by _renderSavedDayBody right after
+// loadSavedDayShared() succeeded, currently on screen) over a fresh local-storage-only
+// lookup - loadSavedDay() only ever finds a day that was closed ON THIS DEVICE, so on
+// any OTHER device (the exact multi-device case Close Day exists to support - e.g. an
+// Owner closing the day on an Operator's phone, then checking their own phone) it
+// silently returns null even though the day genuinely closed and is sitting right there
+// in _currentSavedDayRec, already rendered. Matches correctSavedLine()'s existing pattern.
+function _savedDayRecFor(ds,br){
+  if(_currentSavedDayRec && _currentSavedDayRec.date===ds && (!br || _currentSavedDayRec.branch===br))return _currentSavedDayRec;
+  return loadSavedDay(ds,br);
+}
 // HISTORICAL: open a saved day's full count as a printable PDF
 function downloadCountPDFForDay(ds, br){
-  var rec=loadSavedDay(ds, br||histBranch||branch);
+  var rec=_savedDayRecFor(ds, br||histBranch||branch);
   if(!rec){toast('No saved count for that day',true);return;}
   _openDoc(buildCountDoc(_savedSrc(rec)));
 }
@@ -9531,7 +9542,7 @@ function uploadCountToDrive(src, silent){
 }
 // wrappers for buttons
 function shareTodayCount(){shareCount(_todaySrc());}
-function shareSavedCount(ds,br){var rec=loadSavedDay(ds,br);if(rec)shareCount(_savedSrc(rec));}
+function shareSavedCount(ds,br){var rec=_savedDayRecFor(ds,br);if(rec)shareCount(_savedSrc(rec));else toast('No saved count for that day',true);}
 
 /* ===== jsPDF (embedded, invoked only on share/upload) ===== */
 /** @license
