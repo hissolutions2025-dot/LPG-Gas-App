@@ -4491,6 +4491,12 @@ function _countTimeWarnSwitch(){
   toast('Switched to '+p.expected+' — review and commit when ready');
 }
 function cCommit(){
+  // Blocks a NEW commit into a day that's already closed - for THIS branch, whether closed
+  // on this device or (thanks to _adoptRemoteCloseIfNeeded, called on open/branch-switch)
+  // adopted from another device. Previously nothing checked this at all here, on any device
+  // including the one that actually closed the day - the only existing loadSavedDay() gates
+  // covered the separate same-day Adjust tool and some link visibility, never this path.
+  if(loadSavedDay(today,cBranch)){toast('Day already closed for '+cBranch+' - use the correction tool from Count History instead',true);return;}
   if(!_checkCountTimeWarning())return; // modal shown; it calls _cCommitReal() itself if continued
   _cCommitReal();
 }
@@ -5555,6 +5561,9 @@ async function rCommit(){
   // fully independent commit - duplicating every row (and re-uploading the same photo
   // again under a new Drive link). Button is also disabled below as a visible backstop.
   if(rCommitBusy)return;
+  // Same "day already closed, for this branch, on any device" block as cCommit()/capCommit() -
+  // see cCommit()'s comment for why this didn't exist anywhere before.
+  if(loadSavedDay(today,rBranch)){toast('Day already closed for '+rBranch+' - use the correction tool from Count History instead',true);return;}
   var mm=rMismatches();
   // require a reason per mismatched size; collect into rOverrides
   rOverrides={};
@@ -7387,6 +7396,9 @@ function _clearCommittedCapData(br){
 }
 async function capCommit(){
   if(capCommitBusy)return;
+  // Same "day already closed, for this branch, on any device" block as cCommit()/rCommit() -
+  // see cCommit()'s comment for why this didn't exist anywhere before.
+  if(loadSavedDay(today,capBranch)){toast('Day already closed for '+capBranch+' - use the correction tool from Count History instead',true);return;}
   if(!_checkCapTimeWarning())return; // modal shown (Manifold Opening/Closing only); it calls _capCommitReal() itself if continued
   await _capCommitReal();
 }
