@@ -155,6 +155,12 @@
   .mDone{width:100%;margin-top:10px;background:var(--ok);color:#fff;border:none;border-radius:12px;padding:14px;font-size:15px;font-weight:800;cursor:pointer;}
   .saveBtn{width:100%;margin-top:18px;background:var(--ok);color:#fff;border:none;border-radius:12px;padding:16px;font-size:16px;font-weight:800;cursor:pointer;letter-spacing:.3px;}
   .row2{display:flex;gap:10px;} .row2>div{flex:1;}
+  /* Pending Overrides card actions - shares the row three-across (Approve/Reject/Fix
+     reading) instead of .saveBtn's width:100%, which forced each one onto its own full-
+     width line inside the flex row. flex:1 with no wrap keeps all three on one row at any
+     phone width; padding/font sized down from .saveBtn's single-big-button treatment since
+     three of these side by side don't need to be that large. */
+  .ovActBtn{flex:1;min-width:0;border:none;border-radius:10px;padding:11px 4px;font-size:13px;font-weight:800;color:#fff;cursor:pointer;letter-spacing:.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   /* history */
   .histSection{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:14px;}
   .histSection h4{margin:0 0 10px;font-size:13px;color:var(--navy);text-transform:uppercase;letter-spacing:.5px;}
@@ -1298,10 +1304,10 @@ function renderPendingOverrides(){
       photoHtml+
       '<div style="font-size:11px;color:var(--muted);margin-top:4px">Submitted by '+(item.submitted_by_name_snapshot||'—')+' · '+(item.submitted_at?new Date(item.submitted_at).toLocaleString():'')+'</div>'+
       patternNote+
-      '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">'+
-        '<button class="saveBtn" onclick="resolvePendingOverride(\''+item.id+'\',\'APPROVED\')">Approve</button>'+
-        '<button class="saveBtn" style="background:var(--bad)" onclick="resolvePendingOverride(\''+item.id+'\',\'REJECTED\')">Reject</button>'+
-        (item.row_rid?('<button class="saveBtn" style="background:var(--steel)" onclick="_fixManifoldReading(\''+item.id+'\')">Fix reading</button>'):'')+
+      '<div style="display:flex;gap:8px;margin-top:10px">'+
+        '<button class="ovActBtn" style="background:var(--ok)" onclick="resolvePendingOverride(\''+item.id+'\',\'APPROVED\')">Approve</button>'+
+        '<button class="ovActBtn" style="background:var(--bad)" onclick="resolvePendingOverride(\''+item.id+'\',\'REJECTED\')">Reject</button>'+
+        (item.row_rid?('<button class="ovActBtn" style="background:var(--steel)" onclick="_fixManifoldReading(\''+item.id+'\')">Fix reading</button>'):'')+
       '</div></div>';
   });
   box.innerHTML=html;
