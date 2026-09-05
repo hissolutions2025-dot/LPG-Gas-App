@@ -4121,6 +4121,7 @@ function openCount(){
     }
     cBranch=branch||'Helderberg';
     _fetchLiveExpectedOpening(cBranch);
+    (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&cBranch===br&&document.getElementById('countGridView').classList.contains('active'))cRenderGrid();});})(cBranch);
     (function(br){_refreshCountMismatches(br).then(function(){if(cBranch===br&&document.getElementById('countGridView').classList.contains('active'))cRenderGrid();});})(cBranch);
     if(!cHasPrevClose(cBranch) && !store._noPrevAuth){
       store._noPrevAuth=true;
@@ -4137,6 +4138,7 @@ function openCount(){
 function cSetBranch(x){
   if(role==='Operator' && x!==branch){toast('Locked to '+branch,true);return;}
   cBranch=x;_fetchLiveExpectedOpening(cBranch);
+  (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&cBranch===br)cRenderGrid();});})(cBranch);
   (function(br){_refreshCountMismatches(br).then(function(){if(cBranch===br&&document.getElementById('countGridView').classList.contains('active'))cRenderGrid();});})(cBranch);
   applyBranchLock('cbr-',x);cRenderGrid();
 }
@@ -5329,11 +5331,13 @@ function openReceived(){
     document.getElementById('backBtn').style.display='block';
     rShow('recvGridView');rRenderGrid();rLoadSuppliers();window.scrollTo(0,0);
     _saveCurrentSection('received');
+    (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&rBranch===br)rRenderGrid();});})(rBranch);
   });
 }
 function rSetBranch(x){
   if(role==='Operator' && x!==branch){toast('Locked to '+branch,true);return;}
   rBranch=x;applyBranchLock('rbr-',x);rRenderGrid();rRenderSupplierSelect();rRestoreSupplierFields();
+  (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&rBranch===br)rRenderGrid();});})(rBranch);
 }
 
 // Three-state cell, same visual language as Count's cCellHtml (shares the same .cCell.
@@ -5760,6 +5764,7 @@ function openCap(type,opts){
   document.getElementById('capHint').textContent=c.hint;
   buildHeader(c);
   if(type==='manifold'){_fetchManifoldSlotCount(capBranch).then(renderGrid);_fetchManifoldPrevClose(capBranch);_fetchManifoldLiveRows(capBranch,today).then(renderGrid);} // re-renders again once live data lands; renderGrid() below runs immediately with whatever's cached/fallback
+  (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&capBranch===br)renderGrid();});})(capBranch);
   renderGrid();
   if(type==='private')loadPrivateSuppliers(); // populate the Supplier/redistributor dropdown
   show('capView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);
@@ -5794,6 +5799,7 @@ function capSetBranch(x){
   capBranch=x;applyBranchLock('capbr-',x);
   document.getElementById('hSub').textContent=capBranch;
   if(capType==='manifold'){_fetchManifoldSlotCount(x).then(renderGrid);_fetchManifoldPrevClose(x);_fetchManifoldLiveRows(x,today).then(renderGrid);}
+  (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&capBranch===br)renderGrid();});})(x);
   renderGrid(); // grid must re-render on the new branch, not keep showing the old branch's stale state - runs immediately with whatever's cached, the live fetch above re-renders again once it lands
   if(capType==='private')_refreshFillSupplierSelect();
 }
@@ -9057,6 +9063,44 @@ function loadSavedDayShared(date,br){
     }
     return loadSavedDay(date,br); // pre-migration day, local only
   }).catch(function(){return loadSavedDay(date,br);});
+}
+// If ANOTHER device already closed TODAY for this branch, this device has no way to know
+// it yet - loadSavedDay() only ever checks THIS device's own localStorage, and Close Day
+// only clears local state on the device that actually ran it (see closeDay()/
+// _closeDayFinalize()). Left unhandled, a second device just keeps showing/allowing
+// captures against a day that's already been finalised and snapshotted elsewhere - reported
+// live: an Owner closed Helderberg's day on an Operator's phone, then found the Manifold
+// screen on their own phone still showing that day's cylinders as if nothing had happened.
+//
+// Called from every capture screen's open/branch-switch entry point (openCount/cSetBranch,
+// openReceived/rSetBranch, openCap/capSetBranch) so a stale device "catches up" the moment
+// it actually looks at that branch. Cheap no-op (no network call) once this device already
+// knows locally - safe to call on every open/branch-switch, not just once per session.
+function _adoptRemoteCloseIfNeeded(br){
+  if(loadSavedDay(today,br))return Promise.resolve(false); // already known locally
+  return sb.from('day_closes').select('*').eq('branch',br).eq('date',today).maybeSingle().then(function(res){
+    if(res.error||!res.data)return false;
+    if(loadSavedDay(today,br))return false; // adopted by a concurrent call while this one was in flight
+    var d=res.data;
+    var rec={date:d.date,branch:d.branch,operator:d.authoriser_name,closedAt:d.closed_at,closedTs:new Date(d.closed_at).getTime(),
+      store:d.store_snapshot,sig:{op:d.signatures.op,mgr:d.signatures.mgr},
+      signedBy:{op:d.signatures.signedByOp,mgr:d.signatures.signedByMgr},
+      corrections:d.corrections||[],_sharedId:d.id};
+    try{
+      localStorage.setItem(histKey(today,br),JSON.stringify(rec));
+      var idx=[];try{idx=JSON.parse(localStorage.getItem('gs_hist_index')||'[]');}catch(e){}
+      var k=histKey(today,br);if(idx.indexOf(k)<0){idx.push(k);localStorage.setItem('gs_hist_index',JSON.stringify(idx));}
+    }catch(e){}
+    // This device's own local capture rows for that branch are now stale - the just-adopted
+    // snapshot is the real, authoritative copy. Same filter shape _closeDayFinalize() already
+    // uses on the closing device, applied here on the catching-up device instead.
+    ['count','manifold','refill','private','received'].forEach(function(k2){
+      store[k2]=(store[k2]||[]).filter(function(r){return r.branch&&r.branch!==br;});
+    });
+    saveWorkingStore();
+    toast(br+'’s day for '+today+' was already closed on another device — view it in Count History.',true);
+    return true;
+  }).catch(function(e){console.error('_adoptRemoteCloseIfNeeded failed for '+br+':',e&&e.message);return false;});
 }
 // ===== history tabs + calendar =====
 var calYear,calMonth2,calSelDate=null;
