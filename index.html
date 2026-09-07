@@ -4143,6 +4143,7 @@ function openCount(){
     _fetchLiveExpectedOpening(cBranch);
     (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&cBranch===br&&document.getElementById('countGridView').classList.contains('active'))cRenderGrid();});})(cBranch);
     (function(br){_refreshCountMismatches(br).then(function(){if(cBranch===br&&document.getElementById('countGridView').classList.contains('active'))cRenderGrid();});})(cBranch);
+    (function(br){_refreshSharedCounts(br).then(function(){if(cBranch===br&&document.getElementById('countGridView').classList.contains('active'))cRenderGrid();});})(cBranch);
     if(!cHasPrevClose(cBranch) && !store._noPrevAuth){
       store._noPrevAuth=true;
       auditLog('Count started (no auth required)','No previous day close for '+cBranch+' - password check temporarily disabled');
@@ -4160,6 +4161,7 @@ function cSetBranch(x){
   cBranch=x;_fetchLiveExpectedOpening(cBranch);
   (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&cBranch===br)cRenderGrid();});})(cBranch);
   (function(br){_refreshCountMismatches(br).then(function(){if(cBranch===br&&document.getElementById('countGridView').classList.contains('active'))cRenderGrid();});})(cBranch);
+  (function(br){_refreshSharedCounts(br).then(function(){if(cBranch===br&&document.getElementById('countGridView').classList.contains('active'))cRenderGrid();});})(cBranch);
   applyBranchLock('cbr-',x);cRenderGrid();
 }
 function cSetCT(x){cCT=x;['Opening','Closing'].forEach(function(c){document.getElementById('cct-'+c).classList.toggle('on',c===x);});cRenderGrid();}
@@ -4275,6 +4277,19 @@ function cOpenDetail(sz,side){
       c[side]=_committedNow.map(function(r){return {brand:r.brand,qty:num(r.qty),note:r.note||'',_fromCommitted:true,
         _operator:r._operator,_time:r._time,_correctedFrom:r._correctedFrom,
         _correctedBy:r._correctedBy,_correctedTime:r._correctedTime};});
+      // Tap-time heads-up: who already counted this cell, before the detail screen even
+      // opens. The byline further down (_stockCountByline, per-line in cRenderDetail)
+      // already carries this, but only once you're already inside editing it - this
+      // surfaces it right at the tap so it isn't missed. Names+times deduped since every
+      // brand line on a cell is usually captured by the same person/moment.
+      var _who=[];var _seen={};
+      _committedNow.forEach(function(r){
+        if(!r._operator)return;
+        var k=r._operator+'|'+(r._time||'');
+        if(_seen[k])return;_seen[k]=true;
+        _who.push(r._operator+(r._time?' · '+r._time:''));
+      });
+      if(_who.length)toast('Already counted by '+_who.join(', '));
     } else {
       c[side].push({brand:cBrands(side)[0],qty:''});
     }
@@ -4582,6 +4597,74 @@ function _reconcileSharedCountRows(sharedRows){
   store.count=store.count.filter(function(r){
     return !touchedKeys[(r.branch||'')+'|'+r.countType+'|'+r.size+'|'+r.state+'|'+r.brand];
   }).concat(localRows);
+}
+// Pulls today's committed stock_counts rows for br from the shared table into store.count
+// (via _reconcileSharedCountRows), same fetch openCountAdjust already did on its own open.
+// Stock Count's own grid (openCount/cSetBranch) never did this - it only ever showed whatever
+// this device already had locally, so an Opening/Closing count committed on another device
+// (e.g. the operator's phone) stayed invisible on this one until something else (like opening
+// the Adjust tool) happened to pull it in. Returns a promise so callers can re-render once it
+// resolves; resolves even on failure (silent, non-blocking - matches _fetchLiveExpectedOpening's
+// own graceful-degradation, this one just isn't important enough to toast about like Adjust's is).
+function _refreshSharedCounts(br){
+  return sb.from('stock_counts').select('*').eq('branch',br).eq('date',today).then(function(res){
+    if(!res.error && res.data && res.data.length)_reconcileSharedCountRows(res.data);
+  }).catch(function(e){console.error('stock_counts live refresh failed:',e&&e.message);});
+}
+// ===== Generic live cross-device mirror for Received/Refill/Private/Residual =====
+// Same pattern as manifold_live_rows (see docs/superpowers/specs/2026-08-31-manifold-live-
+// cross-device-data-design.md) generalized with a `kind` column instead of one table per
+// capture type, since these four share the exact same additive-event/JSONB-row shape. See
+// docs/superpowers/specs/2026-09-07-remaining-live-cross-device-data-design.md.
+function _pushCaptureLiveRows(kind,rows,br){
+  if(!rows||!rows.length)return;
+  var payload=rows.map(function(row){
+    return {kind:kind, row_id:row._rid||null, branch:br, date:row._date||today, row:row, committed_by:currentProfile&&currentProfile.id};
+  });
+  sb.from('capture_live_rows').insert(payload).then(function(res){
+    if(res.error){console.error('_pushCaptureLiveRows('+kind+') failed:',res.error.message);_captureLiveQueue(payload);}
+    else{_captureLiveFlush();}
+  },function(e){console.error('_pushCaptureLiveRows('+kind+') rejected:',e&&e.message);_captureLiveQueue(payload);});
+}
+function _captureLiveQueue(payload){
+  try{
+    var q=JSON.parse(localStorage.getItem('gs_capturelive_queue')||'[]');
+    q.push(payload);
+    localStorage.setItem('gs_capturelive_queue',JSON.stringify(q.slice(-200)));
+  }catch(e){}
+}
+function _captureLiveFlush(){
+  var q;try{q=JSON.parse(localStorage.getItem('gs_capturelive_queue')||'[]');}catch(e){return;}
+  if(!q.length)return;
+  localStorage.setItem('gs_capturelive_queue','[]');
+  q.forEach(function(payload){
+    sb.from('capture_live_rows').insert(payload).then(function(res){
+      if(res.error)_captureLiveQueue(payload);
+    },function(e){_captureLiveQueue(payload);});
+  });
+}
+// Fetch-on-open: pulls kind+branch+date's live rows into store[storeKey], same merge
+// _fetchManifoldLiveRows already does (dedup by _rid, preserve any not-yet-synced local
+// pending row not yet visible in the live table, leave every other branch/date untouched).
+function _fetchCaptureLiveRows(kind,storeKey,br,date){
+  return sb.from('capture_live_rows').select('row').eq('kind',kind).eq('branch',br).eq('date',date).then(function(res){
+    if(res.error){console.error('_fetchCaptureLiveRows('+kind+') failed for '+br+'/'+date+':',res.error.message);return;}
+    var liveRows=(res.data||[]).map(function(r){var row=r.row||{};row._committed=true;return row;});
+    var _seenRid={};
+    liveRows=liveRows.filter(function(r){
+      if(!r._rid)return true;
+      if(_seenRid[r._rid])return false;
+      _seenRid[r._rid]=true;
+      return true;
+    });
+    var liveRids={};liveRows.forEach(function(r){if(r._rid)liveRids[r._rid]=true;});
+    var brField=function(r){return r.branch||r.Branch;};
+    var localPending=(store[storeKey]||[]).filter(function(r){
+      return brField(r)===br && (r._date||today)===date && r._committed && r._rid && !liveRids[r._rid];
+    });
+    var others=(store[storeKey]||[]).filter(function(r){return !(brField(r)===br && (r._date||today)===date);});
+    store[storeKey]=others.concat(liveRows).concat(localPending);
+  },function(e){console.error('_fetchCaptureLiveRows('+kind+') rejected for '+br+'/'+date+':',e&&e.message);});
 }
 function _cCommitReal(){
   // Build this commit's fresh rows from cData, and remember exactly which lines (branch +
