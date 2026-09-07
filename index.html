@@ -2300,6 +2300,7 @@ function openResidual(){
   renderResidualCommitted();
   show('residualView');window.scrollTo(0,0);
   _saveCurrentSection('residual');
+  (function(br){_fetchCaptureLiveRows('residual','residual',br,today).then(function(){if(residualBranch===br)renderResidualCommitted();});})(residualBranch);
 }
 function residualSetBranch(b){
   if(role==='Manager' && (_curUser().branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
@@ -2307,6 +2308,7 @@ function residualSetBranch(b){
   residualBranch=b;applyBranchLock('rgbr-',b);
   residualResetForm(); // switching branches starts a fresh cylinder entry - same as Faulty capture
   renderResidualCommitted();
+  (function(br){_fetchCaptureLiveRows('residual','residual',br,today).then(function(){if(residualBranch===br)renderResidualCommitted();});})(residualBranch);
 }
 // Custom themed dropdown (.fieldDD/.fieldDDMenu - a reusable pattern, not Residual-specific)
 // instead of a native <select> with <optgroup>, which rendered inconsistently and looked
@@ -2492,9 +2494,10 @@ async function residualSubmit(){
     // "what this device sent today", cleared naturally the same way every other section's
     // working-day data is (new day/branch working-store key).
     var committedRows=residualList.map(function(r){
-      return {Branch:r.Branch,Brand:r.Brand,Size:r.Size,GasType:r.GasType,CylScale:r.CylScale,CylTare:r.CylTare,Residual:r.Residual,Note:r.Note,_operator:operator,_date:today,_committed:true};
+      return {Branch:r.Branch,Brand:r.Brand,Size:r.Size,GasType:r.GasType,CylScale:r.CylScale,CylTare:r.CylTare,Residual:r.Residual,Note:r.Note,_operator:operator,_date:today,_committed:true,_rid:_rid()};
     });
     store.residual=(store.residual||[]).concat(committedRows);
+    _pushCaptureLiveRows('residual',committedRows,committedRows[0]&&committedRows[0].Branch);
     saveWorkingStore();
     residualList=[];
     residualClearDraft();
