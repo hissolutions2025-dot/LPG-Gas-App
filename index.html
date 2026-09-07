@@ -8170,6 +8170,30 @@ function applyManifoldOverride(){
   document.getElementById('capModal').classList.remove('show');
   closeDay();
 }
+// Day Completeness gate override - Owner only. The gate itself (_dayCompleteness, checked in
+// closeDay() below) is a deliberate hard block per explicit request ("Manifold opening stock
+// count is a prerequisite to daily operations and must be done") - this is the accountable
+// escape valve for a genuine exception (e.g. today's Manifold genuinely wasn't captured by
+// anyone), same shape as sealBoundaryOverride()/applyManifoldOverride() above: Owner's own
+// password + a mandatory reason, both logged. Sets store._dayCompletenessOverride (branch+date
+// scoped, same one-flag-then-recurse pattern applyManifoldOverride already uses) so closeDay()'s
+// own re-entry after this resolves doesn't re-prompt for the same branch/day.
+function _dayCompletenessOverride(br,missingSummary){
+  if(role!=='Owner'){toast('Only an Owner can override Day Completeness - '+missingSummary,true);return Promise.resolve(false);}
+  return askPassword('Override Day Completeness',br+"'s day can't close - "+missingSummary+'.\n\nThis is logged. Enter YOUR password to authorise closing anyway:').then(function(pw){
+    if(pw===null)return false; // cancelled
+    return _verifyPersonPassword(operator,pw,function(p){return p.level==='Owner';},'Owner authorisation failed').then(function(me){
+      if(!me){toast('Wrong Owner password',true);return false;}
+      var reason=prompt('Reason for closing without '+missingSummary+' (required):');
+      if(!reason||!reason.trim()){toast('A reason is required',true);return false;}
+      store._dayCompletenessOverride={branch:br,date:today,missing:missingSummary,reason:reason.trim(),by:me.name,at:nowStamp()};
+      auditLog('Day Completeness override',br+' — closed without '+missingSummary+' — '+reason.trim(),null,null,'success',br);
+      syncPush('Adjustments',[{date:today||'',branch:br,Kind:'DAY_COMPLETENESS_OVERRIDE',Line:missingSummary,From:'',To:'',Reason:reason.trim(),By:me.name}]);
+      toast('Override authorised by '+me.name);
+      return true;
+    });
+  });
+}
 function closeDay(_skipPendingOverridesRefresh,_dayActivitySummary){
   var total=Object.keys(store).filter(function(k){return k[0]!=='_';}).reduce(function(a,k){return a+(Array.isArray(store[k])?store[k].length:0);},0);
   if(total===0){toast('Nothing captured to close the day',true);return;}
@@ -8214,13 +8238,21 @@ function closeDay(_skipPendingOverridesRefresh,_dayActivitySummary){
   // function). Derived from real data, same as every other gate here - see _dayCompleteness()'s
   // own comment for why this is scoped to only these two sections.
   var _compl=_dayCompleteness(branch);
-  if(!_compl.countOpeningDone||!_compl.countClosingDone){
-    toast('Cannot close: Stock Count '+(!_compl.countOpeningDone?'Opening':'Closing')+' has not been counted yet for '+branch+' today.',true);
-    return;
-  }
-  if(_compl.manifoldMissing.length){
-    toast('Cannot close: Manifold '+_compl.manifoldMissing.join(', ')+' still needs a reading (Opening and/or Closing) before '+branch+'\'s day can close.',true);
-    return;
+  var _complMissingParts=[];
+  if(!_compl.countOpeningDone)_complMissingParts.push('Stock Count Opening');
+  if(!_compl.countClosingDone)_complMissingParts.push('Stock Count Closing');
+  if(_compl.manifoldMissing.length)_complMissingParts.push('Manifold '+_compl.manifoldMissing.join(', '));
+  if(_complMissingParts.length){
+    var _co=store._dayCompletenessOverride;
+    var _alreadyOverridden=(_co && _co.branch===branch && _co.date===today);
+    if(!_alreadyOverridden){
+      (function(br,missingSummary){
+        _dayCompletenessOverride(br,missingSummary).then(function(ok){
+          if(ok)closeDay(_skipPendingOverridesRefresh,_dayActivitySummary);
+        });
+      })(branch,_complMissingParts.join(' · '));
+      return;
+    }
   }
   // #4c BLOCK: any Manifold reading still awaiting remote Manager/Owner approval. Unlike the
   // opening-count-mismatch check above (whose cache-staleness risk is self-healing via a
@@ -8400,7 +8432,7 @@ function _closeDayFinalize(bal){
   store._startedBy=null;store._startedAt=null;updateBadges();
   auditLog('Day closed','Day closed — '+branch+' ('+today+') · authorised by '+(store._closeAuth||'?')+' · signed: Op='+(sigSignedBy.sigOp||'?')+', Mgr='+(sigSignedBy.sigMgr||'?')+((bal.hasData&&!bal.balanced)?(' · manifold imbalance overridden ('+bal.diff.toFixed(2)+'kg): '+(store._manifoldOverride||'')):''));
   toast('Day closed, signed & saved ✓');
-  store._manifoldOverride=null;store._closeAuth=null;store._extraCountAuth=null;store._openMismatch=[];store._noPrevAuth=null;
+  store._manifoldOverride=null;store._closeAuth=null;store._extraCountAuth=null;store._openMismatch=[];store._noPrevAuth=null;store._dayCompletenessOverride=null;
   cTries={};cLocked={};
   sigUnlocked={sigOp:false,sigMgr:false};sigSignedBy={sigOp:'',sigMgr:''};sigData={sigOp:'',sigMgr:''};
 }
@@ -9899,7 +9931,8 @@ var EXCEPTION_ACTION_GROUPS=[
   {label:'Historical Corrections',match:function(a){return a==='Historical count corrected';}},
   {label:'Seal Voids &amp; Boundary Overrides',match:function(a){return a==='Seal voided'||a==='Seal boundary override';}},
   {label:'Manifold Weight Overrides &amp; Flags',match:function(a){return a==='Manifold weight override'||a==='Manifold tare mismatch'||a==='Manifold Opening discipline mismatch'||a==='Manifold rejected reading corrected';}},
-  {label:'Faulty Cylinders',match:function(a){return a==='Faulty cylinder logged'||a==='Faulty cylinder updated';}}
+  {label:'Faulty Cylinders',match:function(a){return a==='Faulty cylinder logged'||a==='Faulty cylinder updated';}},
+  {label:'Day Completeness Overrides',match:function(a){return a==='Day Completeness override';}}
 ];
 function _groupExceptions(rows){
   var groups=[];
