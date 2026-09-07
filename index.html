@@ -5889,6 +5889,7 @@ function openCap(type,opts){
   document.getElementById('capHint').textContent=c.hint;
   buildHeader(c);
   if(type==='manifold'){_fetchManifoldSlotCount(capBranch).then(renderGrid);_fetchManifoldPrevClose(capBranch);_fetchManifoldLiveRows(capBranch,today).then(renderGrid);} // re-renders again once live data lands; renderGrid() below runs immediately with whatever's cached/fallback
+  if(type==='refill'||type==='private'){_fetchCaptureLiveRows(type,type,capBranch,today).then(renderGrid);}
   (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&capBranch===br)renderGrid();});})(capBranch);
   renderGrid();
   if(type==='private')loadPrivateSuppliers(); // populate the Supplier/redistributor dropdown
@@ -5924,6 +5925,7 @@ function capSetBranch(x){
   capBranch=x;applyBranchLock('capbr-',x);
   document.getElementById('hSub').textContent=capBranch;
   if(capType==='manifold'){_fetchManifoldSlotCount(x).then(renderGrid);_fetchManifoldPrevClose(x);_fetchManifoldLiveRows(x,today).then(renderGrid);}
+  if(capType==='refill'||capType==='private'){_fetchCaptureLiveRows(capType,capType,x,today).then(renderGrid);}
   (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&capBranch===br)renderGrid();});})(x);
   renderGrid(); // grid must re-render on the new branch, not keep showing the old branch's stale state - runs immediately with whatever's cached, the live fetch above re-renders again once it lands
   if(capType==='private')_refreshFillSupplierSelect();
@@ -7602,8 +7604,12 @@ async function _capCommitReal(){
       // record each seal against the active roll history (dedupe handled inside)
       freshRows.filter(function(r){return r.seal;}).forEach(function(r){sealRecordUse(capBranch,num(r.seal));});
       syncPush('Refills',syncRowsRefill(freshRows,capBranch));
+      _pushCaptureLiveRows('refill',freshRows,capBranch);
     }
-    else if(capType==='private')syncPush('Private',syncRowsPrivate(freshRows,capBranch));
+    else if(capType==='private'){
+      syncPush('Private',syncRowsPrivate(freshRows,capBranch));
+      _pushCaptureLiveRows('private',freshRows,capBranch);
+    }
     _clearCommittedCapData(capBranch);
     clearDraft(capType,capBranch);draftAddCount=0;
     saveWorkingStore();auditLog(c.title+' committed',freshRows.length+' entry(ies) — '+capBranch+(mmM.length?(' · '+mmM.length+' manifold mismatch(es)'):''));
