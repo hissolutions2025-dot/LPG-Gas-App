@@ -10013,12 +10013,14 @@ function buildCountDocAsync(src){
         if(num(r.emptyOut)>0)g.ret[r.brand]=(g.ret[r.brand]||0)+num(r.emptyOut);
         if(r.overrideReason&&!g.reason)g.reason=r.overrideReason;
       });
+      var grandFullIn=0, grandEmptyOut=0;
       var recvTrs=dOrder.map(function(key){
         var g=dGroups[key];
         var ref=[g.invoiceNo?('Inv '+g.invoiceNo):'',g.deliveryNote?('DN '+g.deliveryNote):'',g.supplier||''].filter(Boolean).join(' \u00b7 ');
         var brands=Object.keys(g.recv).concat(Object.keys(g.ret).filter(function(b){return g.recv[b]===undefined;}));
         var fullTot=Object.keys(g.recv).reduce(function(s,b){return s+g.recv[b];},0);
         var emptyTot=Object.keys(g.ret).reduce(function(s,b){return s+g.ret[b];},0);
+        grandFullIn+=fullTot; grandEmptyOut+=emptyTot;
         var diff=fullTot-emptyTot;
         var lineTrs=brands.map(function(b){
           return '<tr><td class="sz">'+g.size+'</td><td>'+b+'</td><td class="n">'+(g.recv[b]||0)+'</td><td class="n">'+(g.ret[b]||0)+'</td><td colspan="3" style="font-size:11px;color:#777">'+ref+'</td></tr>';
@@ -10029,7 +10031,8 @@ function buildCountDocAsync(src){
           '<td colspan="3" style="color:'+(diff!==0?'#C0392B':'#1E8449')+'">'+(diff===0?'\u2713 balanced':((diff>0?'+':'')+diff+' \u2014 '+(diff>0?'more full in than empty out':'more empty out than full in')+(g.reason?(' \u2014 '+g.reason):'')))+'</td></tr>';
         return lineTrs+balRow;
       }).join('');
-      rows+='<h2>Stock Received</h2><table><tr><th>Size</th><th>Brand</th><th>Full In</th><th>Empty Out</th><th colspan="3">Delivery ref</th></tr>'+recvTrs+'</table>'+
+      var recvGrandRow='<tr style="background:var(--navy);color:#fff;font-weight:800"><td colspan="2">Total \u2014 all deliveries</td><td class="n">'+grandFullIn+'</td><td class="n">'+grandEmptyOut+'</td><td colspan="3"></td></tr>';
+      rows+='<h2>Stock Received</h2><table><tr><th>Size</th><th>Brand</th><th>Full In</th><th>Empty Out</th><th colspan="3">Delivery ref</th></tr>'+recvTrs+recvGrandRow+'</table>'+
       '<p style="font-size:12px;color:#555;margin:4px 0 0"><b>Total gas received (Full in only): \u2248 '+_receivedFullInKg(st,_b).toFixed(2)+' kg</b></p>';
       var recvPhotos=[];
       recvRows.forEach(function(r){(Array.isArray(r.photos)?r.photos:[]).forEach(function(p){if(recvPhotos.indexOf(p)===-1)recvPhotos.push(p);});});
