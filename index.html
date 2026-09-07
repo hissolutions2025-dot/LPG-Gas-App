@@ -1427,7 +1427,7 @@ function _resolvePendingOverrideFinish(id,decision,note,auth,item){
       return;
     }
     _updateManifoldLiveRowOverrideStatus(item.row_rid,decision,note);
-    auditLog('Manifold override '+decision.toLowerCase(),(item.branch||'')+' — '+(item.cyl||'')+' — '+(item.kind||'')+' — by '+auth.name+(note?(' — '+note):''));
+    auditLog('Manifold override '+decision.toLowerCase(),(item.branch||'')+' — '+(item.cyl||'')+' — '+(item.kind||'')+' — by '+auth.name+(note?(' — '+note):''),null,null,'success',item.branch);
     toast('Override '+decision.toLowerCase()+' ✓');
     _manifoldPendingOverrides=_manifoldPendingOverrides.filter(function(x){return x.id!==id;});
     _updatePendingOverridesBadge();
@@ -2181,6 +2181,7 @@ function faultySubmit(){
   apiPost('faultyLog',{row:row}).then(function(res){
     if(!res||!res.ok){toast((res&&res.msg)||'Could not log faulty cylinder',true);return;}
     toast('Faulty cylinder logged'+(res.id?(' — '+res.id):''));
+    auditLog('Faulty cylinder logged',row.Branch+' — '+row.Brand+' '+row.Size+' ×'+row.Qty+' ('+row.State+') — '+row.FaultReason+(row.FaultDetail?(': '+row.FaultDetail):'')+(res.id?(' — '+res.id):''),null,null,'success',row.Branch);
     faultyResetForm();
   }).catch(function(){toast('Network error — check your connection',true);})
   .finally(function(){setTimeout(function(){faultySubmitBusy=false;if(fsBtn){fsBtn.disabled=false;fsBtn.style.opacity='1';}},600);});
@@ -2250,9 +2251,15 @@ function faultySaveRow(id){
   var statusEl=[].slice.call(document.querySelectorAll('.frStatus')).filter(function(el){return el.getAttribute('data-id')===id;})[0];
   var upliftEl=[].slice.call(document.querySelectorAll('.frUplift')).filter(function(el){return el.getAttribute('data-id')===id;})[0];
   var returnEl=[].slice.call(document.querySelectorAll('.frReturn')).filter(function(el){return el.getAttribute('data-id')===id;})[0];
-  apiPost('faultyUpdate',{id:id,status:statusEl?statusEl.value:'',upliftDN:upliftEl?upliftEl.value.trim():'',returnDN:returnEl?returnEl.value.trim():''}).then(function(res){
+  var newStatus=statusEl?statusEl.value:'';
+  // Captured before the update - only meaningful for the audit line's detail text, the
+  // actual row being edited (its Brand/Size/prior Status) so the entry reads on its own
+  // without needing to cross-reference the id against the register elsewhere.
+  var _row=faultyRegisterRows.filter(function(r){return (r.id||r.ID)===id;})[0]||{};
+  apiPost('faultyUpdate',{id:id,status:newStatus,upliftDN:upliftEl?upliftEl.value.trim():'',returnDN:returnEl?returnEl.value.trim():''}).then(function(res){
     if(!res||!res.ok){toast((res&&res.msg)||'Could not update',true);return;}
     toast('Saved');
+    auditLog('Faulty cylinder updated',(_row.Branch||faultyRegisterBranch)+' — '+(_row.Brand||'')+' '+(_row.Size||'')+' — '+(_row.Status||'?')+' → '+newStatus+' — '+id,null,null,'success',_row.Branch||faultyRegisterBranch);
     faultyLoadRegister();
   }).catch(function(){toast('Network error — check your connection',true);});
 }
@@ -3082,7 +3089,13 @@ function nowStamp(){var d=new Date();function p(n){return (n<10?'0':'')+n;}retur
 // carry risk:'high' so they can be filtered/alerted on later without a
 // schema change.
 var AUDIT_HIGH_RISK_ACTIONS=['Seal voided','Seal boundary override','Historical count corrected','Opening mismatch adjusted','Day closed','User deleted','User edited','User created','Manifold mismatch adjusted'];
-function auditLog(action,detail,before,after,outcome){
+// branchOverride: for an action about a DIFFERENT branch than the one currently selected
+// (e.g. a Manager on Helderberg resolving a Kleinmond override) - without this, the branch
+// column always recorded the actor's own selected branch regardless of which branch the
+// event was actually about, which would silently misattribute or drop it from any
+// branch-filtered report (the Close Day report's per-branch "exceptions today" query).
+// Every other call site is unaffected - omitting it keeps the exact existing behaviour.
+function auditLog(action,detail,before,after,outcome,branchOverride){
   try{
     if(!operator||!currentProfile){return;} // nothing to attribute this to - pre-login failures are logged separately, via the log-failed-login Edge Function called from doLogin()
     var risk=(AUDIT_HIGH_RISK_ACTIONS.indexOf(action)>-1||outcome==='failure')?'high':'routine';
@@ -3090,7 +3103,7 @@ function auditLog(action,detail,before,after,outcome){
       user_id:currentProfile.id,
       user_name_snapshot:operator,
       role_snapshot:role||'',
-      branch:branch||null,
+      branch:branchOverride||branch||null,
       action:action,
       detail:detail||'',
       before:(before!==undefined?before:null),
@@ -6002,7 +6015,7 @@ function _saveManifoldRejectedRecheck(item){
   row._overrideStatus=null;row._overrideResolutionNote=null;
   saveWorkingStore();
   syncPush('Adjustments',[{date:today,branch:capBranch,Kind:'RejectedOverrideCorrection',Line:(row.stage||'Opening')+' '+item+' gasLeft',From:oldGasLeft,To:row.gasLeft,Reason:'Operator re-weigh after rejection',By:operator+' ('+role+')'}]);
-  auditLog('Manifold rejected reading corrected',capBranch+' — '+item+' — '+(row.stage||'Opening')+' — gas left '+oldGasLeft.toFixed(2)+'kg → '+row.gasLeft.toFixed(2)+'kg');
+  auditLog('Manifold rejected reading corrected',capBranch+' — '+item+' — '+(row.stage||'Opening')+' — gas left '+oldGasLeft.toFixed(2)+'kg → '+row.gasLeft.toFixed(2)+'kg',null,null,'success',capBranch);
   if(row._rid){
     adjustSheetRow('Manifold',row._rid,{GasLeft:row.gasLeft,Scale:row.scale});
     _updateManifoldLiveRowOverrideStatus(row._rid,null,'');
@@ -6049,7 +6062,7 @@ function _openCapAdjustReal(jumpToRid){
     onApply:function(sel,oldVal,newVal,reason,auth){
       syncPush('Adjustments',[{date:today,branch:capBranch,Kind:'SameDay'+sectionName+'Adjustment',Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:auth.name+' ('+auth.level+')'}]);
       saveWorkingStore();
-      auditLog(c.title+' adjusted (same day)',capBranch+' '+sel.tag+': '+oldVal+' → '+newVal+' by '+auth.name+' - '+reason,{was:oldVal},{now:newVal});
+      auditLog(c.title+' adjusted (same day)',capBranch+' '+sel.tag+': '+oldVal+' → '+newVal+' by '+auth.name+' - '+reason,{was:oldVal},{now:newVal},'success',capBranch);
       // Also correct the ORIGINAL row on its actual sheet tab, not just the local copy +
       // the Adjustments side-note - see adjustSheetRow(). Manifold can now correct Brand,
       // Gas type, Scale, or Tare individually (corrApplyManifoldEdit calls this once per
@@ -6144,7 +6157,7 @@ function openCountAdjust(){
       onApply:function(sel,oldVal,newVal,reason,auth){
         syncPush('Adjustments',[{date:today,branch:_adjBranch,Kind:'SameDayCountAdjustment',Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:auth.name+' ('+auth.level+')'}]);
         saveWorkingStore();
-        auditLog('Stock Count adjusted (same day)',_adjBranch+' '+sel.tag+': '+oldVal+' → '+newVal+' by '+auth.name+' - '+reason,{was:oldVal},{now:newVal});
+        auditLog('Stock Count adjusted (same day)',_adjBranch+' '+sel.tag+': '+oldVal+' → '+newVal+' by '+auth.name+' - '+reason,{was:oldVal},{now:newVal},'success',_adjBranch);
         var rowsForBn=syncRowsCount(store.count.filter(function(r){return r.branch===_adjBranch;}),_adjBranch);
         syncPush('Counts', rowsForBn.map(function(x){x._replaceKey=(x.date+'|'+x.branch);return x;}));
         // Push just the corrected line, not the whole day - unlike the Sheets replace-set sync
@@ -7764,7 +7777,12 @@ function manifoldBalance(){
   var removed=sumStage('Removed');
   var gasOut=opening+added-closing-removed;
   var refKg=store.refill.filter(function(r){return !r.branch||!branch||r.branch===branch;}).reduce(function(a,r){return a+num(r.pumped);},0);
-  var privKg=store.private.filter(function(r){return !r.branch||!branch||r.branch===branch;}).reduce(function(a,r){return a+num(r.pumped);},0);
+  // Only "Filled by: Us" - a Private Refill filled at a SUPPLIER never drew gas from this
+  // branch's own manifold, so it can't be part of a check that's specifically about this
+  // manifold's own weighed gas-out. Previously included every private refill regardless of
+  // filledBy, which could show a false imbalance (and prompt an unnecessary override) any
+  // time a supplier-filled private refill happened the same day.
+  var privKg=store.private.filter(function(r){return (!r.branch||!branch||r.branch===branch)&&r.filledBy!=='Supplier';}).reduce(function(a,r){return a+num(r.pumped);},0);
   var pumped=refKg+privKg;
   var diff=gasOut-pumped;
   return {opening:opening,added:added,closing:closing,removed:removed,gasOut:gasOut,refKg:refKg,privKg:privKg,pumped:pumped,diff:diff,balanced:Math.abs(diff)<=TOL,tol:TOL,
@@ -8444,7 +8462,7 @@ function corrApplyReceivedGroup(){
     adjustSheetRow('Received',c.rid,c.field==='fullIn'?{FullIn:c.newVal}:{EmptyOut:c.newVal});
   });
   var summary=changes.map(function(c){return c.brand+' '+(c.field==='fullIn'?'Full in':'Empty out')+' '+c.oldVal+'\u2192'+c.newVal;}).join(', ');
-  auditLog('Stock Received adjusted (same day)',corrCfg.branch+' '+g.size+' \u2014 '+summary+' by '+corrAuth.name+' - '+reason);
+  auditLog('Stock Received adjusted (same day)',corrCfg.branch+' '+g.size+' \u2014 '+summary+' by '+corrAuth.name+' - '+reason,null,null,'success',corrCfg.branch);
   if(corrCfg.afterClose)corrCfg.afterClose();
   toast('Correction logged \u2713');
   setTimeout(function(){corrApplyBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}},600);
@@ -8801,7 +8819,7 @@ function _bulkAcceptRun(mmList,bc,auth,reason){
     var lockKey=bc+'|Opening|'+st+'|'+sz+'|'+br;
     delete cLocked[lockKey];cTries[lockKey]=0;
     auditLog('Opening mismatch accepted as correct (bulk)',sz+' '+st+' '+br+' — prev close '+m.expected+', counted '+oldVal+', confirmed at '+correct+' · '+reason,
-      {prevClose:m.expected,counted:oldVal},{correctedOpening:correct,reason:reason});
+      {prevClose:m.expected,counted:oldVal},{correctedOpening:correct,reason:reason},'success',bc);
   });
   syncPush('Adjustments',sheetRows);
   var rowsForBn=syncRowsCount(store.count.filter(function(r){return r.branch===bc;}),bc);
@@ -8914,7 +8932,7 @@ function adjustMismatch(i){
         m.adjustNote=(accepted?'Accepted as correct by ':'Adj by ')+auth.name+' ('+auth.level+')'+(accepted?'':' → '+correct+'kg')+': '+reason.trim();
         m.adjustedBy=auth.name;m.adjustedAt=nowStamp();
         auditLog('Manifold mismatch '+(accepted?'accepted as correct':'adjusted'),m.cyl+' — prev close '+m.expected+'kg, counted '+oldVal+'kg, '+(accepted?'confirmed at':'corrected to')+' '+correct+'kg · '+reason.trim(),
-          {prevClose:m.expected,counted:oldVal},{correctedOpening:correct,reason:reason.trim()});
+          {prevClose:m.expected,counted:oldVal},{correctedOpening:correct,reason:reason.trim()},'success',bc);
         // Previously this branch never touched the sheet at all - no Adjustments entry, no
         // Manifold tab update. Fixed to match every other correction tool: log the change to
         // Adjustments, and correct the ORIGINAL Manifold sheet row in place via its _rid (same
@@ -8948,7 +8966,7 @@ function adjustMismatch(i){
           var lockKey=bc+'|Opening|'+st+'|'+sz+'|'+br;
           delete cLocked[lockKey];cTries[lockKey]=0;
           auditLog('Opening mismatch '+(accepted?'accepted as correct':'adjusted'),sz+' '+st+' '+br+' — prev close '+m.expected+', counted '+oldVal+', '+(accepted?'confirmed at':'corrected to')+' '+correct+' · '+reason2.trim(),
-            {prevClose:m.expected,counted:oldVal},{correctedOpening:correct,reason:reason2.trim()});
+            {prevClose:m.expected,counted:oldVal},{correctedOpening:correct,reason:reason2.trim()},'success',bc);
           syncPush('Adjustments',[{date:today,branch:bc,Kind:'OpeningMismatch',Line:sz+' '+st+' '+br,From:oldVal,To:correct,Reason:reason2.trim(),By:auth.name+' ('+auth.level+')'}]);
           // Previously this stopped at the Adjustments-tab log - the Counts tab itself, and the
           // shared stock_counts table the pilot Adjust tool now reads from, both silently kept
@@ -9385,117 +9403,417 @@ function _manifoldBalFromStore(st, br){
   var gasOut=opening+added-closing-removed;
   var pumped=0;
   (st.refill||[]).filter(function(r){return !r.branch||!br||r.branch===br;}).forEach(function(r){pumped+=num(r.pumped);});
-  (st.private||[]).filter(function(r){return !r.branch||!br||r.branch===br;}).forEach(function(r){pumped+=num(r.pumped);});
+  // Us-filled only - see manifoldBalance()'s matching comment.
+  (st.private||[]).filter(function(r){return (!r.branch||!br||r.branch===br)&&r.filledBy!=='Supplier';}).forEach(function(r){pumped+=num(r.pumped);});
+  var refKg=0,privKg=0;
+  (st.refill||[]).filter(function(r){return !r.branch||!br||r.branch===br;}).forEach(function(r){refKg+=num(r.pumped);});
+  (st.private||[]).filter(function(r){return (!r.branch||!br||r.branch===br)&&r.filledBy!=='Supplier';}).forEach(function(r){privKg+=num(r.pumped);});
   var diff=gasOut-pumped;
-  return {gasOut:gasOut,removed:removed,pumped:pumped,diff:diff,balanced:Math.abs(diff)<0.05};
+  return {opening:opening,added:added,closing:closing,removed:removed,gasOut:gasOut,refKg:refKg,privKg:privKg,pumped:pumped,diff:diff,balanced:Math.abs(diff)<0.05};
 }
-function buildCountDoc(src){
+function _nominalKg(sz){return FAULTY_NOMINAL[sz]||0;}
+// Total kg of gas in FULL cylinders for one Stock Count stage ('Opening'|'Closing') - a tally
+// estimate (qty x nominal size for that size) since Count never weighs an individual cylinder,
+// unlike Manifold/Faulty which are actually weighed. Always labelled "≈" wherever it's shown.
+function _countFullKg(st,br,stage){
+  var out=0;
+  (st.count||[]).forEach(function(r){
+    if(r.branch&&br&&r.branch!==br)return;
+    if((r.countType==='Closing'?'Closing':'Opening')!==stage)return;
+    if((r.state==='Empty'?'Empty':'Full')!=='Full')return;
+    out+=num(r.qty)*_nominalKg(r.size);
+  });
+  return out;
+}
+// Total kg of gas received today (Full in only - Empty out is cylinders leaving, not gas
+// arriving) - same nominal-size estimate as _countFullKg.
+function _receivedFullInKg(st,br){
+  var out=0;
+  (st.received||[]).forEach(function(r){
+    if(r.branch&&br&&r.branch!==br)return;
+    out+=num(r.fullIn)*_nominalKg(r.size);
+  });
+  return out;
+}
+// Number of DISTINCT manifold slots with a Closing-stage reading today - one physical
+// cylinder per slot, not one row per stage (a slot can carry up to 4 stage-rows across the
+// day; counting rows would count the same physical cylinder several times over).
+function _manifoldClosingSlotCount(st,br){
+  var seen={};
+  (st.manifold||[]).forEach(function(r){
+    if(r.branch&&br&&r.branch!==br)return;
+    if((r.stage||'Opening')!=='Closing')return;
+    seen[r.cyl]=true;
+  });
+  return Object.keys(seen).length;
+}
+// Residual Gas rows use capitalised .Branch/.Residual (unlike every other store array's
+// lowercase .branch) - see residualSubmit()'s own row shape, this matches it exactly. Kept
+// as its own figure everywhere it's used (never folded into the main gas total) - see the
+// report's own callout for why: it's leftover/partial gas, not sellable packaged stock.
+function _residualFromStore(st,br){
+  var kg=0,n=0;
+  (st.residual||[]).forEach(function(r){
+    if(r.Branch&&br&&r.Branch!==br)return;
+    kg+=num(r.Residual);n++;
+  });
+  return {kg:kg,count:n};
+}
+function _tsHM(ts){try{var d=new Date(ts);function p(n){return (n<10?'0':'')+n;}return p(d.getHours())+':'+p(d.getMinutes());}catch(e){return '';}}
+// One shared audit_log fetch for a branch+date, used to build both the "Who Worked On This"
+// roster and the "Exceptions During the Day" section - both are just two different groupings
+// of the exact same rows, so one query covers both instead of hitting audit_log twice.
+function _fetchDayActivity(br,date){
+  return sb.from('audit_log').select('*').eq('branch',br).gte('ts',date+'T00:00:00').lte('ts',date+'T23:59:59').order('ts',{ascending:true}).then(function(res){
+    if(res.error){console.error('_fetchDayActivity failed for '+br+'/'+date+':',res.error.message);return [];}
+    return res.data||[];
+  },function(e){console.error('_fetchDayActivity rejected for '+br+'/'+date+':',e&&e.message);return [];});
+}
+// Login/logout/idle-lock/admin-screen-opened noise - excluded from "Who Worked On This"
+// rather than hand-maintaining a whitelist of every real work action (which would silently
+// go stale the next time a new capture type or correction path is added). Everything NOT
+// in this small blacklist is treated as real work and shown using its own existing
+// audit_log action string, which is already written to be human-readable (it's what the
+// Audit Log screen itself displays).
+var DAY_ACTIVITY_NOISE=['Login','Logout','Idle lock','Idle unlock','Password change','Sync configured',
+  'User management opened','Audit opened','Historical count opened','Test date changed',
+  'Additional count (no auth required)','Count started (no auth required)'];
+function _groupActivityByPerson(rows){
+  var byPerson={},order=[];
+  rows.forEach(function(r){
+    if(DAY_ACTIVITY_NOISE.indexOf(r.action)>-1)return;
+    var key=r.user_name_snapshot+'|'+r.role_snapshot;
+    if(!byPerson[key]){byPerson[key]={name:r.user_name_snapshot,role:r.role_snapshot,actions:[],first:r.ts,last:r.ts};order.push(key);}
+    var p=byPerson[key];
+    if(p.actions.indexOf(r.action)===-1)p.actions.push(r.action);
+    if(r.ts<p.first)p.first=r.ts;
+    if(r.ts>p.last)p.last=r.ts;
+  });
+  return order.map(function(k){return byPerson[k];});
+}
+// Groups distributed across mutually-exclusive action-string prefixes (never two groups
+// matching the same row) - order doesn't matter for correctness, only for display order.
+var EXCEPTION_ACTION_GROUPS=[
+  {label:'Pending Overrides Resolved',match:function(a){return a==='Manifold override approved'||a==='Manifold override rejected';}},
+  {label:'Opening &amp; Manifold Mismatches Resolved',match:function(a){return /^(Opening|Manifold) mismatch /.test(a);}},
+  {label:'Same-Day Corrections',match:function(a){return / adjusted \(same day\)$/.test(a);}},
+  {label:'Historical Corrections',match:function(a){return a==='Historical count corrected';}},
+  {label:'Seal Voids &amp; Boundary Overrides',match:function(a){return a==='Seal voided'||a==='Seal boundary override';}},
+  {label:'Manifold Weight Overrides &amp; Flags',match:function(a){return a==='Manifold weight override'||a==='Manifold tare mismatch'||a==='Manifold Opening discipline mismatch'||a==='Manifold rejected reading corrected';}},
+  {label:'Faulty Cylinders',match:function(a){return a==='Faulty cylinder logged'||a==='Faulty cylinder updated';}}
+];
+function _groupExceptions(rows){
+  var groups=[];
+  EXCEPTION_ACTION_GROUPS.forEach(function(g){
+    var items=rows.filter(function(r){return g.match(r.action);});
+    if(items.length)groups.push({label:g.label,items:items});
+  });
+  return groups;
+}
+// Currently Faulty-Held cylinders for one branch - faultyListOpen exposes no date field at
+// all (confirmed by reading its full response shape), so this can only ever answer "what's
+// faulty right now", not "what became faulty today" - that's why Faulty Cylinders is
+// excluded from the audit-log-driven, strictly-today's-activity groupings above (Exceptions,
+// Who Worked On This) but IS included in the grand totals below, where "what's faulty right
+// now" is actually the correct question to ask (a cylinder found faulty yesterday and still
+// unresolved is still part of today's real stock).
+function _fetchFaultyHeld(br){
+  return apiPost('faultyListOpen',{}).then(function(res){
+    if(!res||!res.ok)return [];
+    return (res.rows||[]).filter(function(r){return r.Branch===br&&r.Status==='Faulty-Held';});
+  },function(){return [];});
+}
+// GasLoss (server-computed, same formula as the live entry-screen preview - see
+// faultyCalcUpdate()) is nominal minus what's actually left, clamped to never go below
+// zero - so it doubles as both "gas at risk" (the app's own existing term for it) and the
+// shortfall figure the Daily Stock Balance section needs, with no extra math required. The
+// clamp means an overfilled cylinder can't be told apart from an exactly-nominal one here -
+// this only ever surfaces underfill, which is stated plainly wherever it's shown.
+function _faultyHeldTotals(rows){
+  var gasLoss=0,gasRemaining=0;
+  rows.forEach(function(r){
+    var nom=_nominalKg(r.Size);
+    var loss=num(r.GasLoss);
+    gasLoss+=loss;
+    gasRemaining+=Math.max(0,nom-loss);
+  });
+  return {gasLoss:gasLoss,gasRemaining:gasRemaining,count:rows.length};
+}
+// Restructured report (2026-09-07): summary-first, with new sections for who worked on the
+// day, exceptions that need attention, and the derived gas/shell/sales totals - see the
+// approved demo Artifact this was built from for the full reasoning behind each figure.
+// Async because Exceptions/Who-Worked-On-This need one audit_log fetch and the Faulty
+// Cylinder figures need one apiPost fetch - everything else is synchronous, computed
+// straight off src.store. Returns a Promise<string> (the full HTML document).
+function buildCountDocAsync(src){
   var st=src.store, _b=src.branch;
   function inBr(r){return !r.branch||!_b||r.branch===_b;}
-  var counts=_countsFromStore(st,_b);
   function cell(obj){if(!obj)return '\u2014';return Object.keys(obj).map(function(b){return b+' \u00d7 '+obj[b];}).join('<br>');}
   function totalOf(obj){if(!obj)return 0;return Object.keys(obj).reduce(function(a,b){return a+obj[b];},0);}
-  function section(label,data){
-    var szs=ALLSIZES.filter(function(sz){return data.Full[sz]||data.Empty[sz];});
-    if(szs.length===0)return '';
-    var rows=szs.map(function(sz){
-      return '<tr><td class="sz">'+sz+'</td><td>'+cell(data.Full[sz])+'</td><td class="n">'+totalOf(data.Full[sz])+
-        '</td><td>'+cell(data.Empty[sz])+'</td><td class="n">'+totalOf(data.Empty[sz])+'</td></tr>';
-    }).join('');
-    return '<h2>'+label+' Count</h2>'+
-      '<table><tr><th>Size</th><th>Full \u2014 by brand</th><th>Full total</th><th>Empty \u2014 by brand</th><th>Empty total</th></tr>'+rows+'</table>';
-  }
-  var rows=section('Opening',counts.Opening)+section('Closing',counts.Closing);
-  if(!rows)rows='<p style="color:#999">No cylinder count captured.</p>';
-  var recv=_receivedFromStore(st,_b);var recvSizes=ALLSIZES.filter(function(sz){return recv[sz];});
-  if(recvSizes.length){
-    rows+='<h2>Stock Received</h2><table><tr><th>Size</th><th>Full in</th><th>Empty out</th><th>\u0394</th></tr>'+
-      recvSizes.map(function(sz){var diff=recv[sz].fullIn-recv[sz].emptyOut;return '<tr><td class="sz">'+sz+'</td><td class="n">'+recv[sz].fullIn+'</td><td class="n">'+recv[sz].emptyOut+'</td><td class="n"'+(diff!==0?' style="color:#C0392B"':'')+'>'+(diff>0?'+':'')+diff+'</td></tr>';}).join('')+'</table>';
-    // Invoice/delivery-note photos are session-level (one set per supplier delivery), so the
-    // same array is duplicated onto every received row - dedupe back down to a single gallery.
-    var recvPhotos=[];
-    (st.received||[]).filter(function(r){return !r.branch||!_b||r.branch===_b;}).forEach(function(r){
-      (Array.isArray(r.photos)?r.photos:[]).forEach(function(p){if(recvPhotos.indexOf(p)===-1)recvPhotos.push(p);});
-    });
-    if(recvPhotos.length){
-      rows+='<div style="margin-top:6px"><b>Invoice / delivery note photo(s):</b><br>'+
-        recvPhotos.map(function(s){return '<img src="'+s+'" style="max-height:70px;border-radius:4px;margin:2px">';}).join('')+'</div>';
-    }
-  }
-  var rf=(st.refill||[]).filter(inBr);
-  if(rf.length){
-    var rfTot=rf.reduce(function(a,r){return a+num(r.pumped);},0);
-    rows+='<h2>Refills</h2><table><tr><th>Size</th><th>Brand</th><th>Gas</th><th>Pumped</th><th>Seal #</th><th>Notes</th></tr>'+
-      rf.map(function(r){return '<tr><td class="sz">'+r.size+'</td><td>'+r.brand+'</td><td>'+r.gasType+'</td><td class="n">'+(+r.pumped).toFixed(2)+'</td><td>'+(r.seal||'\u2014')+'</td><td>'+(r.notes||'\u2014')+'</td></tr>';}).join('')+
-      '<tr><td colspan="3"><b>Total pumped</b></td><td class="n"><b>'+rfTot.toFixed(2)+'</b></td><td colspan="2"></td></tr></table>';
-  }
-  var pv=(st.private||[]).filter(inBr);
-  if(pv.length){
-    var pvTot=pv.reduce(function(a,r){return a+num(r.pumped);},0);
-    rows+='<h2>Private Refills</h2><table><tr><th>Cyl brand</th><th>Gas</th><th>Pumped</th><th>Customer / notes</th><th>Filled by</th><th>Invoice photo</th></tr>'+
-      pv.map(function(r){var cb=(r.cylBrand==='Other'&&r.otherBrand)?('Other: '+r.otherBrand):(r.cylBrand||'\u2014');var ph=Array.isArray(r.supplierPhoto)?r.supplierPhoto:[];return '<tr><td>'+cb+'</td><td>'+(r.gasType||'')+'</td><td class="n">'+(+r.pumped).toFixed(2)+'</td><td>'+(r.customer||'\u2014')+'</td><td>'+(r.filledBy==='Supplier'?('Supplier'+(r.fillSupplier?(' \u2014 '+privateSupplierName(r)):'')):'Us')+'</td><td>'+(ph.length?ph.map(function(s){return '<img src="'+s+'" style="max-height:40px;border-radius:4px;margin:1px">';}).join(''):'\u2014')+'</td></tr>';}).join('')+
-      '<tr><td colspan="2"><b>Total kg pumped</b></td><td class="n"><b>'+pvTot.toFixed(2)+'</b></td><td colspan="3"></td></tr></table>';
-  }
-  var man=(st.manifold||[]).filter(inBr);
-  if(man.length){
-    // Photos are captured client-side as base64 data URIs (m.photo, up to 3 per cylinder) -
-    // embedded directly here since the report is built entirely client-side, no upload needed.
-    function _photoCell(m){var ph=Array.isArray(m.photo)?m.photo:[];return ph.length?ph.map(function(s){return '<img src="'+s+'" style="max-height:40px;border-radius:4px;margin:1px">';}).join(''):'\u2014';}
-    rows+='<h2>Manifold \u2014 Cylinder Weights</h2><table><tr><th>Stage</th><th>Cyl</th><th>Gas</th><th>Scale</th><th>Tare</th><th>Left</th><th>Condition</th><th>Note</th><th>Photo</th></tr>';
-    // Same stage order/reasoning as openHistory()'s Manifold table (see its comment) -
-    // Removed sits between Opening and Added so each swap's outgoing-residual block prints
-    // directly above its paired incoming block.
-    ['Opening','Removed','Added','Closing'].forEach(function(stg){
-      man.filter(function(m){return (m.stage||'Opening')===stg;}).forEach(function(m){rows+='<tr><td><b>'+stg+'</b></td><td>'+m.cyl+'</td><td>'+(m.gasType||'')+(m._openingGasTypeFlag?' <span style="color:#B5533B" title="Did not match yesterday\'s Closing gas type when saved">\u26a0</span>':'')+'</td><td class="n">'+(+m.scale).toFixed(2)+'</td><td class="n">'+(+m.tare).toFixed(2)+(m._tareFlag?' <span style="color:#B5533B" title="Did not match this slot\'s expected tare when saved">\u26a0</span>':'')+'</td><td class="n">'+(+m.gasLeft).toFixed(2)+((m._residualFlag||m._openingGasLeftFlag)?' <span style="color:#B5533B" title="'+(m._residualFlag?'Leftover gas confirmed on removal - logged in Residual Gas':'Did not match yesterday\'s Closing gas left when saved')+'">\u26a0</span>':'')+'</td><td>'+(m.cylState||'\u2014')+'</td><td>'+(m.notes||'\u2014')+'</td><td>'+_photoCell(m)+'</td></tr>';});
-    });
-    rows+='</table>';
+  return Promise.all([_fetchDayActivity(_b,src.date),_fetchFaultyHeld(_b)]).then(function(fetched){
+    var activityRows=fetched[0], faultyRows=fetched[1];
+    var people=_groupActivityByPerson(activityRows);
+    var excGroups=_groupExceptions(activityRows);
+    var faultyTot=_faultyHeldTotals(faultyRows);
+    var faultyFullBySize={},faultyEmptyBySize={};
+    faultyRows.forEach(function(r){var sz=r.Size,q=num(r.Qty)||1;if(r.State==='Empty')faultyEmptyBySize[sz]=(faultyEmptyBySize[sz]||0)+q;else faultyFullBySize[sz]=(faultyFullBySize[sz]||0)+q;});
+    var counts=_countsFromStore(st,_b);
+    var recvAgg=_receivedFromStore(st,_b);
     var bal=_manifoldBalFromStore(st,_b);
-    rows+='<table style="margin-top:8px"><tr><th>Manifold balance</th><th>kg</th></tr>'+
-      '<tr><td>Total gas pumped from manifold (opening + added \u2212 closing \u2212 removed)</td><td class="n"><b>'+bal.gasOut.toFixed(2)+'</b></td></tr>'+
-      '<tr><td>Into Refills + Private</td><td class="n">'+bal.pumped.toFixed(2)+'</td></tr>'+
-      '<tr><td><b>Balance</b></td><td class="n"><b>'+(bal.diff>0?'+':'')+bal.diff.toFixed(2)+' kg '+(bal.balanced?'\u2713':'\u26a0')+'</b></td></tr></table>';
-  }
-  if(src.manifoldOverride){rows+='<p style="font-size:11px;color:#C0392B">Manifold imbalance override reason: '+src.manifoldOverride+'</p>';}
-  var times=(st.count||[]).filter(inBr).map(function(r){return r._time;}).filter(Boolean).sort();
-  var timeRange=times.length?(times[0]+(times.length>1?' \u2192 '+times[times.length-1]:'')):'\u2014';
-  var opName=(src.operator||'').replace(' (Manager)','');
-  var sig=src.sig||{};
-  var doc='<!DOCTYPE html><html><head><meta charset="utf-8"><title>Stock Count '+src.date+'</title><style>'+
-    'body{font-family:Arial,sans-serif;color:#16202B;padding:28px;max-width:800px;margin:0 auto;}'+
-    'h1{font-size:20px;margin:0 0 2px;color:#1F3A5F;}h2{font-size:15px;color:#1F3A5F;margin:22px 0 6px;}.meta{font-size:12px;color:#555;margin-bottom:18px;line-height:1.6;}'+
-    'table{width:100%;border-collapse:collapse;font-size:12px;}'+
-    'th{background:#1F3A5F;color:#fff;text-align:left;padding:8px;font-size:11px;}'+
-    'td{padding:8px;border-bottom:1px solid #ddd;vertical-align:top;}td.sz{font-weight:bold;color:#1F3A5F;}td.n{text-align:center;font-weight:bold;}'+
-    '.sig{margin-top:40px;font-size:12px;display:flex;justify-content:space-between;}'+
-    '.sig div{border-top:1px solid #333;padding-top:6px;width:45%;}'+
-    '@media print{button{display:none;}}'+
-    'button{margin-top:24px;padding:12px 20px;background:#1F3A5F;color:#fff;border:none;border-radius:8px;font-size:14px;cursor:pointer;}'+
-    '</style></head><body>'+
-    '<h1>Gas Sales \u2014 Daily Stock Count</h1>'+
-    '<div class="meta">Date: <b>'+src.date+'</b> &nbsp;\u00b7&nbsp; Branch: <b>'+src.branch+'</b> &nbsp;\u00b7&nbsp; '+(src.role||'Operator')+': <b>'+opName+'</b><br>Counted between: <b>'+timeRange+'</b></div>'+
-    rows+
-    '<div class="sig"><div>'+(sig.op?'<img src="'+sig.op+'" style="max-height:60px;display:block;margin-bottom:2px">':'<div style="height:60px"></div>')+'Operator: '+opName+'</div><div>'+(sig.mgr?'<img src="'+sig.mgr+'" style="max-height:60px;display:block;margin-bottom:2px">':'<div style="height:60px"></div>')+'Manager: _______________</div></div>'+
-    '<div style="font-size:11px;color:#777;margin-top:8px">Signatures confirm both parties verified this count as correct on '+src.date+'.</div>'+
-    '<button onclick="window.print()">Print / Save as PDF</button>'+
-    '</body></html>';
-  return doc;
+    var residual=_residualFromStore(st,_b);
+    var rows='';
+
+    // ---- Who Worked On This ----
+    if(people.length){
+      rows+='<h2>Who Worked On This</h2>'+people.map(function(p){
+        return '<div class="personRow"><b>'+p.name+'</b> <span class="roleTag">'+(p.role||'')+'</span> '+
+          '<span style="color:#777;font-size:11px">('+_tsHM(p.first)+'\u2192'+_tsHM(p.last)+')</span>'+
+          '<div style="font-size:12px;color:#333;margin:2px 0 8px">'+p.actions.join(' \u00b7 ')+'</div></div>';
+      }).join('');
+    }
+
+    // ---- Exceptions ----
+    if(excGroups.length){
+      rows+='<h2>Exceptions During the Day</h2>'+excGroups.map(function(g){
+        return '<h3 style="font-size:13px;color:#1F3A5F;margin:14px 0 4px">'+g.label+' ('+g.items.length+')</h3>'+
+          '<ul style="margin:0 0 10px;padding-left:18px;font-size:12px">'+g.items.map(function(it){
+            return '<li style="margin-bottom:4px"><b>'+_tsHM(it.ts)+'</b> \u2014 '+(it.detail||it.action)+'</li>';
+          }).join('')+'</ul>';
+      }).join('');
+    }
+
+    // ---- Cylinder Counts ----
+    function countSection(label,data,stage){
+      var szs=ALLSIZES.filter(function(sz){return data.Full[sz]||data.Empty[sz];});
+      if(szs.length===0)return '';
+      var trs=szs.map(function(sz){
+        return '<tr><td class="sz">'+sz+'</td><td>'+cell(data.Full[sz])+'</td><td class="n">'+totalOf(data.Full[sz])+
+          '</td><td>'+cell(data.Empty[sz])+'</td><td class="n">'+totalOf(data.Empty[sz])+'</td></tr>';
+      }).join('');
+      return '<h2>'+label+' Count</h2>'+
+        '<table><tr><th>Size</th><th>Full \u2014 by brand</th><th>Full total</th><th>Empty \u2014 by brand</th><th>Empty total</th></tr>'+trs+'</table>'+
+        '<p style="font-size:12px;color:#555;margin:4px 0 0"><b>Total gas in Full cylinders ('+label+'): \u2248 '+_countFullKg(st,_b,stage).toFixed(2)+' kg</b></p>';
+    }
+    var countsHtml=countSection('Opening',counts.Opening,'Opening')+countSection('Closing',counts.Closing,'Closing');
+    rows+=countsHtml||'<p style="color:#999">No cylinder count captured.</p>';
+
+    // ---- Stock Received, per-delivery ----
+    var recvRows=(st.received||[]).filter(inBr);
+    if(recvRows.length){
+      var dGroups={},dOrder=[];
+      recvRows.forEach(function(r){
+        var key=r.size+'|'+(r.invoiceNo||'')+'|'+(r.deliveryNote||'')+'|'+(r.supplier||'');
+        if(!dGroups[key]){dGroups[key]={size:r.size,invoiceNo:r.invoiceNo,deliveryNote:r.deliveryNote,supplier:r.supplier,recv:{},ret:{},reason:''};dOrder.push(key);}
+        var g=dGroups[key];
+        if(num(r.fullIn)>0)g.recv[r.brand]=(g.recv[r.brand]||0)+num(r.fullIn);
+        if(num(r.emptyOut)>0)g.ret[r.brand]=(g.ret[r.brand]||0)+num(r.emptyOut);
+        if(r.overrideReason&&!g.reason)g.reason=r.overrideReason;
+      });
+      rows+='<h2>Stock Received</h2>'+dOrder.map(function(key){
+        var g=dGroups[key];
+        var ref=[g.invoiceNo?('Inv '+g.invoiceNo):'',g.deliveryNote?('DN '+g.deliveryNote):'',g.supplier||''].filter(Boolean).join(' \u00b7 ');
+        var fullTot=Object.keys(g.recv).reduce(function(s,b){return s+g.recv[b];},0);
+        var emptyTot=Object.keys(g.ret).reduce(function(s,b){return s+g.ret[b];},0);
+        return '<div style="border:1px solid #ddd;border-radius:8px;padding:10px 12px;margin-bottom:8px">'+
+          '<div><b style="color:#1F3A5F">'+g.size+'</b> <span style="font-size:11px;color:#777">'+ref+'</span></div>'+
+          '<div style="font-size:12px;margin-top:4px"><i>Full in:</i> '+cell(g.recv)+' &nbsp; <i>Empty out:</i> '+cell(g.ret)+'</div>'+
+          (g.reason&&fullTot!==emptyTot?('<div style="font-size:11px;color:#C0392B;margin-top:4px"><b>Mismatch reason:</b> '+g.reason+'</div>'):'')+
+          '</div>';
+      }).join('')+
+      '<p style="font-size:12px;color:#555;margin:4px 0 0"><b>Total gas received (Full in only): \u2248 '+_receivedFullInKg(st,_b).toFixed(2)+' kg</b></p>';
+      var recvPhotos=[];
+      recvRows.forEach(function(r){(Array.isArray(r.photos)?r.photos:[]).forEach(function(p){if(recvPhotos.indexOf(p)===-1)recvPhotos.push(p);});});
+      if(recvPhotos.length)rows+='<div style="margin-top:6px"><b>Invoice / delivery note photo(s):</b><br>'+recvPhotos.map(function(s){return '<img src="'+s+'" style="max-height:70px;border-radius:4px;margin:2px">';}).join('')+'</div>';
+    }
+
+    // ---- Refills ----
+    var rf=(st.refill||[]).filter(inBr);
+    var refillCountBySize={};
+    rf.forEach(function(r){refillCountBySize[r.size]=(refillCountBySize[r.size]||0)+1;});
+    if(rf.length){
+      var rfTot=rf.reduce(function(a,r){return a+num(r.pumped);},0);
+      rows+='<h2>Refills</h2><table><tr><th>Size</th><th>Brand</th><th>Gas</th><th>Pumped</th><th>Seal #</th><th>Notes</th></tr>'+
+        rf.map(function(r){return '<tr><td class="sz">'+r.size+'</td><td>'+r.brand+'</td><td>'+r.gasType+'</td><td class="n">'+(+r.pumped).toFixed(2)+'</td><td>'+(r.seal||'\u2014')+'</td><td>'+(r.notes||'\u2014')+'</td></tr>';}).join('')+
+        '<tr><td colspan="3"><b>Total pumped</b></td><td class="n"><b>'+rfTot.toFixed(2)+'</b></td><td colspan="2"></td></tr></table>';
+    }
+
+    // ---- Private Refills ----
+    var pv=(st.private||[]).filter(inBr);
+    if(pv.length){
+      var pvTot=pv.reduce(function(a,r){return a+num(r.pumped);},0);
+      var pvUsTot=pv.filter(function(r){return r.filledBy!=='Supplier';}).reduce(function(a,r){return a+num(r.pumped);},0);
+      rows+='<h2>Private Refills</h2><table><tr><th>Cyl brand</th><th>Gas</th><th>Pumped</th><th>Customer / notes</th><th>Filled by</th><th>Invoice photo</th></tr>'+
+        pv.map(function(r){var cb=(r.cylBrand==='Other'&&r.otherBrand)?('Other: '+r.otherBrand):(r.cylBrand||'\u2014');var ph=Array.isArray(r.supplierPhoto)?r.supplierPhoto:[];return '<tr><td>'+cb+'</td><td>'+(r.gasType||'')+'</td><td class="n">'+(+r.pumped).toFixed(2)+'</td><td>'+(r.customer||'\u2014')+'</td><td>'+(r.filledBy==='Supplier'?('Supplier'+(r.fillSupplier?(' \u2014 '+privateSupplierName(r)):'')):'Us')+'</td><td>'+(ph.length?ph.map(function(s){return '<img src="'+s+'" style="max-height:40px;border-radius:4px;margin:1px">';}).join(''):'\u2014')+'</td></tr>';}).join('')+
+        '<tr><td colspan="2"><b>Total kg pumped</b></td><td class="n"><b>'+pvTot.toFixed(2)+'</b></td><td colspan="3" style="font-size:11px;color:#777;font-weight:normal">'+pvUsTot.toFixed(2)+'kg filled by us \u2014 counted toward Manifold balance below; supplier-filled is not</td></tr></table>';
+    }
+
+    // ---- Manifold weights ----
+    var man=(st.manifold||[]).filter(inBr);
+    if(man.length){
+      function _photoCell(m){var ph=Array.isArray(m.photo)?m.photo:[];return ph.length?ph.map(function(s){return '<img src="'+s+'" style="max-height:40px;border-radius:4px;margin:1px">';}).join(''):'\u2014';}
+      rows+='<h2>Manifold \u2014 Cylinder Weights</h2><table><tr><th>Stage</th><th>Cyl</th><th>Gas</th><th>Scale</th><th>Tare</th><th>Left</th><th>Condition</th><th>Note</th><th>Photo</th></tr>';
+      ['Opening','Removed','Added','Closing'].forEach(function(stg){
+        man.filter(function(m){return (m.stage||'Opening')===stg;}).forEach(function(m){rows+='<tr><td><b>'+stg+'</b></td><td>'+m.cyl+'</td><td>'+(m.gasType||'')+(m._openingGasTypeFlag?' <span style="color:#B5533B" title="Did not match yesterday\'s Closing gas type when saved">\u26a0</span>':'')+'</td><td class="n">'+(+m.scale).toFixed(2)+'</td><td class="n">'+(+m.tare).toFixed(2)+(m._tareFlag?' <span style="color:#B5533B" title="Did not match this slot\'s expected tare when saved">\u26a0</span>':'')+'</td><td class="n">'+(+m.gasLeft).toFixed(2)+((m._residualFlag||m._openingGasLeftFlag)?' <span style="color:#B5533B" title="'+(m._residualFlag?'Leftover gas confirmed on removal - logged in Residual Gas':'Did not match yesterday\'s Closing gas left when saved')+'">\u26a0</span>':'')+'</td><td>'+(m.cylState||'\u2014')+'</td><td>'+(m.notes||'\u2014')+'</td><td>'+_photoCell(m)+'</td></tr>';});
+      });
+      rows+='</table>';
+    }
+
+    // ---- Daily Stock Balance (Manifold + Faulty, combined) ----
+    if(man.length||faultyTot.count){
+      rows+='<h2>Daily Stock Balance</h2><p style="font-size:11px;color:#777;margin:-4px 0 10px">Two independent checks for gas that should be accounted for but doesn\'t quite add up - the manifold\'s own weighed movement, and faulty cylinders\' expected-vs-actual - shown together since both answer the same question: how much did we lose or gain today.</p>';
+      if(man.length){
+        rows+='<h3 style="font-size:13px;color:#1F3A5F;margin:0 0 4px">Manifold</h3><table><tr><th>Manifold balance</th><th>kg</th></tr>'+
+          '<tr><td>Opening gas (cylinders)</td><td class="n">'+bal.opening.toFixed(2)+'</td></tr>'+
+          '<tr><td>+ Added mid-day (fresh cylinders)</td><td class="n">'+bal.added.toFixed(2)+'</td></tr>'+
+          '<tr><td>\u2212 Closing gas (cylinders)</td><td class="n">'+bal.closing.toFixed(2)+'</td></tr>'+
+          '<tr><td>\u2212 Removed (swapped-out residual, logged separately under Residual Gas)</td><td class="n">'+bal.removed.toFixed(2)+'</td></tr>'+
+          '<tr><td><b>= Gas out</b></td><td class="n"><b>'+bal.gasOut.toFixed(2)+'</b></td></tr>'+
+          '<tr><td>Refills pumped</td><td class="n">'+bal.refKg.toFixed(2)+'</td></tr>'+
+          '<tr><td>+ Private refills (filled by us only)</td><td class="n">'+bal.privKg.toFixed(2)+'</td></tr>'+
+          '<tr><td><b>= Pumped (counted toward this manifold)</b></td><td class="n"><b>'+bal.pumped.toFixed(2)+'</b></td></tr>'+
+          '<tr><td><b>Manifold balance (Gas out \u2212 Pumped)</b></td><td class="n"><b>'+(bal.diff>0?'+':'')+bal.diff.toFixed(2)+' kg '+(bal.balanced?'\u2713':'\u26a0')+'</b></td></tr></table>';
+      }
+      if(faultyTot.count){
+        rows+='<h3 style="font-size:13px;color:#1F3A5F;margin:14px 0 4px">Faulty Cylinders \u2014 gas at risk (currently Faulty-Held)</h3><table><tr><th>Size</th><th>Brand</th><th>Reason</th><th>Gas at risk</th></tr>'+
+          faultyRows.map(function(r){return '<tr><td class="sz">'+(r.Size||'')+'</td><td>'+(r.Brand||'')+'</td><td>'+(r.FaultReason||'')+(r.FaultDetail?(': '+r.FaultDetail):'')+'</td><td class="n">'+num(r.GasLoss).toFixed(2)+'</td></tr>';}).join('')+
+          '<tr><td colspan="3"><b>Total gas at risk</b></td><td class="n"><b>'+faultyTot.gasLoss.toFixed(2)+'</b></td></tr></table>';
+      }
+      if(man.length&&faultyTot.count){
+        var totalUnexplained=bal.diff+faultyTot.gasLoss;
+        rows+='<table style="margin-top:8px"><tr><td>Manifold balance</td><td class="n">'+(bal.diff>0?'+':'')+bal.diff.toFixed(2)+'</td></tr>'+
+          '<tr><td>+ Faulty cylinder gas at risk</td><td class="n">+'+faultyTot.gasLoss.toFixed(2)+'</td></tr>'+
+          '<tr><td><b>Total unexplained gas movement today</b></td><td class="n"><b>'+(totalUnexplained>0?'+':'')+totalUnexplained.toFixed(2)+' kg</b></td></tr></table>';
+      }
+      if(src.manifoldOverride)rows+='<p style="font-size:11px;color:#C0392B">Manifold imbalance override reason: '+src.manifoldOverride+'</p>';
+    }
+
+    // ---- Residual Gas ----
+    var residualRows=(st.residual||[]).filter(function(r){return !r.Branch||!_b||r.Branch===_b;});
+    if(residualRows.length){
+      rows+='<h2>Residual Gas</h2><table><tr><th>Size</th><th>Brand</th><th>Residual</th><th>Note</th></tr>'+
+        residualRows.map(function(r){return '<tr><td class="sz">'+r.Size+'</td><td>'+r.Brand+'</td><td class="n">'+num(r.Residual).toFixed(2)+'</td><td>'+(r.Note||'\u2014')+'</td></tr>';}).join('')+
+        '<tr><td colspan="2"><b>Total residual</b></td><td class="n"><b>'+residual.kg.toFixed(2)+'</b></td><td></td></tr></table>'+
+        '<p style="font-size:11px;color:#777">Kept separate from the main gas total below - this is partial/leftover gas, not sellable packaged stock. The '+residual.count+' cylinder shell(s) themselves are counted in Total cylinder shells.</p>';
+    }
+
+    // ---- Estimated Stock Sales & Cylinder Exchange ----
+    var salesSizes=ALLSIZES.filter(function(sz){
+      return totalOf(counts.Opening.Full[sz])||totalOf(counts.Closing.Full[sz])||totalOf(counts.Opening.Empty[sz])||totalOf(counts.Closing.Empty[sz])||
+        (recvAgg[sz]&&(recvAgg[sz].fullIn||recvAgg[sz].emptyOut))||refillCountBySize[sz];
+    });
+    if(salesSizes.length){
+      var soldRowsHtml='',soldTotal=0,soldKg=0,recvBackRowsHtml='',recvBackTotal=0;
+      salesSizes.forEach(function(sz){
+        var openF=totalOf(counts.Opening.Full[sz]),closeF=totalOf(counts.Closing.Full[sz]);
+        var recvIn=(recvAgg[sz]&&recvAgg[sz].fullIn)||0,refilled=refillCountBySize[sz]||0,faultyF=faultyFullBySize[sz]||0;
+        var sold=openF+recvIn+refilled-closeF-faultyF;
+        soldTotal+=sold;soldKg+=sold*_nominalKg(sz);
+        soldRowsHtml+='<tr><td class="sz">'+sz+'</td><td class="n">'+openF+'</td><td class="n">'+recvIn+'</td><td class="n">'+refilled+'</td><td class="n">'+closeF+'</td><td class="n">'+faultyF+'</td><td class="n"><b>'+sold+'</b></td></tr>';
+        var openE=totalOf(counts.Opening.Empty[sz]),closeE=totalOf(counts.Closing.Empty[sz]);
+        var sentOut=(recvAgg[sz]&&recvAgg[sz].emptyOut)||0,faultyE=faultyEmptyBySize[sz]||0;
+        var received=closeE-openE+sentOut+faultyE;
+        recvBackTotal+=received;
+        recvBackRowsHtml+='<tr><td class="sz">'+sz+'</td><td class="n">'+closeE+'</td><td class="n">'+openE+'</td><td class="n">'+sentOut+'</td><td class="n">'+faultyE+'</td><td class="n"><b>'+received+'</b></td></tr>';
+      });
+      var pvAllTot=pv.reduce(function(a,r){return a+num(r.pumped);},0); // both Us AND Supplier-filled - both are real sales, unlike the Manifold balance's Us-only filter
+      var estSoldKgTotal=soldKg+pvAllTot;
+      var netExchange=soldTotal-recvBackTotal;
+      rows+='<h2>Estimated Stock Sales &amp; Cylinder Exchange</h2>'+
+        '<p style="font-size:11px;color:#777">Inferred, not observed - the app has no point-of-sale record. Whatever left stock and wasn\'t received, refilled, or logged faulty is assumed sold; the same logic run in reverse on empties estimates what customers brought back.</p>'+
+        '<h3 style="font-size:13px;color:#1F3A5F;margin:10px 0 4px">Full cylinders sold (estimate)</h3>'+
+        '<table><tr><th>Size</th><th>Opening</th><th>+ Received in</th><th>+ Refilled</th><th>\u2212 Closing</th><th>\u2212 Faulty (Full)</th><th>= Est. sold</th></tr>'+soldRowsHtml+
+        '<tr><td colspan="6"><b>Total units sold</b></td><td class="n"><b>'+soldTotal+'</b></td></tr></table>'+
+        '<h3 style="font-size:13px;color:#1F3A5F;margin:14px 0 4px">Empty cylinders received back (estimate)</h3>'+
+        '<table><tr><th>Size</th><th>Closing</th><th>\u2212 Opening</th><th>+ Sent to supplier</th><th>+ Faulty (Empty)</th><th>= Est. received</th></tr>'+recvBackRowsHtml+
+        '<tr><td colspan="5"><b>Total units received</b></td><td class="n"><b>'+recvBackTotal+'</b></td></tr></table>'+
+        '<table style="margin-top:8px">'+
+        '<tr><td>Estimated gas sold today</td><td class="n"><b>'+estSoldKgTotal.toFixed(2)+' kg</b></td></tr>'+
+        '<tr><td style="font-size:11px;color:#777">'+soldKg.toFixed(2)+'kg from '+soldTotal+' cylinders (\u2248 estimate) + '+pvAllTot.toFixed(2)+'kg Private Refill (exact, Us + Supplier-filled)</td><td></td></tr>'+
+        '<tr><td>Net cylinder exchange</td><td class="n"><b>'+(netExchange>0?'+':'')+netExchange+' shells</b></td></tr>'+
+        '<tr><td style="font-size:11px;color:#777">'+soldTotal+' sold \u2212 '+recvBackTotal+' received back \u2014 positive means more shells left than came back today</td><td></td></tr></table>'+
+        '<p style="font-size:11px;color:#777">Refill\'s own pumped-kg isn\'t added again here - a refilled cylinder becomes one Full unit and is already counted through the mass-balance above, whether it sold today or is still sitting in Closing stock.</p>';
+    }
+
+    // ---- Grand Totals ----
+    var closingFullKg=_countFullKg(st,_b,'Closing');
+    var manClosingKg=bal.closing; // Manifold's Closing-stage total - _manifoldBalFromStore already computes this
+    var grandGasKg=closingFullKg+manClosingKg+faultyTot.gasRemaining;
+    var closingFullCount=ALLSIZES.reduce(function(s,sz){return s+totalOf(counts.Closing.Full[sz]);},0);
+    var closingEmptyCount=ALLSIZES.reduce(function(s,sz){return s+totalOf(counts.Closing.Empty[sz]);},0);
+    var manSlots=_manifoldClosingSlotCount(st,_b);
+    var grandShellCount=closingFullCount+closingEmptyCount+manSlots+faultyTot.count+residual.count;
+    rows+='<h2>Grand Totals at Close of Day</h2>'+
+      '<table><tr><th>Total gas on hand</th><th>kg</th></tr>'+
+      '<tr><td>Closing Full cylinders (\u2248 estimate)</td><td class="n">'+closingFullKg.toFixed(2)+'</td></tr>'+
+      '<tr><td>+ Manifold, Closing stage (weighed)</td><td class="n">'+manClosingKg.toFixed(2)+'</td></tr>'+
+      '<tr><td>+ Faulty-Held cylinders (weighed)</td><td class="n">'+faultyTot.gasRemaining.toFixed(2)+'</td></tr>'+
+      '<tr><td><b>= Total gas on hand</b></td><td class="n"><b>'+grandGasKg.toFixed(2)+'</b></td></tr></table>'+
+      '<table style="margin-top:8px"><tr><th>Total cylinder shells</th><th>#</th></tr>'+
+      '<tr><td>Closing Full</td><td class="n">'+closingFullCount+'</td></tr>'+
+      '<tr><td>+ Closing Empty</td><td class="n">'+closingEmptyCount+'</td></tr>'+
+      '<tr><td>+ Manifold (cylinders on manifold now)</td><td class="n">'+manSlots+'</td></tr>'+
+      '<tr><td>+ Faulty-Held</td><td class="n">'+faultyTot.count+'</td></tr>'+
+      '<tr><td>+ Residual Gas</td><td class="n">'+residual.count+'</td></tr>'+
+      '<tr><td><b>= Total cylinder shells</b></td><td class="n"><b>'+grandShellCount+'</b></td></tr></table>'+
+      '<p style="font-size:11px;color:#777">The \u2248 estimate figures come from Stock Count\'s tally (quantity \u00d7 nominal size - Count never weighs an individual cylinder). Manifold and Faulty Cylinder figures are actually weighed at capture time.</p>';
+
+    var times=(st.count||[]).filter(inBr).map(function(r){return r._time;}).filter(Boolean).sort();
+    var timeRange=times.length?(times[0]+(times.length>1?' \u2192 '+times[times.length-1]:'')):'\u2014';
+    var sig=src.sig||{};
+    var signedBy=src.signedBy||{};
+    var doc='<!DOCTYPE html><html><head><meta charset="utf-8"><title>Stock Count '+src.date+'</title><style>'+
+      'body{font-family:Arial,sans-serif;color:#16202B;padding:28px;max-width:800px;margin:0 auto;}'+
+      'h1{font-size:20px;margin:0 0 2px;color:#1F3A5F;}h2{font-size:15px;color:#1F3A5F;margin:22px 0 6px;padding-top:14px;border-top:1px solid #eee;}h2:first-of-type{border-top:none;padding-top:0}.meta{font-size:12px;color:#555;margin-bottom:18px;line-height:1.6;}'+
+      'table{width:100%;border-collapse:collapse;font-size:12px;}'+
+      'th{background:#1F3A5F;color:#fff;text-align:left;padding:8px;font-size:11px;}'+
+      'td{padding:8px;border-bottom:1px solid #ddd;vertical-align:top;}td.sz{font-weight:bold;color:#1F3A5F;}td.n{text-align:center;font-weight:bold;}'+
+      '.personRow{border-bottom:1px solid #eee;padding:6px 0;}.roleTag{font-size:10px;color:#B9761F;text-transform:uppercase;font-weight:bold;}'+
+      '.sig{margin-top:40px;font-size:12px;display:flex;justify-content:space-between;}'+
+      '.sig div{border-top:1px solid #333;padding-top:6px;width:45%;}'+
+      '@media print{button{display:none;}h2{page-break-after:avoid}table{page-break-inside:avoid}}'+
+      'button{margin-top:24px;padding:12px 20px;background:#1F3A5F;color:#fff;border:none;border-radius:8px;font-size:14px;cursor:pointer;}'+
+      '</style></head><body>'+
+      '<h1>Gas Sales \u2014 Daily Stock Count</h1>'+
+      '<div class="meta">Date: <b>'+src.date+'</b> &nbsp;\u00b7&nbsp; Branch: <b>'+src.branch+'</b><br>Counted between: <b>'+timeRange+'</b>'+
+      (src.closedBy?('<br>Closed by: <b>'+src.closedBy+'</b>'):'')+'</div>'+
+      rows+
+      '<div class="sig"><div>'+(sig.op?'<img src="'+sig.op+'" style="max-height:60px;display:block;margin-bottom:2px">':'<div style="height:60px"></div>')+'Operator: '+(signedBy.op||'_______________')+'</div><div>'+(sig.mgr?'<img src="'+sig.mgr+'" style="max-height:60px;display:block;margin-bottom:2px">':'<div style="height:60px"></div>')+'Manager: '+(signedBy.mgr||'_______________')+'</div></div>'+
+      '<div style="font-size:11px;color:#777;margin-top:8px">Signatures confirm both parties verified this count as correct on '+src.date+'.</div>'+
+      '<button onclick="window.print()">Print / Save as PDF</button>'+
+      '</body></html>';
+    return doc;
+  });
 }
 // today's live source
 function _todaySrc(){
   return {store:store, branch:(histBranch||branch), date:today, operator:operator, role:role,
-    sig:{op:sigData.sigOp,mgr:sigData.sigMgr}, manifoldOverride:store._manifoldOverride};
+    sig:{op:sigData.sigOp,mgr:sigData.sigMgr}, signedBy:{op:sigSignedBy.sigOp,mgr:sigSignedBy.sigMgr},
+    closedBy:null, manifoldOverride:store._manifoldOverride};
 }
 // saved-day source from a hist record
 function _savedSrc(rec){
   return {store:rec.store, branch:rec.branch, date:rec.date, operator:rec.operator, role:rec.role,
-    sig:{op:(rec.sig&&rec.sig.op),mgr:(rec.sig&&rec.sig.mgr)}, manifoldOverride:(rec.store&&rec.store._manifoldOverride)};
+    sig:{op:(rec.sig&&rec.sig.op),mgr:(rec.sig&&rec.sig.mgr)}, signedBy:rec.signedBy||{},
+    closedBy:rec.operator||null, manifoldOverride:(rec.store&&rec.store._manifoldOverride)};
 }
-function _openDoc(doc){
+// Opens the tab SYNCHRONOUSLY (at the click gesture, so no popup blocker fires), shows a
+// placeholder while the async report builds, then writes the real content once ready -
+// buildCountDocAsync needs two network round-trips (audit_log + faulty cylinders) that a
+// plain synchronous window.open()+write() can no longer be built around.
+function _openDocAsync(buildPromise){
   var w=window.open('','_blank');
-  if(w){w.document.write(doc);w.document.close();}
-  else toast('Allow popups to open the PDF',true);
+  if(!w){toast('Allow popups to open the PDF',true);return;}
+  w.document.write('<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;padding:40px;color:#555">Generating report\u2026</body></html>');
+  w.document.close();
+  buildPromise.then(function(doc){
+    if(w.closed)return;
+    w.document.open();w.document.write(doc);w.document.close();
+  }).catch(function(e){
+    if(w.closed)return;
+    w.document.open();w.document.write('<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;padding:40px;color:#A6301F">Could not build the report: '+(e&&e.message?e.message:'unknown error')+'</body></html>');w.document.close();
+  });
 }
-function downloadCountPDF(){ _openDoc(buildCountDoc(_todaySrc())); }
+function downloadCountPDF(){ _openDocAsync(buildCountDocAsync(_todaySrc())); }
 // Prefer the already-fetched SHARED record (set by _renderSavedDayBody right after
 // loadSavedDayShared() succeeded, currently on screen) over a fresh local-storage-only
 // lookup - loadSavedDay() only ever finds a day that was closed ON THIS DEVICE, so on
@@ -9511,7 +9829,7 @@ function _savedDayRecFor(ds,br){
 function downloadCountPDFForDay(ds, br){
   var rec=_savedDayRecFor(ds, br||histBranch||branch);
   if(!rec){toast('No saved count for that day',true);return;}
-  _openDoc(buildCountDoc(_savedSrc(rec)));
+  _openDocAsync(buildCountDocAsync(_savedSrc(rec)));
 }
 function exportData(){
   var total=Object.values(store).reduce(function(a,b){return a+b.length;},0);
@@ -9556,21 +9874,22 @@ _bootApp();
 function _pdfFileName(src){return 'GasSales_StockCount_'+(src.branch||'')+'_'+(src.date||'')+'.pdf';}
 function buildCountPDFBlob(src, cb){
   // jsPDF .html() renders an HTML string to PDF. Build an offscreen node.
-  try{
-    var jsPDF=(window.jspdf&&window.jspdf.jsPDF)?window.jspdf.jsPDF:(window.jsPDF||null);
-    if(!jsPDF){toast('PDF engine unavailable',true);return;}
-    var doc=buildCountDoc(src);
-    var holder=document.createElement('div');
-    holder.style.position='fixed';holder.style.left='-9999px';holder.style.top='0';holder.style.width='800px';
-    // strip the print button from the doc body
-    holder.innerHTML=doc.replace(/<button[\s\S]*?<\/button>/g,'').replace(/^[\s\S]*?<body>/,'').replace(/<\/body>[\s\S]*$/,'');
-    document.body.appendChild(holder);
-    var pdf=new jsPDF({unit:'pt',format:'a4'});
-    pdf.html(holder,{callback:function(d){
-      document.body.removeChild(holder);
-      cb(d.output('blob'));
-    }, x:20,y:20, width:555, windowWidth:800});
-  }catch(e){toast('PDF build failed: '+e.message,true);}
+  var jsPDF=(window.jspdf&&window.jspdf.jsPDF)?window.jspdf.jsPDF:(window.jsPDF||null);
+  if(!jsPDF){toast('PDF engine unavailable',true);return;}
+  buildCountDocAsync(src).then(function(doc){
+    try{
+      var holder=document.createElement('div');
+      holder.style.position='fixed';holder.style.left='-9999px';holder.style.top='0';holder.style.width='800px';
+      // strip the print button from the doc body
+      holder.innerHTML=doc.replace(/<button[\s\S]*?<\/button>/g,'').replace(/^[\s\S]*?<body>/,'').replace(/<\/body>[\s\S]*$/,'');
+      document.body.appendChild(holder);
+      var pdf=new jsPDF({unit:'pt',format:'a4'});
+      pdf.html(holder,{callback:function(d){
+        document.body.removeChild(holder);
+        cb(d.output('blob'));
+      }, x:20,y:20, width:555, windowWidth:800});
+    }catch(e){toast('PDF build failed: '+e.message,true);}
+  }).catch(function(e){toast('PDF build failed: '+(e&&e.message?e.message:'unknown error'),true);});
 }
 function shareCount(src){
   if(!FEATURES.share){toast('Sharing is not enabled yet',true);return;}
