@@ -7820,22 +7820,33 @@ function openHistory(mismatchOverlayRows,_skipManifoldLiveFetch){
   _updateCloseDayPendingBadge();
   _updateCountPendingBadge();
   if(!histBranch||(role==='Operator'))histBranch=branch||'Helderberg';
-  // Manifold's live mirror only ever holds a day that isn't closed yet (see design doc) -
-  // only worth fetching when this branch's day is still open, and only re-render if the
-  // user is STILL looking at History for this exact branch by the time it resolves (same
-  // staleness-guard convention as renderManifoldSlots()/_fetchManifoldSlotCount() call
-  // sites elsewhere in this file) - a slow network response must never clobber a screen
-  // the user has already navigated away from or switched branch on. _skipManifoldLiveFetch
-  // is set true ONLY by this function's own re-render callback below, so the fetch fires
-  // once per user-initiated open/switch, never re-triggers itself on its own re-render -
-  // without this, the recursive openHistory() call on resolution would re-enter this same
-  // block and fetch again, forever, for as long as History stays open on an unclosed day.
+  // Every live mirror (Manifold + Received/Refill/Private/Residual, via capture_live_rows)
+  // only ever holds a day that isn't closed yet (see design docs) - only worth fetching when
+  // this branch's day is still open, and only re-render if the user is STILL looking at
+  // History for this exact branch by the time it resolves (same staleness-guard convention
+  // as renderManifoldSlots()/_fetchManifoldSlotCount() call sites elsewhere in this file) -
+  // a slow network response must never clobber a screen the user has already navigated away
+  // from or switched branch on. History previously fetched Manifold's mirror only - Received/
+  // Refill/Private/Residual rendered straight off local store, so a delivery/refill/residual
+  // row committed on another device (or even this device, before its own capture screen was
+  // reopened) never showed up here even though the section itself now syncs live -
+  // confirmed live bug, this closes it. _skipManifoldLiveFetch is set true ONLY by this
+  // function's own re-render callback below, so the fetch fires once per user-initiated
+  // open/switch, never re-triggers itself on its own re-render - without this, the
+  // recursive openHistory() call on resolution would re-enter this same block and fetch
+  // again, forever, for as long as History stays open on an unclosed day.
   // Placed AFTER the histBranch normalization above (not before, like an earlier version of
   // this fix had it) - otherwise an Operator's histBranch could still be pre-normalization
   // stale value at the moment this check runs, fetching/gating on the wrong branch.
   if(!_skipManifoldLiveFetch && !loadSavedDay(today,histBranch)){
     (function(br){
-      _fetchManifoldLiveRows(br,today).then(function(){
+      Promise.all([
+        _fetchManifoldLiveRows(br,today),
+        _fetchCaptureLiveRows('received','received',br,today),
+        _fetchCaptureLiveRows('refill','refill',br,today),
+        _fetchCaptureLiveRows('private','private',br,today),
+        _fetchCaptureLiveRows('residual','residual',br,today)
+      ]).then(function(){
         if(histBranch===br && document.getElementById('historyView') && document.getElementById('historyView').classList.contains('active'))openHistory(mismatchOverlayRows,true);
       });
     })(histBranch);
@@ -7876,7 +7887,21 @@ function openHistory(mismatchOverlayRows,_skipManifoldLiveFetch){
         '<td>'+brandLines(counts.Closing.Full[sz])+'</td>'+
         '<td>'+brandLines(counts.Closing.Empty[sz])+'</td></tr>';
     });
-    html+='</table><div style="font-size:11px;color:var(--muted);margin-top:6px">Opening and Closing are separate counts — never added together.</div>';}
+    // Kg totals row: Full columns are actual gas held (qty x nominal, since Count never
+    // weighs an individual cylinder - same tally-estimate _countFullKg already uses in the
+    // PDF report); Empty columns are gas CAPACITY, not gas held now (an empty holds ~0) -
+    // how much these shells could take once refilled, so a manager sees refill demand
+    // sitting in stock without opening the full report. {count:store.count} matches the
+    // shape _countFullKg/_countEmptyCapacityKg expect (same row shape store.count already
+    // is - branch/countType/size/state/qty).
+    var _histSt={count:store.count};
+    html+='<tr style="font-weight:800;background:#F4F6F8">'+
+      '<td>Total kg</td>'+
+      '<td class="n">≈ '+_countFullKg(_histSt,branch,'Opening').toFixed(2)+' kg</td>'+
+      '<td class="n">≈ '+_countEmptyCapacityKg(_histSt,branch,'Opening').toFixed(2)+' kg cap.</td>'+
+      '<td class="n">≈ '+_countFullKg(_histSt,branch,'Closing').toFixed(2)+' kg</td>'+
+      '<td class="n">≈ '+_countEmptyCapacityKg(_histSt,branch,'Closing').toFixed(2)+' kg cap.</td></tr>';
+    html+='</table><div style="font-size:11px;color:var(--muted);margin-top:6px">Opening and Closing are separate counts — never added together. Empty "kg cap." is what those shells could hold once refilled, not gas held now.</div>';}
   html+='</div>';
   // manifold (from live capData if manifold open, else store)
   var man=liveManifold();
@@ -9768,6 +9793,20 @@ function _countFullKg(st,br,stage){
   });
   return out;
 }
+// Total kg gas CAPACITY represented by EMPTY cylinders for one Stock Count stage - not gas
+// currently held (an empty holds ~0), but how much kg those shells could take once refilled
+// (qty x nominal size), same tally-estimate convention as _countFullKg. Lets a manager see
+// refill demand sitting in stock, not just a bare shell count.
+function _countEmptyCapacityKg(st,br,stage){
+  var out=0;
+  (st.count||[]).forEach(function(r){
+    if(r.branch&&br&&r.branch!==br)return;
+    if((r.countType==='Closing'?'Closing':'Opening')!==stage)return;
+    if((r.state==='Empty'?'Empty':'Full')!=='Empty')return;
+    out+=num(r.qty)*_nominalKg(r.size);
+  });
+  return out;
+}
 // Total kg of gas received today (Full in only - Empty out is cylinders leaving, not gas
 // arriving) - same nominal-size estimate as _countFullKg.
 function _receivedFullInKg(st,br){
@@ -9935,7 +9974,8 @@ function buildCountDocAsync(src){
       }).join('');
       return '<h2>'+label+' Count</h2>'+
         '<table><tr><th>Size</th><th>Full \u2014 by brand</th><th>Full total</th><th>Empty \u2014 by brand</th><th>Empty total</th></tr>'+trs+'</table>'+
-        '<p style="font-size:12px;color:#555;margin:4px 0 0"><b>Total gas in Full cylinders ('+label+'): \u2248 '+_countFullKg(st,_b,stage).toFixed(2)+' kg</b></p>';
+        '<p style="font-size:12px;color:#555;margin:4px 0 0"><b>Total gas in Full cylinders ('+label+'): \u2248 '+_countFullKg(st,_b,stage).toFixed(2)+' kg</b></p>'+
+        '<p style="font-size:12px;color:#555;margin:2px 0 0"><b>Total gas capacity of Empty cylinders ('+label+'): \u2248 '+_countEmptyCapacityKg(st,_b,stage).toFixed(2)+' kg</b> <span style="font-weight:400;color:#888">(what these shells could take once refilled, not gas held now)</span></p>';
     }
     var countsHtml=countSection('Opening',counts.Opening,'Opening')+countSection('Closing',counts.Closing,'Closing');
     rows+=countsHtml||'<p style="color:#999">No cylinder count captured.</p>';
