@@ -5096,7 +5096,15 @@ function _refreshCountMismatches(br, localOverlayRows){
       // Without this distinction, exp defaulted to {} in both cases, and every non-zero
       // Opening count anywhere got upserted as a bogus mismatch against a phantom
       // expected-zero baseline that never actually existed.
-      var hasBaseline=!!dcRes.data;
+      // !!dcRes.data alone isn't enough - a day_closes row can exist (a Close Day genuinely
+      // happened) with a totally empty store_snapshot.count (confirmed live 2026-09-07:
+      // Helderberg's Sept 6 close had one), which previously still counted as hasBaseline and
+      // flagged every real Opening count today as a mismatch against a phantom expected-zero.
+      // Requiring the snapshot to actually contain count rows keeps this function's own
+      // documented distinction intact (a genuinely-empty snapshot -> no real baseline, skip;
+      // a non-empty snapshot legitimately missing one specific brand -> still a real
+      // expected-0 for that brand, comparison still runs).
+      var hasBaseline=!!(dcRes.data && dcRes.data.store_snapshot && dcRes.data.store_snapshot.count && dcRes.data.store_snapshot.count.length);
       var exp={};
       if(dcRes.data && dcRes.data.store_snapshot && dcRes.data.store_snapshot.count){
         dcRes.data.store_snapshot.count.filter(function(r){return r.countType==='Closing';}).forEach(function(r){
@@ -5256,7 +5264,16 @@ function computeOpeningMismatches(br){
   // entry, so a plain m.branch!==br check can't tell them apart), even though this function
   // only ever computes/replaces Stock-Count-kind entries.
   store._openMismatch=(store._openMismatch||[]).filter(function(m){return m.branch!==br||m.kind==='manifold';});
-  if(!expWrap||!expWrap.exp)return; // no prior close to compare against
+  // !Object.keys(expWrap.exp).length matters, not just !expWrap.exp - a day_closes row can
+  // exist (a Close Day genuinely happened) with a totally empty store_snapshot.count (the
+  // closing device's local store.count had nothing for this branch at close time - the same
+  // "closed before the closing count was locally visible" gap this session's live-sync fixes
+  // targeted, hitting a day that predates them). Without this, exp={} was treated as "expect
+  // zero of everything," flagging every real Opening count as a mismatch - confirmed live
+  // (2026-09-07, Helderberg, Sept 6 close had an empty count snapshot, every single Opening
+  // size/brand got flagged Incorrect). cHasPrevClose already does this check correctly;
+  // this guard just never matched it.
+  if(!expWrap||!expWrap.exp||!Object.keys(expWrap.exp).length)return; // no real prior close to compare against
   var exp=expWrap.exp;
   // build this morning's opening per size+state+brand
   var op={};
