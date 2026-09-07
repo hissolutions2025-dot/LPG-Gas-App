@@ -500,6 +500,7 @@
   <div class="wrap" style="padding-top:14px;">
     <div class="lockmsg" id="capLock"></div>
     <div id="capTimeWarnBanner" style="display:none;background:rgba(230,57,70,.12);border:2px solid var(--alert);border-radius:10px;padding:8px 12px;font-size:12px;color:var(--alert);font-weight:800;margin-bottom:10px"></div>
+    <div id="capPumpWarnBanner" style="display:none;background:var(--yellow);border:2px solid var(--amber);border-radius:10px;padding:8px 12px;font-size:12px;color:#8a5a00;font-weight:800;margin-bottom:10px"></div>
     <button type="button" id="capAdjustLink" class="adjustTab" style="display:none" onclick="openCapAdjust()">✎ Adjust an already-committed entry (today only)</button>
     <div class="capHint" id="capHint"></div>
     <div class="csizegrid" id="capGrid"></div>
@@ -5761,6 +5762,16 @@ function _draftHasContent(data){
 function openCap(type,opts){
   var _gateBr=(opts&&opts.gateBranch)||branch||'Helderberg';
   if(!canUseSection(_gateBr,type)){toast(sectionActive(_gateBr,type)?(type+' is not enabled for your user'):(type+' is deactivated for '+_gateBr),true);return;}
+  // Refill always draws from this branch's own manifold - no legitimate Refill can exist
+  // before someone has weighed what's actually on the manifold today. Blocked at OPEN time
+  // (not just commit) since there's no reason to let an operator start typing an entry that
+  // can never be saved - Private Refill gets the equivalent check at commit time instead (see
+  // capCommit()), since its "Filled by: Us vs Supplier" choice only exists once the form is
+  // already open, and only the Us-filled case actually needs this.
+  if(type==='refill' && !_manifoldOpeningDoneToday(_gateBr)){
+    toast('Manifold Opening hasn’t been captured yet for '+_gateBr+' today — Refill needs that first. Ask a Manager/Owner to do Manifold → Opening.',true);
+    return;
+  }
   // Returns its promise so a caller like _fixManifoldReading can safely chain work that
   // depends on capType/capBranch/toggleSel having actually been set, instead of racing ahead
   // of this async setup.
@@ -5904,6 +5915,20 @@ function renderGrid(){
         _twb.textContent='⚠ It\'s '+_nowHM()+' — '+_expected+' is usually done around now, but you\'re on '+_stage+'.';
       } else _twb.style.display='none';
     } else _twb.style.display='none';
+  }
+  // Live "pumped more than the manifold has ever had available" warning - informational only,
+  // never blocks (unlike the Manifold-Opening prerequisite in openCap()/capCommit() above,
+  // which does block) - see _pumpedVsAvailable()'s own comment for why this is a different,
+  // earlier check than manifoldBalance()'s end-of-day Gas Out figure.
+  var _pwb=document.getElementById('capPumpWarnBanner');
+  if(_pwb){
+    if(capType==='manifold'){
+      var _pv=_pumpedVsAvailable(capBranch);
+      if(_pv.exceeds){
+        _pwb.style.display='block';
+        _pwb.textContent='⚠ Pumped so far today ('+_pv.pumped.toFixed(2)+'kg, Refill + Private) exceeds what the manifold has had available ('+_pv.available.toFixed(2)+'kg, Opening + Added) — check the readings.';
+      } else _pwb.style.display='none';
+    } else _pwb.style.display='none';
   }
   // Rejected-override marker: a Manager/Owner may have rejected today's reading for this
   // exact cyl+stage via the Pending Overrides screen (see resolvePendingOverride()) -
@@ -6247,6 +6272,15 @@ function openModal(item){
   // redo-confirmation UI (Closing isn't starting a new swap, just reading what's there).
   _manifoldClosingBaseline=null;
   if(capType==='manifold' && toggleSel.stage==='Closing'){
+    // Block Closing on a slot whose swap was started but never finished today (outgoing
+    // cylinder weighed via Removed, incoming cylinder's Added step never done) - previously
+    // this was only caught at the very final Close Day gate; catching it here, the moment
+    // someone tries to weigh Closing on this exact slot, means it gets fixed on the spot
+    // instead of discovered hours later. See _manifoldSlotSwapIncomplete()'s own comment.
+    if(_manifoldSlotSwapIncomplete(item)){
+      toast(item+' has an unfinished swap today — the outgoing cylinder was weighed but the incoming one never was. Finish it via Added before Closing this slot.',true);
+      return;
+    }
     var _closingAddedRows=((capData['Added']&&capData['Added'][item])||[]).filter(function(r){return (r._addedBranch||capBranch)===capBranch;});
     _manifoldClosingBaseline=_manifoldRemovedStepBaseline(item,_closingAddedRows.length?_closingAddedRows[_closingAddedRows.length-1]:null);
   }
@@ -7418,6 +7452,21 @@ async function capCommit(){
   // Same "day already closed, for this branch, on any device" block as cCommit()/rCommit() -
   // see cCommit()'s comment for why this didn't exist anywhere before.
   if(loadSavedDay(today,capBranch)){toast('Day already closed for '+capBranch+' - use the correction tool from Count History instead',true);return;}
+  // Manifold-opening prerequisite - Refill always draws from this branch's manifold (also
+  // gated at OPEN time in openCap(), this is the backstop for a screen that was already open
+  // before Opening got captured); Private Refill only when "Filled by: Us" is chosen, since a
+  // Supplier-filled one never touches this branch's manifold at all. Checked here, not at
+  // open time, because Private's Us/Supplier choice only exists once the form is open.
+  if((capType==='refill'||capType==='private') && !_manifoldOpeningDoneToday(capBranch)){
+    var _blockingUsLine=(capType==='refill')?true:(function(){
+      var _bucket=dataBucket();
+      return Object.keys(_bucket).some(function(item){return (_bucket[item]||[]).some(function(l){return l.filledBy!=='Supplier';});});
+    })();
+    if(_blockingUsLine){
+      toast('Manifold Opening hasn’t been captured yet for '+capBranch+' today — '+(capType==='refill'?'Refill':'a Private Refill filled by us')+' needs that first. Ask a Manager/Owner to do Manifold → Opening.',true);
+      return;
+    }
+  }
   if(!_checkCapTimeWarning())return; // modal shown (Manifold Opening/Closing only); it calls _capCommitReal() itself if continued
   await _capCommitReal();
 }
@@ -7620,6 +7669,16 @@ function openHistory(mismatchOverlayRows,_skipManifoldLiveFetch){
   // (openMismatches()) - no longer shown here, see that function and _mismatchPanelHtml.
   // combined count — Opening and Closing kept separate
   var counts=liveCounts();
+  // Day Completeness checklist - see _dayCompleteness()'s own comment for why it's scoped to
+  // just Stock Count + Manifold. Read-only, derived from real data (not a tickbox) - shown at
+  // the very top of Today so it's the first thing seen, matching Close Day's own gate on it.
+  var _dc=_dayCompleteness(branch);
+  html+='<div class="histSection" style="border:1.5px solid '+(_dc.complete?'var(--ok)':'var(--amber)')+'"><h4>Day Completeness</h4>'+
+    '<div style="font-size:12.5px;line-height:1.9">'+
+    (_dc.countOpeningDone?'✅':'⬜')+' Stock Count — Opening<br>'+
+    (_dc.countClosingDone?'✅':'⬜')+' Stock Count — Closing<br>'+
+    _dc.manifoldSlots.map(function(c){return (_dc.manOpen[c]&&_dc.manClose[c]?'✅':'⬜')+' Manifold — '+c;}).join('<br>')+
+    '</div></div>';
   var sizesWith=ALLSIZES.filter(function(sz){return counts.Opening.Full[sz]||counts.Opening.Empty[sz]||counts.Closing.Full[sz]||counts.Closing.Empty[sz];});
   html+='<div class="histSection"><h4>Cylinder Count — Opening &amp; Closing</h4>';
   if(sizesWith.length===0)html+='<div class="histEmpty">No count entered yet.</div>';
@@ -7788,6 +7847,73 @@ function manifoldBalance(){
   return {opening:opening,added:added,closing:closing,removed:removed,gasOut:gasOut,refKg:refKg,privKg:privKg,pumped:pumped,diff:diff,balanced:Math.abs(diff)<=TOL,tol:TOL,
     hasData:(store.manifold.filter(function(r){return !r.branch||!branch||r.branch===branch;}).length>0)};
 }
+// ===== DAY COMPLETENESS (2026-09-08) =====
+// Whether Stock Count and Manifold were actually captured today - derived from the same real
+// data every other Close Day gate already reads, never a self-reported tickbox (see the
+// approved "Day Completeness Check" demo for the full reasoning). Deliberately scoped to only
+// the two sections that happen every single day without exception - Refill/Private/Received/
+// Faulty/Residual are all event-driven, and Manifold's own Added stage only happens if a
+// cylinder actually ran dry, so none of those belong in a "did today happen" check.
+function _dayCompleteness(br){
+  br=br||branch;
+  var cylLabels=_manifoldCylLabels(br);
+  var manOpen={},manClose={};
+  (store.manifold||[]).forEach(function(r){
+    if(r.branch&&r.branch!==br)return;
+    if((r._date||today)!==today)return;
+    if(r.stage==='Opening')manOpen[r.cyl]=true;
+    if(r.stage==='Closing')manClose[r.cyl]=true;
+  });
+  var manifoldMissing=cylLabels.filter(function(c){return !manOpen[c]||!manClose[c];});
+  var countOpeningDone=(store.count||[]).some(function(r){return (!r.branch||r.branch===br)&&(r._date||today)===today&&r.countType==='Opening';});
+  var countClosingDone=(store.count||[]).some(function(r){return (!r.branch||r.branch===br)&&(r._date||today)===today&&r.countType==='Closing';});
+  return {countOpeningDone:countOpeningDone,countClosingDone:countClosingDone,manifoldSlots:cylLabels,manOpen:manOpen,manClose:manClose,manifoldMissing:manifoldMissing,
+    complete:(countOpeningDone&&countClosingDone&&!manifoldMissing.length)};
+}
+// Narrow, deliberately minimal check for the Refill/Private "Us" prerequisite gate below - at
+// least ONE Opening-stage manifold row exists today for this branch, not "every slot done".
+// Manifold Opening being captured at all is the actual business prerequisite being enforced
+// (you can't record gas pumped from a manifold nobody has weighed yet today); requiring every
+// slot to be complete would be the stricter Day Completeness check above, a different gate
+// for a different moment (Close Day, not "can I even start selling").
+function _manifoldOpeningDoneToday(br){
+  br=br||branch;
+  return (store.manifold||[]).some(function(r){return (!r.branch||r.branch===br)&&(r._date||today)===today&&r.stage==='Opening';});
+}
+// Live running check shown on the Manifold screen (not Refill/Private's own screens - kept
+// there deliberately, see the design discussion: informational, never blocks a sale) - unlike
+// manifoldBalance()'s end-of-day Gas Out (which also subtracts Closing/Removed, only knowable
+// once the day is basically done), this compares what's been PUMPED SO FAR today against what
+// was ever AVAILABLE (Opening + Added so far) - the thing an operator can actually act on
+// mid-day, well before Closing exists.
+function _pumpedVsAvailable(br){
+  br=br||branch;
+  var opening=0,added=0;
+  (store.manifold||[]).forEach(function(r){
+    if(r.branch&&r.branch!==br)return;
+    if((r._date||today)!==today)return;
+    if(r.stage==='Opening')opening+=num(r.gasLeft);
+    if(r.stage==='Added')added+=num(r.gasLeft);
+  });
+  var available=opening+added;
+  var refKg=(store.refill||[]).filter(function(r){return (!r.branch||r.branch===br)&&(r._date||today)===today;}).reduce(function(a,r){return a+num(r.pumped);},0);
+  var privKg=(store.private||[]).filter(function(r){return (!r.branch||r.branch===br)&&(r._date||today)===today&&r.filledBy!=='Supplier';}).reduce(function(a,r){return a+num(r.pumped);},0);
+  var pumped=refKg+privKg;
+  return {available:available,pumped:pumped,exceeds:(available>0||pumped>0)&&pumped>available,diff:pumped-available};
+}
+// Whether a slot's swap (Removed -> Added) was started today but never finished - blocks
+// Closing on that exact slot in openModal() below. Counts rather than exact _swapId pairing
+// (unlike closeDay()'s own stricter final gate) - good enough for a live, in-the-moment check;
+// the drafted (not-yet-committed) Added line is counted too, since an operator who's already
+// typed the incoming cylinder's weigh-in has functionally finished the swap, just hasn't
+// tapped Save yet.
+function _manifoldSlotSwapIncomplete(item){
+  var removedRows=(store.manifold||[]).filter(function(r){return r.branch===capBranch&&(r._date||today)===today&&r.stage==='Removed'&&r.cyl===item;});
+  if(!removedRows.length)return false;
+  var addedCommitted=(store.manifold||[]).filter(function(r){return r.branch===capBranch&&(r._date||today)===today&&r.stage==='Added'&&r.cyl===item;});
+  var addedDrafted=((capData['Added']&&capData['Added'][item])||[]).filter(function(r){return (r._addedBranch||capBranch)===capBranch;});
+  return (addedCommitted.length+addedDrafted.length)<removedRows.length;
+}
 function showManifoldOverride(bal){
   var box=document.getElementById('capModal');
   box.classList.add('show');
@@ -7854,6 +7980,19 @@ function closeDay(_skipPendingOverridesRefresh,_dayActivitySummary){
   });
   if(_unpairedManifoldAddedSlots.length){
     toast('Cannot close: '+_unpairedManifoldAddedSlots.join(', ')+' — incoming cylinder recorded but no outgoing cylinder weigh-out exists for it (incomplete swap). A Manager/Owner must resolve it (Manifold capture → "Adjust an already-committed entry") before the day can be closed.',true);
+    return;
+  }
+  // #4b2 BLOCK: Day Completeness - Stock Count and Manifold must have actually been captured
+  // today, not just "something" captured somewhere (the total>0 check right at the top of this
+  // function). Derived from real data, same as every other gate here - see _dayCompleteness()'s
+  // own comment for why this is scoped to only these two sections.
+  var _compl=_dayCompleteness(branch);
+  if(!_compl.countOpeningDone||!_compl.countClosingDone){
+    toast('Cannot close: Stock Count '+(!_compl.countOpeningDone?'Opening':'Closing')+' has not been counted yet for '+branch+' today.',true);
+    return;
+  }
+  if(_compl.manifoldMissing.length){
+    toast('Cannot close: Manifold '+_compl.manifoldMissing.join(', ')+' still needs a reading (Opening and/or Closing) before '+branch+'\'s day can close.',true);
     return;
   }
   // #4c BLOCK: any Manifold reading still awaiting remote Manager/Owner approval. Unlike the
