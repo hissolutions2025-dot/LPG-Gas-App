@@ -9932,7 +9932,22 @@ function buildCountDocAsync(src){
   function inBr(r){return !r.branch||!_b||r.branch===_b;}
   function cell(obj){if(!obj)return '\u2014';return Object.keys(obj).map(function(b){return b+' \u00d7 '+obj[b];}).join('<br>');}
   function totalOf(obj){if(!obj)return 0;return Object.keys(obj).reduce(function(a,b){return a+obj[b];},0);}
-  return Promise.all([_fetchDayActivity(_b,src.date),_fetchFaultyHeld(_b)]).then(function(fetched){
+  // Live-refresh before building, same gap History just had (2026-09-07): st is normally the
+  // live global `store` (src===_todaySrc()) - pulling fresh Received/Refill/Private/Residual/
+  // Manifold rows into it here means the report is correct even when built from a device that
+  // never opened those screens/History today, not just whichever local data happened to
+  // already be hydrated. Skipped for a historical/closed-day source (_savedSrc's snapshot,
+  // st!==store) - that data is frozen at close time, nothing live left to fetch.
+  var _liveFetch=(st===store)?Promise.all([
+    _fetchManifoldLiveRows(_b,src.date),
+    _fetchCaptureLiveRows('received','received',_b,src.date),
+    _fetchCaptureLiveRows('refill','refill',_b,src.date),
+    _fetchCaptureLiveRows('private','private',_b,src.date),
+    _fetchCaptureLiveRows('residual','residual',_b,src.date)
+  ]):Promise.resolve();
+  return _liveFetch.then(function(){
+    return Promise.all([_fetchDayActivity(_b,src.date),_fetchFaultyHeld(_b)]);
+  }).then(function(fetched){
     var activityRows=fetched[0], faultyRows=fetched[1];
     var people=_groupActivityByPerson(activityRows);
     var excGroups=_groupExceptions(activityRows);
