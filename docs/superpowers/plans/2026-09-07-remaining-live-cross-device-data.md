@@ -70,6 +70,7 @@ ALTER TABLE seal_rolls ENABLE ROW LEVEL SECURITY;
 CREATE POLICY seal_rolls_select ON seal_rolls FOR SELECT TO authenticated USING (true);
 CREATE POLICY seal_rolls_insert ON seal_rolls FOR INSERT TO authenticated WITH CHECK (true);
 CREATE POLICY seal_rolls_update ON seal_rolls FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+CREATE POLICY seal_rolls_delete ON seal_rolls FOR DELETE TO authenticated USING (true);
 
 -- Seal Register: used-seal history, the real duplicate guard
 CREATE TABLE IF NOT EXISTS seal_used (
