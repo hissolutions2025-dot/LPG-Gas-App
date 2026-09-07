@@ -5441,12 +5441,14 @@ function openReceived(){
     rShow('recvGridView');rRenderGrid();rLoadSuppliers();window.scrollTo(0,0);
     _saveCurrentSection('received');
     (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&rBranch===br)rRenderGrid();});})(rBranch);
+    (function(br){_fetchCaptureLiveRows('received','received',br,today).then(function(){if(rBranch===br)rRenderGrid();});})(rBranch);
   });
 }
 function rSetBranch(x){
   if(role==='Operator' && x!==branch){toast('Locked to '+branch,true);return;}
   rBranch=x;applyBranchLock('rbr-',x);rRenderGrid();rRenderSupplierSelect();rRestoreSupplierFields();
   (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&rBranch===br)rRenderGrid();});})(rBranch);
+  (function(br){_fetchCaptureLiveRows('received','received',br,today).then(function(){if(rBranch===br)rRenderGrid();});})(rBranch);
 }
 
 // Three-state cell, same visual language as Count's cCellHtml (shares the same .cCell.
@@ -5719,6 +5721,7 @@ async function rCommit(){
     if(newRows.length===0){toast('Nothing to commit',true);return;}
     store.received=(store.received||[]).concat(newRows);
     syncPush('Received',syncRowsReceived(newRows,rBranch));
+    _pushCaptureLiveRows('received',newRows,rBranch);
     saveWorkingStore();auditLog('Received committed',newRows.length+' line(s) — '+rBranch+(mm.length?' · '+mm.length+' override(s)':''),null,mm.length?rOverrides:null);
     // Same class of bug as Refill/Private: rData[rBranch] (the grid's Full In/Empty Out
     // lines) and rSupplierState[rBranch] (supplier/delivery note/invoice/photos) were never
