@@ -7817,7 +7817,7 @@ function applyManifoldOverride(){
   document.getElementById('capModal').classList.remove('show');
   closeDay();
 }
-function closeDay(_skipPendingOverridesRefresh){
+function closeDay(_skipPendingOverridesRefresh,_dayActivitySummary){
   var total=Object.keys(store).filter(function(k){return k[0]!=='_';}).reduce(function(a,k){return a+(Array.isArray(store[k])?store[k].length:0);},0);
   if(total===0){toast('Nothing captured to close the day',true);return;}
   if(!sigData.sigOp){toast('Operator signature box must be signed first',true);return;}
@@ -7896,19 +7896,38 @@ function closeDay(_skipPendingOverridesRefresh){
   // MANIFOLD BALANCE GATE
   var bal=manifoldBalance();
   if(bal.hasData && !bal.balanced && !store._manifoldOverride){ showManifoldOverride(bal);return; }
+  // One-shot fetch of today's exception counts + who-worked names for the confirm summary
+  // below - same one-shot recursion-guard shape as the Pending Overrides refetch above,
+  // deliberately placed AFTER every earlier gate so it never fires on an attempt that's
+  // going to be blocked anyway. Never blocks the close itself on failure - an empty
+  // summary here just means the confirm dialog shows less detail, not a hard stop.
+  if(!_dayActivitySummary){
+    _fetchDayActivity(branch,today).then(function(rows){
+      closeDay(true,{excGroups:_groupExceptions(rows),people:_groupActivityByPerson(rows)});
+    },function(){
+      closeDay(true,{excGroups:[],people:[]});
+    });
+    return;
+  }
   // build day summary
   var c=liveCounts();
   function grand(obj){var t=0;Object.keys(obj).forEach(function(sz){Object.keys(obj[sz]).forEach(function(b){t+=obj[sz][b];});});return t;}
   var recv=liveReceived();var rf=0,re=0;Object.keys(recv).forEach(function(sz){rf+=recv[sz].fullIn;re+=recv[sz].emptyOut;});
   var refKg=store.refill.reduce(function(a,r){return a+num(r.pumped);},0);
   var privKg=store.private.reduce(function(a,r){return a+num(r.pumped);},0);
+  var peopleLine=_dayActivitySummary.people.length?_dayActivitySummary.people.map(function(p){return p.name+' ('+p.role+')';}).join(', '):'—';
+  // Group labels carry &amp; for the HTML report - this dialog is plain text, so decode it back.
+  var excLine=_dayActivitySummary.excGroups.length?_dayActivitySummary.excGroups.map(function(g){return g.label.replace(/&amp;/g,'&')+': '+g.items.length;}).join(', '):'none';
   var summary='Close the day for '+branch+' ('+today+')?\n\n'+
     '• Opening: '+(grand(c.Opening.Full)+grand(c.Opening.Empty))+' cylinders counted\n'+
     '• Closing: '+(grand(c.Closing.Full)+grand(c.Closing.Empty))+' cylinders counted\n'+
     '• Received: '+rf+' full in / '+re+' empty out\n'+
     '• Refills: '+store.refill.length+' ('+refKg.toFixed(2)+' kg)\n'+
     '• Private refills: '+store.private.length+' ('+privKg.toFixed(2)+' kg)\n'+
-    (bal.hasData?('• Manifold balance: gas out '+bal.gasOut.toFixed(2)+'kg vs pumped '+bal.pumped.toFixed(2)+'kg → diff '+(bal.diff>0?'+':'')+bal.diff.toFixed(2)+'kg'+(bal.balanced?' ✓':' ⚠ overridden')+'\n\n'):'\n')+
+    (bal.hasData?('• Manifold balance: gas out '+bal.gasOut.toFixed(2)+'kg vs pumped '+bal.pumped.toFixed(2)+'kg → diff '+(bal.diff>0?'+':'')+bal.diff.toFixed(2)+'kg'+(bal.balanced?' ✓':' ⚠ overridden')+'\n'):'')+
+    '• Worked on this: '+peopleLine+'\n'+
+    '• Exceptions today: '+excLine+'\n\n'+
+    'Full detail for all of the above is in the day\'s PDF report (Count History → Download signed stock count PDF) once closed.\n\n'+
     'Both signatures are on file. Once closed, the day is marked final for this demo.';
   if(!confirm(summary))return;
   if(!confirm('FINAL STEP — This will CLOSE and ZERO the day for '+branch+'. The count cannot be added to after this. Are you sure?'))return;
