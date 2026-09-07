@@ -1539,6 +1539,44 @@ function sealsSave(a){try{localStorage.setItem('gs_seal_rolls',JSON.stringify(a)
 // Used-seal history per roll: {rollId:[seal,seal,...]}
 function sealUsedLoad(){try{return JSON.parse(localStorage.getItem('gs_seal_used')||'{}');}catch(e){return {};}}
 function sealUsedSave(o){try{localStorage.setItem('gs_seal_used',JSON.stringify(o));}catch(e){}}
+// Live cross-device refresh: pulls this branch's roll config and used-seal history from the
+// shared tables into the same local blobs sealsLoad()/sealUsedLoad() already read, so
+// sealValidate's existing synchronous check sees cross-device history with no change to its
+// own logic. Same refresh-on-open shape as every other section in this phase - called from
+// the Refill screen (where sealValidate actually runs) and the Admin Seal Register tab. See
+// docs/superpowers/specs/2026-09-07-remaining-live-cross-device-data-design.md.
+function _fetchSealLive(br){
+  var p1=sb.from('seal_rolls').select('*').eq('branch',br).then(function(res){
+    if(res.error){console.error('_fetchSealLive rolls failed:',res.error.message);return;}
+    var live=(res.data||[]).map(function(d){return {id:d.id,branch:d.branch,brand:d.brand,start:d.start_no,end:d.end_no,status:d.status,warnAt:d.warn_at,createdBy:d.created_by,createdAt:d.created_at,closedBy:d.closed_by,closedAt:d.closed_at,closeReason:d.close_reason};});
+    var others=sealsLoad().filter(function(r){return r.branch!==br;});
+    sealsSave(others.concat(live));
+  },function(e){console.error('_fetchSealLive rolls rejected:',e&&e.message);});
+  var p2=sb.from('seal_used').select('roll_id,seal_no').eq('branch',br).then(function(res){
+    if(res.error){console.error('_fetchSealLive used failed:',res.error.message);return;}
+    var o=sealUsedLoad();
+    // Rebuild only this branch's rolls' used-lists from the live rows - a roll belonging to
+    // another branch is never touched here.
+    var brRollIds={};sealsLoad().filter(function(r){return r.branch===br;}).forEach(function(r){brRollIds[r.id]=true;});
+    Object.keys(o).forEach(function(rid){if(brRollIds[rid])delete o[rid];});
+    (res.data||[]).forEach(function(row){
+      if(!o[row.roll_id])o[row.roll_id]=[];
+      if(o[row.roll_id].indexOf(row.seal_no)===-1)o[row.roll_id].push(row.seal_no);
+    });
+    sealUsedSave(o);
+  },function(e){console.error('_fetchSealLive used rejected:',e&&e.message);});
+  return Promise.all([p1,p2]);
+}
+function _pushSealRoll(r){
+  sb.from('seal_rolls').upsert({id:r.id,branch:r.branch,brand:r.brand||null,start_no:r.start,end_no:r.end,status:r.status,warn_at:r.warnAt!==undefined?r.warnAt:20,created_by:currentProfile&&currentProfile.id,closed_by:(r.status==='Closed'||r.status==='Depleted')?(currentProfile&&currentProfile.id):null,closed_at:r.closedAt||null,close_reason:r.closeReason||null},{onConflict:'id'}).then(function(res){
+    if(res.error)console.error('seal_rolls upsert failed:',res.error.message);
+  });
+}
+function _deleteSealRoll(id){
+  sb.from('seal_rolls').delete().eq('id',id).then(function(res){
+    if(res.error)console.error('seal_rolls delete failed:',res.error.message);
+  });
+}
 function sealCap(){return DEFAULT_SEAL_WARN;}
 var DEFAULT_SEAL_WARN=20;
 function newRollId(){return 'R'+Date.now()+Math.floor(Math.random()*1000);}
@@ -1556,22 +1594,39 @@ function rollUsedList(id){return sealUsedLoad()[id]||[];}
 function rollUsedCount(id){return rollUsedList(id).length;}
 function rollTotal(r){return (r.end-r.start+1);}
 function rollRemaining(r){return rollTotal(r)-rollUsedCount(r.id);}
-// record a seal against active roll's history (called on refill commit)
+// record a seal against active roll's history (called on refill commit).
+// Returns a Promise<boolean> - true if this seal was newly recorded (commit should proceed
+// for this row), false if the shared table rejected it as a duplicate (commit for THIS row
+// only should be treated as failed - see _capCommitReal's refill branch). Local gs_seal_used
+// is still updated optimistically first, same as before, so the existing synchronous
+// sealValidate() keeps working unchanged for every other line in the same session - this
+// only adds a server round-trip as the final, authoritative word.
 function sealRecordUse(br,seal){
-  var r=activeRoll(br);if(!r)return;
+  var r=activeRoll(br);if(!r)return Promise.resolve(true);
   var o=sealUsedLoad();if(!o[r.id])o[r.id]=[];
   if(o[r.id].indexOf(seal)===-1){o[r.id].push(seal);sealUsedSave(o);}
   // auto-deplete when full
   if(rollUsedCount(r.id)>=rollTotal(r)){
     var rolls=sealsLoad();var idx=rolls.findIndex(function(x){return x.id===r.id;});
-    if(idx>-1){rolls[idx].status='Depleted';rolls[idx].closedAt=nowStamp();sealsSave(rolls);
+    if(idx>-1){rolls[idx].status='Depleted';rolls[idx].closedAt=nowStamp();sealsSave(rolls);_pushSealRoll(rolls[idx]);
       promoteQueued(br);
       syncPushRoll(rolls[idx],'DEPLETED');}
   }
+  return sb.from('seal_used').insert({roll_id:r.id,branch:br,seal_no:seal,used_by:currentProfile&&currentProfile.id}).then(function(res){
+    if(res.error){
+      // Postgres unique_violation is code 23505 - any other error (network, RLS, etc.) is
+      // treated as non-fatal, matching every other live write's tolerant tier in this app;
+      // only a confirmed conflict is treated as a real duplicate.
+      if(res.error.code==='23505'){console.error('seal_used duplicate for roll '+r.id+' seal '+seal);return false;}
+      console.error('seal_used insert failed (non-duplicate):',res.error.message);
+      return true;
+    }
+    return true;
+  },function(e){console.error('seal_used insert rejected:',e&&e.message);return true;});
 }
 function promoteQueued(br){
   var rolls=sealsLoad();var q=rolls.filter(function(r){return r.branch===br&&r.status==='Queued';})[0];
-  if(q){var idx=rolls.findIndex(function(x){return x.id===q.id;});rolls[idx].status='Active';sealsSave(rolls);
+  if(q){var idx=rolls.findIndex(function(x){return x.id===q.id;});rolls[idx].status='Active';sealsSave(rolls);_pushSealRoll(rolls[idx]);
     syncPushRoll(rolls[idx],'ACTIVATED');
     toast('Queued seal roll '+q.start+'-'+q.end+' is now active for '+br);}
 }
@@ -1708,7 +1763,7 @@ function _adminTabShow(t){
   if(t==='bsetup')renderBsetup();
   if(t==='manifold')renderManifoldSlots();
   if(t==='clear'){var d=document.getElementById('clrDate');if(d&&!d.value)d.value=today;}
-  if(t==='seals'){fillBrandPicker();renderRolls();}
+  if(t==='seals'){fillBrandPicker();renderRolls();_fetchSealLive(adminBranch).then(function(){renderRolls();renderUsedSeals();});}
   if(t==='suppliers')renderSuppliers();
   if(t==='faulty')faultyTabInit();
   if(t==='suppliersmgmt'){suppliersMgmtCancel();suppliersMgmtLoad();}
@@ -1717,6 +1772,7 @@ function _adminTabShow(t){
 function adminSetBranch(b){
   if(role==='Manager' && (_curUser().branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
   adminBranch=b;applyBranchLock('asbr-',b);renderRolls();
+  _fetchSealLive(adminBranch).then(function(){renderRolls();renderUsedSeals();});
 }
 function fillBrandPicker(){
   var sel=document.getElementById('nrBrand');if(!sel)return;
@@ -1750,7 +1806,7 @@ function createRoll(){
       status:hasActive?'Queued':'Active',createdBy:operator,createdAt:nowStamp()};
     // only one queued roll per branch allowed
     if(roll.status==='Queued' && queuedRoll(adminBranch)){toast('A roll is already queued for this branch. Close/deplete the active one first.',true);return;}
-    rolls.push(roll);sealsSave(rolls);
+    rolls.push(roll);sealsSave(rolls);_pushSealRoll(roll);
     auditLog('Seal roll created',adminBranch+' '+brand+' '+s+'\u2013'+e+' ('+roll.status+') by '+auth.name);
     syncPushRoll(roll, roll.status==='Active'?'ACTIVATED':'QUEUED');
     toast('Roll '+s+'\u2013'+e+' '+(roll.status==='Active'?'activated':'queued')+' \u2713');
@@ -1789,7 +1845,7 @@ function closeRollEarly(id){
     var rolls=sealsLoad();var idx=rolls.findIndex(function(x){return x.id===id;});
     if(idx<0)return;
     rolls[idx].status='Closed';rolls[idx].closedBy=auth.name;rolls[idx].closedAt=nowStamp();rolls[idx].closeReason=reason.trim();
-    sealsSave(rolls);
+    sealsSave(rolls);_pushSealRoll(rolls[idx]);
     auditLog('Seal roll closed early',rolls[idx].brand+' '+rolls[idx].start+'\u2013'+rolls[idx].end+' by '+auth.name+' \u2014 '+reason.trim());
     syncPushRoll(rolls[idx],'CLOSED');
     promoteQueued(rolls[idx].branch);
@@ -1801,7 +1857,7 @@ function cancelQueued(id){
   if(r && rollUsedCount(id)>0){toast('This roll has recorded seals \u2014 close it, do not cancel',true);return;}
   authGate('seal_create','Cancel this queued roll?').then(function(auth){
     if(!auth)return;
-    var rolls=sealsLoad().filter(function(x){return x.id!==id;});sealsSave(rolls);
+    var rolls=sealsLoad().filter(function(x){return x.id!==id;});sealsSave(rolls);_deleteSealRoll(id);
     auditLog('Queued roll cancelled',id+' by '+auth.name);renderRolls();
   });
 }
@@ -1821,7 +1877,7 @@ function editRoll(id){
   authGate(key,'Edit roll range to '+ns+'\u2013'+ne+'?'+(used>0?'\n\nWARNING: '+used+' seals already recorded against this roll.':'')).then(function(auth){
     if(!auth)return;
     var oldr=r.start+'\u2013'+r.end;
-    r.start=ns;r.end=ne;sealsSave(rolls);
+    r.start=ns;r.end=ne;sealsSave(rolls);_pushSealRoll(r);
     auditLog('Seal roll edited',oldr+' \u2192 '+ns+'\u2013'+ne+' ('+r.brand+' '+r.branch+') by '+auth.name);
     syncPushRoll(r,'EDITED');
     renderRolls();
@@ -1841,7 +1897,7 @@ function deleteRoll(id){
     if(!authD)return;
     var r=sealsLoad().find(function(x){return x.id===id;});
     var wasActive=r&&r.status==='Active';
-    var rolls=sealsLoad().filter(function(x){return x.id!==id;});sealsSave(rolls);
+    var rolls=sealsLoad().filter(function(x){return x.id!==id;});sealsSave(rolls);_deleteSealRoll(id);
     // also drop its used-history if force-deleted
     var uo=sealUsedLoad();if(uo[id]){delete uo[id];sealUsedSave(uo);}
     auditLog('Seal roll deleted',id+(forced?(' (FORCED, '+used+' seals orphaned)'):'')+' by '+authD.name);
@@ -5893,6 +5949,7 @@ function openCap(type,opts){
   buildHeader(c);
   if(type==='manifold'){_fetchManifoldSlotCount(capBranch).then(renderGrid);_fetchManifoldPrevClose(capBranch);_fetchManifoldLiveRows(capBranch,today).then(renderGrid);} // re-renders again once live data lands; renderGrid() below runs immediately with whatever's cached/fallback
   if(type==='refill'||type==='private'){_fetchCaptureLiveRows(type,type,capBranch,today).then(renderGrid);}
+  if(type==='refill'){_fetchSealLive(capBranch);}
   (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&capBranch===br)renderGrid();});})(capBranch);
   renderGrid();
   if(type==='private')loadPrivateSuppliers(); // populate the Supplier/redistributor dropdown
@@ -5929,6 +5986,7 @@ function capSetBranch(x){
   document.getElementById('hSub').textContent=capBranch;
   if(capType==='manifold'){_fetchManifoldSlotCount(x).then(renderGrid);_fetchManifoldPrevClose(x);_fetchManifoldLiveRows(x,today).then(renderGrid);}
   if(capType==='refill'||capType==='private'){_fetchCaptureLiveRows(capType,capType,x,today).then(renderGrid);}
+  if(capType==='refill'){_fetchSealLive(x);}
   (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&capBranch===br)renderGrid();});})(x);
   renderGrid(); // grid must re-render on the new branch, not keep showing the old branch's stale state - runs immediately with whatever's cached, the live fetch above re-renders again once it lands
   if(capType==='private')_refreshFillSupplierSelect();
@@ -7604,10 +7662,23 @@ async function _capCommitReal(){
     freshRows.forEach(function(r){r._committed=true;});
     if(capType==='manifold'){syncPush('Manifold',syncRowsManifold(freshRows,capBranch));_pushManifoldLiveRows(freshRows,capBranch);_pushManifoldPendingOverrides(freshRows,capBranch);}
     else if(capType==='refill'){
-      // record each seal against the active roll history (dedupe handled inside)
-      freshRows.filter(function(r){return r.seal;}).forEach(function(r){sealRecordUse(capBranch,num(r.seal));});
-      syncPush('Refills',syncRowsRefill(freshRows,capBranch));
-      _pushCaptureLiveRows('refill',freshRows,capBranch);
+      // Record each seal against the active roll history - the seal_used insert (inside
+      // sealRecordUse) is the real, server-enforced duplicate guard now, not just the local
+      // dedupe. A row whose seal loses that race is un-committed and left out of both the
+      // Sheet push and the live mirror - it stays in store.refill (draft-visible again) for
+      // the operator to fix and recommit, while every other row in the same commit proceeds.
+      var sealRows=freshRows.filter(function(r){return r.seal;});
+      var sealResults=await Promise.all(sealRows.map(function(r){return sealRecordUse(capBranch,num(r.seal));}));
+      var rejectedSeals=[];
+      sealRows.forEach(function(r,i){if(!sealResults[i]){r._committed=false;rejectedSeals.push(r);}});
+      var okRows=freshRows.filter(function(r){return rejectedSeals.indexOf(r)===-1;});
+      if(rejectedSeals.length){
+        toast(rejectedSeals.length+' seal(s) were already used on another device — check '+rejectedSeals.map(function(r){return r.seal;}).join(', ')+' and recommit',true);
+      }
+      if(okRows.length){
+        syncPush('Refills',syncRowsRefill(okRows,capBranch));
+        _pushCaptureLiveRows('refill',okRows,capBranch);
+      }
     }
     else if(capType==='private'){
       syncPush('Private',syncRowsPrivate(freshRows,capBranch));
