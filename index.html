@@ -1760,14 +1760,14 @@ function _adminTabShow(t){
   var _tf=document.getElementById('atab-faulty');if(_tf)_tf.classList.toggle('on',t==='faulty');
   var _tsm=document.getElementById('atab-suppliersmgmt');if(_tsm)_tsm.classList.toggle('on',t==='suppliersmgmt');
   var _tct=document.getElementById('atab-counttimes');if(_tct)_tct.classList.toggle('on',t==='counttimes');
-  if(t==='bsetup')renderBsetup();
+  if(t==='bsetup'){renderBsetup();_fetchAppConfig('branch_setup',bcfgSave).then(renderBsetup);}
   if(t==='manifold')renderManifoldSlots();
   if(t==='clear'){var d=document.getElementById('clrDate');if(d&&!d.value)d.value=today;}
   if(t==='seals'){fillBrandPicker();renderRolls();_fetchSealLive(adminBranch).then(function(){renderRolls();renderUsedSeals();});}
   if(t==='suppliers')renderSuppliers();
   if(t==='faulty')faultyTabInit();
   if(t==='suppliersmgmt'){suppliersMgmtCancel();suppliersMgmtLoad();}
-  if(t==='counttimes')loadCountCutoffUI();
+  if(t==='counttimes'){loadCountCutoffUI();_fetchAppConfig('count_cutoff',saveCountCutoffCfg).then(loadCountCutoffUI);}
 }
 function adminSetBranch(b){
   if(role==='Manager' && (_curUser().branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
@@ -2704,6 +2704,23 @@ var REFILL_ITEMS=['5kg','9kg','12kg','14kg','19kg','14kg-FLT','19kg-FLT','8kg-Pr
 var SECTION_ITEMS={count:COUNT_ITEMS,refill:REFILL_ITEMS,received:COUNT_ITEMS,private:[],manifold:['Cyl 1','Cyl 2','Cyl 3','Cyl 4']};
 function bcfgLoad(){try{return JSON.parse(localStorage.getItem('gs_bcfg')||'{}');}catch(e){return {};}}
 function bcfgSave(c){localStorage.setItem('gs_bcfg',JSON.stringify(c));}
+// Live cross-device config: app_config holds one row per key ('branch_setup','count_cutoff').
+// Fetched into the same local blobs bcfgLoad()/loadCountCutoffCfg() already read (so every
+// existing read call site needs zero changes), written straight through on save - these are
+// Owner-edited settings, not a capture stream, so last-write-wins is the correct model, no
+// draft/commit split needed. See docs/superpowers/specs/2026-09-07-remaining-live-cross-
+// device-data-design.md.
+function _fetchAppConfig(key,localSaveFn){
+  return sb.from('app_config').select('value').eq('key',key).maybeSingle().then(function(res){
+    if(res.error){console.error('_fetchAppConfig('+key+') failed:',res.error.message);return;}
+    if(res.data&&res.data.value)localSaveFn(res.data.value);
+  },function(e){console.error('_fetchAppConfig('+key+') rejected:',e&&e.message);});
+}
+function _pushAppConfig(key,value){
+  sb.from('app_config').upsert({key:key,value:value,updated_by:currentProfile&&currentProfile.id,updated_at:new Date().toISOString()},{onConflict:'key'}).then(function(res){
+    if(res.error)console.error('_pushAppConfig('+key+') failed:',res.error.message);
+  });
+}
 
 // ===== COUNT TIMES (Opening vs Closing expected-time-of-day warning) =====
 // Owner/Manager-configurable cutoff time per day-type: before it, an Opening count is
@@ -2746,6 +2763,7 @@ function saveCountCutoffUI(){
     sunday:document.getElementById('ctSunday').value||'10:00'
   };
   saveCountCutoffCfg(cfg);
+  _pushAppConfig('count_cutoff',cfg);
   auditLog('Count times updated','Weekday '+cfg.weekday+' · Saturday '+cfg.saturday+' · Sunday '+cfg.sunday);
   toast('Count times saved ✓');
 }
@@ -2771,6 +2789,7 @@ function bcfgSet(branch,sec,item,val){
   if(item===null){c[branch].sections[sec]=val?1:0;}
   else {c[branch].items[sec]=c[branch].items[sec]||{}; c[branch].items[sec][item]=val?1:0;}
   bcfgSave(c);
+  _pushAppConfig('branch_setup',c);
   // sync to sheet so summary can grey out
   syncPush('BranchConfig',[{ts:new Date().toISOString(),date:today||'',branch:branch,Section:sec,Item:(item||'(section)'),Active:(val?1:0),By:operator||''}]);
 }
