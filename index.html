@@ -9943,7 +9943,10 @@ function buildCountDocAsync(src){
     _fetchCaptureLiveRows('received','received',_b,src.date),
     _fetchCaptureLiveRows('refill','refill',_b,src.date),
     _fetchCaptureLiveRows('private','private',_b,src.date),
-    _fetchCaptureLiveRows('residual','residual',_b,src.date)
+    _fetchCaptureLiveRows('residual','residual',_b,src.date),
+    _refreshSharedCounts(_b) // stock_counts (Opening/Closing) - missed in the first pass of
+    // this fix; same gap as the other five, just spotted a round later (reported: "Opening
+    // stock count is not reflecting in the report").
   ]):Promise.resolve();
   return _liveFetch.then(function(){
     return Promise.all([_fetchDayActivity(_b,src.date),_fetchFaultyHeld(_b)]);
