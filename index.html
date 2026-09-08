@@ -10227,7 +10227,10 @@ function buildCountDocAsync(src){
     var timeRange=times.length?(times[0]+(times.length>1?' \u2192 '+times[times.length-1]:'')):'\u2014';
     var sig=src.sig||{};
     var signedBy=src.signedBy||{};
-    var doc='<!DOCTYPE html><html><head><meta charset="utf-8"><title>Stock Count '+src.date+'</title><style>'+
+    // Title drives the suggested filename when printed/saved as PDF - Branch / Stock Take /
+    // Date order as requested, " - " as separator since "/" isn't a valid filename character
+    // on Windows (the exact platform this app is used on).
+    var doc='<!DOCTYPE html><html><head><meta charset="utf-8"><title>'+(_b||'Branch')+' - Stock Take - '+src.date+'</title><style>'+
       'body{font-family:Arial,sans-serif;color:#16202B;padding:28px;max-width:800px;margin:0 auto;}'+
       'h1{font-size:20px;margin:0 0 2px;color:#1F3A5F;}h2{font-size:15px;color:#1F3A5F;margin:22px 0 6px;padding-top:14px;border-top:1px solid #eee;}h2:first-of-type{border-top:none;padding-top:0}.meta{font-size:12px;color:#555;margin-bottom:18px;line-height:1.6;}'+
       'table{width:100%;border-collapse:collapse;font-size:12px;}'+
