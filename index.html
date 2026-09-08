@@ -10055,20 +10055,30 @@ function buildCountDocAsync(src){
     var _sumMan=(st.manifold||[]).filter(inBr);
     var _sumManCylSub=_sumMan.filter(function(m){return (m.stage||'Opening')==='Closing';})
       .map(function(m){return m.cyl+': '+(+m.gasLeft).toFixed(2)+'kg';}).join(' · ')||'No Closing readings';
+    // Grouped by relevance/type, not insertion order - Total Gas On Hand pinned first (the
+    // single headline figure), then: overall stock totals -> today's movement -> Manifold ->
+    // Refills -> condition/risk (Faulty/Residual) -> Exceptions -> People. Grouping requested
+    // 2026-09-08; the tiles themselves and their math are unchanged, only the array order.
     var summaryTiles=[
+      // Overall stock totals
       {label:'Total Gas On Hand',val:_sumGrandGasKg.toFixed(2)+' kg',cls:'',sub:'Closing Full + Manifold + Faulty-Held'},
       {label:'Total Cylinder Shells',val:String(_sumGrandShellCount),cls:'',sub:'Full + Empty + Manifold + Faulty + Residual'},
-      {label:'Stock Received Today',val:_sumRecvKg.toFixed(2)+' kg',cls:_sumRecvKg?'ok':'',sub:(st.received||[]).filter(inBr).length+' line(s)'},
-      {label:'Manifold Balance',val:bal.hasData?((bal.diff>0?'+':'')+bal.diff.toFixed(2)+' kg'):'—',cls:bal.hasData?(bal.balanced?'ok':'bad'):'',sub:bal.hasData?(bal.balanced?'Balanced':'Needs review'):'No manifold activity'},
-      {label:'Exceptions Today',val:String(_sumExcCount),cls:_sumExcCount?'warn':'ok',sub:excGroups.length+' type(s)'},
-      {label:'People Involved',val:String(people.length),cls:'',sub:people.map(function(p){return p.name;}).join(', ')||'—'},
       {label:'Total Gas Capacity — Empty Cylinders',val:_sumEmptyCapKg.toFixed(2)+' kg',cls:'',sub:'Closing — what these shells could take once refilled'},
+      // Today's stock movement
+      {label:'Stock Received Today',val:_sumRecvKg.toFixed(2)+' kg',cls:_sumRecvKg?'ok':'',sub:(st.received||[]).filter(inBr).length+' line(s)'},
       {label:'Net Cylinder Exchange',val:(_sumNetExchange>0?'+':'')+_sumNetExchange+' shells',cls:'',sub:_sumSoldTotal+' est. sold − '+_sumRecvBackTotal+' est. received back'},
+      // Manifold
+      {label:'Manifold Balance',val:bal.hasData?((bal.diff>0?'+':'')+bal.diff.toFixed(2)+' kg'):'—',cls:bal.hasData?(bal.balanced?'ok':'bad'):'',sub:bal.hasData?(bal.balanced?'Balanced':'Needs review'):'No manifold activity'},
       {label:'Manifold — Cyl Weights + Total',val:_sumManClosingKg.toFixed(2)+' kg',cls:'',sub:_sumManCylSub},
+      // Refills
       {label:'Total Refills',val:_sumRefKg.toFixed(2)+' kg',cls:'',sub:_sumRf.length+' cylinder(s) pumped'},
       {label:'Total Private Refill',val:_sumPvTot.toFixed(2)+' kg',cls:'',sub:_sumPvUsTot.toFixed(2)+'kg by us + '+(_sumPvTot-_sumPvUsTot).toFixed(2)+'kg by supplier'},
+      // Condition / risk
       {label:'Faulty Cylinders',val:String(faultyTot.count),cls:faultyTot.count?'warn':'ok',sub:faultyTot.gasLoss.toFixed(2)+'kg gas at risk · '+faultyTot.gasRemaining.toFixed(2)+'kg remaining'},
-      {label:'Residual Gas',val:residual.kg.toFixed(2)+' kg',cls:'',sub:residual.count+' cylinder(s)'}
+      {label:'Residual Gas',val:residual.kg.toFixed(2)+' kg',cls:'',sub:residual.count+' cylinder(s)'},
+      // Exceptions / people
+      {label:'Exceptions Today',val:String(_sumExcCount),cls:_sumExcCount?'warn':'ok',sub:excGroups.length+' type(s)'},
+      {label:'People Involved',val:String(people.length),cls:'',sub:people.map(function(p){return p.name;}).join(', ')||'—'}
     ];
     var summaryHtml='<div class="summary">'+summaryTiles.map(function(t){
       return '<div class="stat'+(t.cls?(' '+t.cls):'')+'"><div class="lbl">'+t.label+'</div><div class="val">'+t.val+'</div><div class="sub">'+t.sub+'</div></div>';
