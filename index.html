@@ -10011,6 +10011,33 @@ function buildCountDocAsync(src){
     var recvAgg=_receivedFromStore(st,_b);
     var bal=_manifoldBalFromStore(st,_b);
     var residual=_residualFromStore(st,_b);
+    // ---- At-a-Glance summary (computed early, deliberately duplicating a few figures the
+    // Grand Totals section below also computes) - "doesn't read easily... important detail
+    // feels hidden and small, almost like fine print" (2026-09-08 feedback): the headline
+    // numbers used to only ever appear once, buried at the very bottom after a dozen tables.
+    // Cheap to recompute (pure functions over st/_b, no extra fetch) so this duplicates
+    // rather than restructures the already-verified Grand Totals math below - lower risk
+    // than threading these values through the whole function.
+    var _sumClosingFullKg=_countFullKg(st,_b,'Closing');
+    var _sumManClosingKg=bal.closing;
+    var _sumGrandGasKg=_sumClosingFullKg+_sumManClosingKg+faultyTot.gasRemaining;
+    var _sumClosingFullCount=ALLSIZES.reduce(function(s,sz){return s+totalOf(counts.Closing.Full[sz]);},0);
+    var _sumClosingEmptyCount=ALLSIZES.reduce(function(s,sz){return s+totalOf(counts.Closing.Empty[sz]);},0);
+    var _sumManSlots=_manifoldClosingSlotCount(st,_b);
+    var _sumGrandShellCount=_sumClosingFullCount+_sumClosingEmptyCount+_sumManSlots+faultyTot.count+residual.count;
+    var _sumExcCount=excGroups.reduce(function(s,g){return s+g.items.length;},0);
+    var _sumRecvKg=_receivedFullInKg(st,_b);
+    var summaryTiles=[
+      {label:'Total Gas On Hand',val:_sumGrandGasKg.toFixed(2)+' kg',cls:'',sub:'Closing Full + Manifold + Faulty-Held'},
+      {label:'Total Cylinder Shells',val:String(_sumGrandShellCount),cls:'',sub:'Full + Empty + Manifold + Faulty + Residual'},
+      {label:'Stock Received Today',val:_sumRecvKg.toFixed(2)+' kg',cls:_sumRecvKg?'ok':'',sub:(st.received||[]).filter(inBr).length+' line(s)'},
+      {label:'Manifold Balance',val:bal.hasData?((bal.diff>0?'+':'')+bal.diff.toFixed(2)+' kg'):'—',cls:bal.hasData?(bal.balanced?'ok':'bad'):'',sub:bal.hasData?(bal.balanced?'Balanced':'Needs review'):'No manifold activity'},
+      {label:'Exceptions Today',val:String(_sumExcCount),cls:_sumExcCount?'warn':'ok',sub:excGroups.length+' type(s)'},
+      {label:'People Involved',val:String(people.length),cls:'',sub:people.map(function(p){return p.name;}).join(', ')||'—'}
+    ];
+    var summaryHtml='<div class="summary">'+summaryTiles.map(function(t){
+      return '<div class="stat'+(t.cls?(' '+t.cls):'')+'"><div class="lbl">'+t.label+'</div><div class="val">'+t.val+'</div><div class="sub">'+t.sub+'</div></div>';
+    }).join('')+'</div>';
     var rows='';
 
     // ---- Who Worked On This ----
@@ -10042,8 +10069,8 @@ function buildCountDocAsync(src){
       }).join('');
       return '<h2>'+label+' Count</h2>'+
         '<table><tr><th>Size</th><th>Full \u2014 by brand</th><th>Full total</th><th>Empty \u2014 by brand</th><th>Empty total</th></tr>'+trs+'</table>'+
-        '<p style="font-size:12px;color:#555;margin:4px 0 0"><b>Total gas in Full cylinders ('+label+'): \u2248 '+_countFullKg(st,_b,stage).toFixed(2)+' kg</b></p>'+
-        '<p style="font-size:12px;color:#555;margin:2px 0 0"><b>Total gas capacity of Empty cylinders ('+label+'): \u2248 '+_countEmptyCapacityKg(st,_b,stage).toFixed(2)+' kg</b> <span style="font-weight:400;color:#888">(what these shells could take once refilled, not gas held now)</span></p>';
+        '<div class="callout">Total gas in Full cylinders ('+label+'): <b>\u2248 '+_countFullKg(st,_b,stage).toFixed(2)+' kg</b></div>'+
+        '<div class="callout">Total gas capacity of Empty cylinders ('+label+'): <b>\u2248 '+_countEmptyCapacityKg(st,_b,stage).toFixed(2)+' kg</b><span class="note">What these shells could take once refilled, not gas held now.</span></div>';
     }
     var countsHtml=countSection('Opening',counts.Opening,'Opening')+countSection('Closing',counts.Closing,'Closing');
     rows+=countsHtml||'<p style="color:#999">No cylinder count captured.</p>';
@@ -10086,7 +10113,7 @@ function buildCountDocAsync(src){
       }).join('');
       var recvGrandRow='<tr style="background:var(--navy);color:#fff;font-weight:800"><td colspan="2">Total \u2014 all deliveries</td><td class="n">'+grandFullIn+'</td><td class="n">'+grandEmptyOut+'</td><td colspan="3"></td></tr>';
       rows+='<h2>Stock Received</h2><table><tr><th>Size</th><th>Brand</th><th>Full In</th><th>Empty Out</th><th colspan="3">Delivery ref</th></tr>'+recvTrs+recvGrandRow+'</table>'+
-      '<p style="font-size:12px;color:#555;margin:4px 0 0"><b>Total gas received (Full in only): \u2248 '+_receivedFullInKg(st,_b).toFixed(2)+' kg</b></p>';
+      '<div class="callout">Total gas received (Full in only): <b>\u2248 '+_receivedFullInKg(st,_b).toFixed(2)+' kg</b></div>';
       var recvPhotos=[];
       recvRows.forEach(function(r){(Array.isArray(r.photos)?r.photos:[]).forEach(function(p){if(recvPhotos.indexOf(p)===-1)recvPhotos.push(p);});});
       if(recvPhotos.length)rows+='<div style="margin-top:6px"><b>Invoice / delivery note photo(s):</b><br>'+recvPhotos.map(function(s){return '<img src="'+s+'" style="max-height:70px;border-radius:4px;margin:2px">';}).join('')+'</div>';
@@ -10227,28 +10254,87 @@ function buildCountDocAsync(src){
     var timeRange=times.length?(times[0]+(times.length>1?' \u2192 '+times[times.length-1]:'')):'\u2014';
     var sig=src.sig||{};
     var signedBy=src.signedBy||{};
-    // Title drives the suggested filename when printed/saved as PDF - Branch / Stock Take /
-    // Date order as requested, " - " as separator since "/" isn't a valid filename character
-    // on Windows (the exact platform this app is used on).
-    var doc='<!DOCTYPE html><html><head><meta charset="utf-8"><title>'+(_b||'Branch')+' - Stock Take - '+src.date+'</title><style>'+
-      'body{font-family:Arial,sans-serif;color:#16202B;padding:28px;max-width:800px;margin:0 auto;}'+
-      'h1{font-size:20px;margin:0 0 2px;color:#1F3A5F;}h2{font-size:15px;color:#1F3A5F;margin:22px 0 6px;padding-top:14px;border-top:1px solid #eee;}h2:first-of-type{border-top:none;padding-top:0}.meta{font-size:12px;color:#555;margin-bottom:18px;line-height:1.6;}'+
-      'table{width:100%;border-collapse:collapse;font-size:12px;}'+
-      'th{background:#1F3A5F;color:#fff;text-align:left;padding:8px;font-size:11px;}'+
-      'td{padding:8px;border-bottom:1px solid #ddd;vertical-align:top;}td.sz{font-weight:bold;color:#1F3A5F;}td.n{text-align:center;font-weight:bold;}'+
-      '.personRow{border-bottom:1px solid #eee;padding:6px 0;}.roleTag{font-size:10px;color:#B9761F;text-transform:uppercase;font-weight:bold;}'+
-      '.sig{margin-top:40px;font-size:12px;display:flex;justify-content:space-between;}'+
+    // Title drives the suggested filename when printed/saved as PDF, and doubles as the
+    // shared-file name for the Share button below - Branch / Stock Take / Date order as
+    // requested, " - " as separator since "/" isn't a valid filename character on Windows
+    // (the exact platform this app is used on).
+    var docTitle=(_b||'Branch')+' - Stock Take - '+src.date;
+    // Redesign (2026-09-08 feedback: "doesn't look like a professional report... a lot of
+    // important detail feels hidden and small, almost like fine print"): a banner header +
+    // the At-a-Glance summary card (built above, before `rows`) put the headline numbers
+    // first instead of buried after a dozen tables; the scattered small-print kg callouts
+    // throughout `rows` are now `.callout` boxes, not bare <p> tags; tables get zebra
+    // striping and slightly larger type for scannability. Deliberately kept to system fonts
+    // (Arial) and inline CSS only, no external font/asset loading - this document must work
+    // standalone (a popup tab, later a shared file opened on any device), matching every
+    // constraint the original report already had.
+    var doc='<!DOCTYPE html><html><head><meta charset="utf-8"><title>'+docTitle+'</title><style>'+
+      '*{box-sizing:border-box}'+
+      'body{font-family:Arial,Helvetica,sans-serif;color:#16202B;background:#EEF1F4;margin:0;padding:20px 0;}'+
+      '.page{max-width:840px;margin:0 auto;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);}'+
+      '.banner{background:linear-gradient(135deg,#1F3A5F 0%,#2E6DA4 100%);color:#fff;padding:26px 26px 20px;}'+
+      '.banner h1{margin:0;font-size:21px;letter-spacing:.2px;}'+
+      '.banner .tag{font-size:11.5px;opacity:.85;margin-top:3px;text-transform:uppercase;letter-spacing:.6px;font-weight:700;}'+
+      '.metaRow{display:flex;flex-wrap:wrap;gap:22px;margin-top:16px;}'+
+      '.metaItem .k{font-size:10px;text-transform:uppercase;opacity:.75;letter-spacing:.4px;}'+
+      '.metaItem .v{font-size:14px;font-weight:700;margin-top:1px;}'+
+      '.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:18px 22px;background:#F7F9FB;border-bottom:1px solid #E4E8EC;}'+
+      '.stat{background:#fff;border-radius:8px;padding:11px 12px;border-left:4px solid #2E6DA4;box-shadow:0 1px 2px rgba(0,0,0,.05);}'+
+      '.stat.ok{border-left-color:#1E8449;}.stat.bad{border-left-color:#C0392B;}.stat.warn{border-left-color:#B9761F;}'+
+      '.stat .lbl{font-size:9.5px;text-transform:uppercase;letter-spacing:.4px;color:#6B7684;font-weight:800;}'+
+      '.stat .val{font-size:18px;font-weight:800;color:#1F3A5F;margin-top:3px;line-height:1.15;}'+
+      '.stat .sub{font-size:9.5px;color:#8B96A3;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}'+
+      '.content{padding:4px 22px 26px;}'+
+      '.content h2:first-child{margin-top:6px;}'+
+      'h2{font-size:14.5px;color:#1F3A5F;margin:26px 0 10px;padding-bottom:8px;border-bottom:2px solid #1F3A5F;}'+
+      'h3{font-size:12.5px;color:#2E6DA4;margin:16px 0 6px;font-weight:800;}'+
+      'table{width:100%;border-collapse:collapse;font-size:12.5px;margin-bottom:6px;}'+
+      'th{background:#1F3A5F;color:#fff;text-align:left;padding:9px 10px;font-size:10.5px;letter-spacing:.2px;text-transform:uppercase;}'+
+      'td{padding:8px 10px;border-bottom:1px solid #EAEDF0;vertical-align:top;}'+
+      'tbody tr:nth-child(even) td{background:#FAFBFC;}'+
+      'td.sz{font-weight:800;color:#1F3A5F;}td.n{text-align:center;font-weight:700;}'+
+      '.callout{font-size:13px;color:#1F3A5F;margin:6px 0;padding:9px 12px;background:#F0F4F8;border-left:3px solid #2E6DA4;border-radius:0 6px 6px 0;}'+
+      '.callout b{font-weight:800;}.callout .note{display:block;font-size:10.5px;font-weight:400;color:#8B96A3;margin-top:2px;}'+
+      '.personRow{border-bottom:1px solid #EEE;padding:8px 0;}'+
+      '.roleTag{font-size:10px;color:#B9761F;text-transform:uppercase;font-weight:800;}'+
+      '.sig{margin-top:36px;font-size:12px;display:flex;justify-content:space-between;}'+
       '.sig div{border-top:1px solid #333;padding-top:6px;width:45%;}'+
-      '@media print{button{display:none;}h2{page-break-after:avoid}table{page-break-inside:avoid}}'+
-      'button{margin-top:24px;padding:12px 20px;background:#1F3A5F;color:#fff;border:none;border-radius:8px;font-size:14px;cursor:pointer;}'+
-      '</style></head><body>'+
-      '<h1>Gas Sales \u2014 Daily Stock Count</h1>'+
-      '<div class="meta">Date: <b>'+src.date+'</b> &nbsp;\u00b7&nbsp; Branch: <b>'+src.branch+'</b><br>Counted between: <b>'+timeRange+'</b>'+
-      (src.closedBy?('<br>Closed by: <b>'+src.closedBy+'</b>'):'')+'</div>'+
+      '.actions{padding:16px 22px 26px;display:flex;gap:10px;flex-wrap:wrap;}'+
+      '.actions button{padding:12px 20px;border:none;border-radius:8px;font-size:14px;cursor:pointer;font-weight:700;}'+
+      '.btnPrint{background:#1F3A5F;color:#fff;}.btnShare{background:#20693F;color:#fff;}'+
+      '@media print{body{background:#fff;padding:0}.page{box-shadow:none;border-radius:0;max-width:none}.actions{display:none}h2{page-break-after:avoid}table{page-break-inside:avoid}.summary{page-break-inside:avoid}}'+
+      '@media (max-width:520px){.summary{grid-template-columns:repeat(2,1fr)}}'+
+      '</style></head><body><div class="page">'+
+      '<div class="banner"><h1>Gas Sales \u2014 Daily Stock Count</h1>'+
+      '<div class="tag">'+(src.closedBy?'Closed Day Report':'Live Preview \u2014 day not yet closed')+'</div>'+
+      '<div class="metaRow">'+
+        '<div class="metaItem"><div class="k">Branch</div><div class="v">'+src.branch+'</div></div>'+
+        '<div class="metaItem"><div class="k">Date</div><div class="v">'+src.date+'</div></div>'+
+        '<div class="metaItem"><div class="k">Counted Between</div><div class="v">'+timeRange+'</div></div>'+
+        (src.closedBy?('<div class="metaItem"><div class="k">Closed By</div><div class="v">'+src.closedBy+'</div></div>'):'')+
+      '</div></div>'+
+      summaryHtml+
+      '<div class="content">'+
       rows+
       '<div class="sig"><div>'+(sig.op?'<img src="'+sig.op+'" style="max-height:60px;display:block;margin-bottom:2px">':'<div style="height:60px"></div>')+'Operator: '+(signedBy.op||'_______________')+'</div><div>'+(sig.mgr?'<img src="'+sig.mgr+'" style="max-height:60px;display:block;margin-bottom:2px">':'<div style="height:60px"></div>')+'Manager: '+(signedBy.mgr||'_______________')+'</div></div>'+
       '<div style="font-size:11px;color:#777;margin-top:8px">Signatures confirm both parties verified this count as correct on '+src.date+'.</div>'+
-      '<button onclick="window.print()">Print / Save as PDF</button>'+
+      '</div>'+
+      '<div class="actions">'+
+      '<button class="btnPrint" onclick="window.print()">Print / Save as PDF</button>'+
+      '<button class="btnShare" onclick="_shareReport()">Share (Email / WhatsApp / \u2026)</button>'+
+      '</div></div>'+
+      '<script>function _shareReport(){try{'+
+        'var html="<!DOCTYPE html>"+document.documentElement.outerHTML;'+
+        'var fname='+JSON.stringify(docTitle)+'.replace(/[\\\\/:*?"<>|]/g,"")+".html";'+
+        'var file=new File([new Blob([html],{type:"text/html"})],fname,{type:"text/html"});'+
+        'if(navigator.canShare&&navigator.canShare({files:[file]})){'+
+          'navigator.share({files:[file],title:'+JSON.stringify(docTitle)+',text:'+JSON.stringify(docTitle)+'}).catch(function(){});'+
+        '}else if(navigator.share){'+
+          'navigator.share({title:'+JSON.stringify(docTitle)+',text:'+JSON.stringify(docTitle)+'}).catch(function(){});'+
+        '}else{'+
+          'alert("Sharing isn\'t supported in this browser. Use Print / Save as PDF, then share that file from your phone as usual.");'+
+        '}'+
+      '}catch(e){alert("Could not share: "+e.message);}}</'+'script>'+
       '</body></html>';
     return doc;
   });
