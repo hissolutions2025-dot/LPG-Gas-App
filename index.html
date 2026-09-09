@@ -8550,7 +8550,17 @@ function _restoreCurrentSection(){
   if(s.section==='received'){openReceived();return true;}
   if(s.section==='residual'){openResidual();return true;}
   if(s.section==='history'){openHistory();return true;}
-  if(s.section==='manifold'||s.section==='refill'||s.section==='private'){openCap(s.section,{silent:true});return true;}
+  if(s.section==='manifold'||s.section==='refill'||s.section==='private'){
+    // openCap() returns undefined when a gate blocks it (deactivated section, or - new -
+    // Manifold Opening not done yet for Refill/Private) without ever switching the visible
+    // view away from wherever it already was; it returns a Promise when it actually proceeds.
+    // This used to unconditionally report "handled" regardless, so a blocked restore here left
+    // the caller (doLogin) skipping its own show-landing fallback too - the user landed back
+    // on the Sign In screen with nothing but the block toast and no way forward. Confirmed
+    // live (2026-09-09): "Opening now but this toast pops up", stuck on Sign In.
+    var _r=openCap(s.section,{silent:true});
+    return !!_r;
+  }
   return false;
 }
 function saveWorkingStore(){
