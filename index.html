@@ -10183,6 +10183,27 @@ function buildCountDocAsync(src){
     var countsHtml=countSection('Opening',counts.Opening,'Opening')+countSection('Closing',counts.Closing,'Closing');
     rows+=countsHtml||'<p style="color:#999">No cylinder count captured.</p>';
 
+    // ---- Manifold cylinders, right after the count tables ----
+    // "That means its invisible to staff" (2026-09-09 feedback): the Full/Empty count table
+    // above never included Manifold cylinders (correctly - a cylinder on the manifold isn't
+    // sitting in regular Full stock, so folding it in would double-count it), but that left
+    // them showing up ONLY as a single summed number, deep in Grand Totals - nothing named
+    // per slot until then. Manifold cylinders have no "size" field at all (they're tracked by
+    // physical slot + weight - scale minus tare - never a size bucket like the count table
+    // uses), so this lists them by their own slot label instead of inventing a size that isn't
+    // actually captured. Closing stage only - "on hand right now", matching what Grand Totals'
+    // own Manifold figures already mean.
+    var _manClosingRows=_sumMan.filter(function(m){return (m.stage||'Opening')==='Closing';});
+    if(_manClosingRows.length){
+      rows+='<h2>Manifold — Cylinders on Hand (Closing)</h2>'+
+        '<table><tr><th>Slot</th><th>Brand</th><th>Gas</th><th>Weight (kg)</th><th>Condition</th><th>Note</th></tr>'+
+        _manClosingRows.map(function(m){
+          return '<tr><td class="sz">'+m.cyl+'</td><td>'+(m.brand||'—')+'</td><td>'+(m.gasType||'—')+'</td>'+
+            '<td class="n">'+(+m.gasLeft).toFixed(2)+'</td><td>'+(m.cylState||'—')+'</td><td>'+(m.notes||'—')+'</td></tr>';
+        }).join('')+
+        '<tr><td colspan="3"><b>Total on manifold</b></td><td class="n"><b>'+_sumManClosingKg.toFixed(2)+'</b></td><td colspan="2"></td></tr></table>';
+    }
+
     // ---- Stock Received, grouped by delivery, one table ----
     // Was per-delivery cards - matched the rest of the report's table style on request, and
     // added a Balance row per delivery (Full in total vs Empty out total, since one delivery
