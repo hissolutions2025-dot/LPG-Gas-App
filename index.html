@@ -10227,25 +10227,41 @@ function buildCountDocAsync(src){
     // Was Closing-stage only, matching Grand Totals' own "on manifold now" meaning - but that
     // meant the section had nothing to show, and simply vanished, for every hour of the day
     // before Closing actually gets captured ("I cannot see it" - 2026-09-09, confirmed live:
-    // Helderberg had 4 Opening readings and zero Closing ones at the time). Shows the LATEST
-    // reading per slot instead (by _time, whichever stage that happens to be), with the stage
-    // named on each row - so it's always there once ANY reading exists today, and stays
-    // accurate as the day progresses from Opening through Added to Closing.
-    var _manLatestBySlot={};
-    _sumMan.forEach(function(m){
-      var cur=_manLatestBySlot[m.cyl];
-      if(!cur||(m._time||'')>(cur._time||''))_manLatestBySlot[m.cyl]=m;
-    });
-    var _manLatestRows=Object.keys(_manLatestBySlot).sort().map(function(k){return _manLatestBySlot[k];});
-    if(_manLatestRows.length){
-      var _manLatestTotalKg=_manLatestRows.reduce(function(s,m){return s+num(m.gasLeft);},0);
-      rows+='<h2>Manifold — Cylinders on Hand</h2>'+
-        '<table><tr><th>Slot</th><th>Stage</th><th>Brand</th><th>Gas</th><th>Weight (kg)</th><th>Condition</th><th>Note</th></tr>'+
-        _manLatestRows.map(function(m){
-          return '<tr><td class="sz">'+m.cyl+'</td><td>'+(m.stage||'Opening')+'</td><td>'+(m.brand||'—')+'</td><td>'+(m.gasType||'—')+'</td>'+
+    // Helderberg had 4 Opening readings and zero Closing ones at the time). Was then a single
+    // "latest reading per slot, whichever stage" table - but that collapses Opening and
+    // Closing into one row per slot, so there was no way to see both readings side by side
+    // ("I want to see opening and closing data of the manifold" - 2026-09-09). Now split into
+    // two separate sections, Opening and Closing, mirroring the Opening/Closing Count tables
+    // above - each shows the latest reading per slot WITHIN that stage (in case a slot got
+    // re-weighed more than once in the same stage), so both stages are visible at once and
+    // each stays independently accurate as the day progresses.
+    function _manStageRows(stage){
+      var bySlot={};
+      _sumMan.filter(function(m){return (m.stage||'Opening')===stage;}).forEach(function(m){
+        var cur=bySlot[m.cyl];
+        if(!cur||(m._time||'')>(cur._time||''))bySlot[m.cyl]=m;
+      });
+      return Object.keys(bySlot).sort().map(function(k){return bySlot[k];});
+    }
+    function _manStageSection(label,stageRows){
+      if(!stageRows.length)return '';
+      var totalKg=stageRows.reduce(function(s,m){return s+num(m.gasLeft);},0);
+      return '<h2>Manifold — '+label+'</h2>'+
+        '<table><tr><th>Slot</th><th>Brand</th><th>Gas</th><th>Weight (kg)</th><th>Condition</th><th>Note</th></tr>'+
+        stageRows.map(function(m){
+          return '<tr><td class="sz">'+m.cyl+'</td><td>'+(m.brand||'—')+'</td><td>'+(m.gasType||'—')+'</td>'+
             '<td class="n">'+(+m.gasLeft).toFixed(2)+'</td><td>'+(m.cylState||'—')+'</td><td>'+(m.notes||'—')+'</td></tr>';
         }).join('')+
-        '<tr><td colspan="4"><b>Total on manifold (latest reading per slot)</b></td><td class="n"><b>'+_manLatestTotalKg.toFixed(2)+'</b></td><td colspan="2"></td></tr></table>';
+        '<tr><td colspan="3"><b>Total '+label+' (manifold)</b></td><td class="n"><b>'+totalKg.toFixed(2)+'</b></td><td colspan="2"></td></tr></table>';
+    }
+    var _manOpeningRows=_manStageRows('Opening');
+    var _manClosingRows=_manStageRows('Closing');
+    var _manStagesHtml=_manStageSection('Opening',_manOpeningRows)+_manStageSection('Closing',_manClosingRows);
+    if(_manStagesHtml){
+      rows+=_manStagesHtml;
+      if(_manOpeningRows.length&&!_manClosingRows.length){
+        rows+='<p style="font-size:11px;color:#B9761F;margin:2px 0 8px">No Closing manifold reading captured yet for '+_b+'.</p>';
+      }
     }
 
     // ---- Stock Received, grouped by delivery, one table ----
