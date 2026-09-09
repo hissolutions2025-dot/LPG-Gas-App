@@ -556,7 +556,7 @@
       <button class="exportBtn" style="background:#B5533B;" onclick="downloadCountPDF()">Preview / download stock count report</button>
       <button class="exportBtn" id="shareTodayBtn" style="background:#25D366;color:#08331B;display:none" onclick="shareTodayCount()">⬆ Share stock count (WhatsApp / Email)</button>
       <button class="exportBtn" style="background:#1E8449;color:#fff;" onclick="copyForSheet()">📋 Copy today's data for Master Sheet</button>
-      <button class="exportBtn" style="background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel)" onclick="downloadSheetCSV()">⬇ Download CSV (date + branch)</button>
+      <button class="exportBtn" style="background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel)" onclick="downloadCountCSV()">⬇ Download full report as CSV</button>
       <button class="exportBtn" onclick="exportData()">Export raw data (preview)</button>
       <button class="exportBtn" style="background:var(--ok);font-size:15px;padding:16px;" onclick="closeDay()">🔒 Close day</button>
     </div>
@@ -9764,13 +9764,18 @@ function buildSheetRows(){
   rows=rows.concat(T('Received',['Size','Brand','FullIn','EmptyOut'],
     syncRowsReceived(store.received.filter(function(r){return r.branch===br;}),br)));
   // Refills
-  rows=rows.concat(T('Refill',['Size','Brand','Gas','Pumped_kg','Seal'],
+  // Column keys here MUST match syncRowsRefill's actual output keys (GasType/Pumped, not
+  // Gas/Pumped_kg) - same T()-silently-blanks-unknown-keys class of bug as the earlier
+  // Note/note and SupplierName/FillSupplier mismatches. Confirmed live (2026-09-09): every
+  // Refill AND Private row's Gas type and Pumped kg came out blank in this export - "the CSV
+  // download doesn't capture the private refill amounts".
+  rows=rows.concat(T('Refill',['Size','Brand','GasType','Pumped','Seal'],
     syncRowsRefill(store.refill.filter(function(r){return r.branch===br;}),br)));
   // Private
-  rows=rows.concat(T('Private',['CylBrand','OtherBrand','Gas','Pumped_kg','Customer'],
+  rows=rows.concat(T('Private',['CylBrand','OtherBrand','GasType','Pumped','Customer'],
     syncRowsPrivate(store.private.filter(function(r){return r.branch===br;}),br)));
   // Manifold
-  rows=rows.concat(T('Manifold',['Stage','Cylinder','Gas','Scale','Tare','GasLeft'],
+  rows=rows.concat(T('Manifold',['Stage','Cylinder','GasType','Scale','Tare','GasLeft'],
     syncRowsManifold(store.manifold.filter(function(r){return r.branch===br;}),br)));
   return rows;
 }
@@ -9790,18 +9795,8 @@ function fallbackCopy(text){
   try{document.execCommand('copy');toast('Copied ✓ Paste into your Master Sheet');}catch(e){toast('Copy failed — use Download CSV',true);}
   document.body.removeChild(ta);
 }
-function downloadSheetCSV(){
-  var rows=buildSheetRows();
-  if(rows.length<=1){toast('No data captured yet',true);return;}
-  var csv=rowsToCSV(rows);
-  var blob=new Blob([csv],{type:'text/csv'});
-  var url=URL.createObjectURL(blob);
-  var a=document.createElement('a');a.href=url;
-  a.download='GasSales_'+(histBranch||branch)+'_'+today+'.csv';
-  document.body.appendChild(a);a.click();document.body.removeChild(a);
-  setTimeout(function(){URL.revokeObjectURL(url);},1000);
-  toast('CSV downloaded ✓');
-}
+// downloadSheetCSV() (the old flat A-F dump) removed here - superseded by
+// downloadCountCSV() below, see its own comment for why.
 // ---- SOURCE-DRIVEN COUNT DOCUMENT (works for today's live data OR a saved historical day) ----
 // src = {store, branch, date, operator, role, sig:{op,mgr}, manifoldOverride}
 function _countsFromStore(st, br){
@@ -9837,7 +9832,12 @@ function _manifoldBalFromStore(st, br){
   (st.refill||[]).filter(function(r){return !r.branch||!br||r.branch===br;}).forEach(function(r){refKg+=num(r.pumped);});
   (st.private||[]).filter(function(r){return (!r.branch||!br||r.branch===br)&&r.filledBy!=='Supplier';}).forEach(function(r){privKg+=num(r.pumped);});
   var diff=gasOut-pumped;
-  return {opening:opening,added:added,closing:closing,removed:removed,gasOut:gasOut,refKg:refKg,privKg:privKg,pumped:pumped,diff:diff,balanced:Math.abs(diff)<0.05};
+  // hasData was missing here (only the live manifoldBalance() had it) - the "Manifold
+  // Balance" summary tile's bal.hasData check was therefore always undefined/falsy, so it
+  // showed "No manifold activity" even on a day with real manifold readings. Confirmed
+  // live 2026-09-09: masked earlier only because that day's own test data happened to be
+  // genuinely empty too. Mirrors manifoldBalance()'s own hasData definition exactly.
+  return {opening:opening,added:added,closing:closing,removed:removed,gasOut:gasOut,refKg:refKg,privKg:privKg,pumped:pumped,diff:diff,balanced:Math.abs(diff)<0.05,hasData:(man.length>0)};
 }
 function _nominalKg(sz){return FAULTY_NOMINAL[sz]||0;}
 // Total kg of gas in FULL cylinders for one Stock Count stage ('Opening'|'Closing') - a tally
@@ -10479,6 +10479,311 @@ function buildCountDocAsync(src){
       '</body></html>';
     return doc;
   });
+}
+// A CSV twin of buildCountDocAsync(), same sections in the same order, same underlying
+// computations (every figure here is produced by the exact same pure helper functions the
+// PDF report uses - _countFullKg, _manifoldBalFromStore, _faultyHeldTotals, etc. - so the
+// two can never quietly disagree with each other). Built as its own function rather than a
+// refactor of buildCountDocAsync itself (lower risk than threading an output-format switch
+// through an already-large, already-verified function) - "look at the whole report
+// structure and build a professional layout to csv" (2026-09-09), replacing the old flat
+// A-F dump (buildSheetRows/downloadSheetCSV) whose Refill/Private/Manifold columns were
+// silently blank anyway (asked for 'Gas'/'Pumped_kg', the real keys are 'GasType'/'Pumped' -
+// fixed separately in buildSheetRows too, but that flat exporter stays as the "paste into an
+// existing Master Sheet" tool it was built for; this one is the full report, downloadable).
+// Returns a Promise<string> (the CSV text), same async shape as buildCountDocAsync for the
+// same reason: Who Worked/Exceptions/Faulty need the same audit_log + faulty fetch.
+function buildCountCSVAsync(src){
+  var st=src.store, _b=src.branch;
+  function inBr(r){return !r.branch||!_b||r.branch===_b;}
+  function totalOf(obj){if(!obj)return 0;return Object.keys(obj).reduce(function(a,b){return a+obj[b];},0);}
+  function brandStr(obj){if(!obj)return '';return Object.keys(obj).map(function(b){return b+' x'+obj[b];}).join('; ');}
+  var out=[];
+  function row(){out.push(Array.prototype.slice.call(arguments));}
+  function blank(){out.push([]);}
+  function section(title){blank();row(title.toUpperCase());}
+  var _liveFetch=(st===store)?Promise.all([
+    _fetchManifoldLiveRows(_b,src.date),
+    _fetchCaptureLiveRows('received','received',_b,src.date),
+    _fetchCaptureLiveRows('refill','refill',_b,src.date),
+    _fetchCaptureLiveRows('private','private',_b,src.date),
+    _fetchCaptureLiveRows('residual','residual',_b,src.date),
+    _refreshSharedCounts(_b)
+  ]):Promise.resolve();
+  return _liveFetch.then(function(){
+    return Promise.all([_fetchDayActivity(_b,src.date),_fetchFaultyHeld(_b),_fetchPrevCloseExpected(_b,src.date)]);
+  }).then(function(fetched){
+    var activityRows=fetched[0], faultyRows=fetched[1], prevCloseExp=fetched[2];
+    var people=_groupActivityByPerson(activityRows);
+    var excGroups=_groupExceptions(activityRows);
+    var faultyTot=_faultyHeldTotals(faultyRows);
+    var faultyFullBySize={},faultyEmptyBySize={};
+    faultyRows.forEach(function(r){var sz=r.Size,q=num(r.Qty)||1;if(r.State==='Empty')faultyEmptyBySize[sz]=(faultyEmptyBySize[sz]||0)+q;else faultyFullBySize[sz]=(faultyFullBySize[sz]||0)+q;});
+    var counts=_countsFromStore(st,_b);
+    var recvAgg=_receivedFromStore(st,_b);
+    var bal=_manifoldBalFromStore(st,_b);
+    var residual=_residualFromStore(st,_b);
+    var hasPrevClose=Object.keys(prevCloseExp||{}).length>0;
+    var man=(st.manifold||[]).filter(inBr);
+    var rf=(st.refill||[]).filter(inBr);
+    var refillCountBySize={};
+    rf.forEach(function(r){refillCountBySize[r.size]=(refillCountBySize[r.size]||0)+1;});
+    var pv=(st.private||[]).filter(inBr);
+    var recvRows=(st.received||[]).filter(inBr);
+    var residualRows=(st.residual||[]).filter(function(r){return !r.Branch||!_b||r.Branch===_b;});
+    var times=(st.count||[]).filter(inBr).map(function(r){return r._time;}).filter(Boolean).sort();
+    var timeRange=times.length?(times[0]+(times.length>1?' -> '+times[times.length-1]:'')):'';
+
+    row('Gas Sales - Daily Stock Count');
+    row('Branch',_b);
+    row('Date',src.date);
+    row('Counted Between',timeRange);
+    if(src.closedBy)row('Closed By',src.closedBy);
+    row('Generated',new Date().toISOString());
+
+    // ---- At a Glance ----
+    var closingFullKg=_countFullKg(st,_b,'Closing');
+    var manClosingKg=bal.closing;
+    var grandGasKg=closingFullKg+manClosingKg+faultyTot.gasRemaining;
+    var closingFullCount=ALLSIZES.reduce(function(s,sz){return s+totalOf(counts.Closing.Full[sz]);},0);
+    var closingEmptyCount=ALLSIZES.reduce(function(s,sz){return s+totalOf(counts.Closing.Empty[sz]);},0);
+    var manSlots=_manifoldClosingSlotCount(st,_b);
+    var grandShellCount=closingFullCount+closingEmptyCount+manSlots+faultyTot.count+residual.count;
+    var emptyCapKg=_countEmptyCapacityKg(st,_b,'Closing');
+    var recvKg=_receivedFullInKg(st,_b);
+    var pvTot=pv.reduce(function(a,r){return a+num(r.pumped);},0);
+    var pvUsTot=pv.filter(function(r){return r.filledBy!=='Supplier';}).reduce(function(a,r){return a+num(r.pumped);},0);
+    var rfTot=rf.reduce(function(a,r){return a+num(r.pumped);},0);
+    section('At a Glance');
+    row('Metric','Value','Detail');
+    row('Total Gas On Hand (kg)',grandGasKg.toFixed(2),'Closing Full + Manifold + Faulty-Held');
+    row('Total Cylinder Shells',grandShellCount,'Full + Empty + Manifold + Faulty + Residual');
+    row('Total Gas Capacity - Empty Cylinders (kg)',emptyCapKg.toFixed(2),'Closing - what these shells could take once refilled');
+    row('Stock Received Today (kg)',recvKg.toFixed(2),recvRows.length+' line(s)');
+    row('Manifold Balance (kg)',bal.hasData?bal.diff.toFixed(2):'',bal.hasData?(bal.balanced?'Balanced':'Needs review'):'No manifold activity');
+    row('Total Refills (kg)',rfTot.toFixed(2),rf.length+' cylinder(s) pumped');
+    row('Total Private Refill (kg)',pvTot.toFixed(2),'By us '+pvUsTot.toFixed(2)+'kg + by supplier '+(pvTot-pvUsTot).toFixed(2)+'kg');
+    row('Faulty Cylinders',faultyTot.count,faultyTot.gasLoss.toFixed(2)+'kg gas at risk, '+faultyTot.gasRemaining.toFixed(2)+'kg remaining');
+    row('Residual Gas (kg)',residual.kg.toFixed(2),residual.count+' cylinder(s)');
+    row('Exceptions Today',excGroups.reduce(function(s,g){return s+g.items.length;},0),excGroups.length+' type(s)');
+    row('People Involved',people.length,people.map(function(p){return p.name;}).join('; '));
+
+    // ---- Who Worked On This ----
+    if(people.length){
+      section('Who Worked On This');
+      row('Name','Role','First','Last','Actions');
+      people.forEach(function(p){row(p.name,p.role||'',_tsHM(p.first),_tsHM(p.last),p.actions.join('; '));});
+    }
+
+    // ---- Exceptions ----
+    if(excGroups.length){
+      section('Exceptions During the Day');
+      row('Group','Time','Detail');
+      excGroups.forEach(function(g){g.items.forEach(function(it){row(g.label.replace(/&amp;/g,'&'),_tsHM(it.ts),(it.detail||it.action));});});
+    }
+
+    // ---- Cylinder Counts ----
+    function countSection(label,data,stage){
+      var szs=ALLSIZES.filter(function(sz){return data.Full[sz]||data.Empty[sz];});
+      if(!szs.length)return;
+      var showPrev=(stage==='Opening')&&hasPrevClose;
+      section(label+' Count');
+      if(showPrev)row('Size','Full - by brand','Full total','Prev Close (Full)','Diff','Empty - by brand','Empty total','Prev Close (Empty)','Diff');
+      else row('Size','Full - by brand','Full total','Empty - by brand','Empty total');
+      szs.forEach(function(sz){
+        var fullTot=totalOf(data.Full[sz]),emptyTot=totalOf(data.Empty[sz]);
+        if(showPrev){
+          var pf=_prevCloseTotal(prevCloseExp,sz,'Full'),pe=_prevCloseTotal(prevCloseExp,sz,'Empty');
+          row(sz,brandStr(data.Full[sz]),fullTot,pf,fullTot-pf,brandStr(data.Empty[sz]),emptyTot,pe,emptyTot-pe);
+        } else row(sz,brandStr(data.Full[sz]),fullTot,brandStr(data.Empty[sz]),emptyTot);
+      });
+      if(stage==='Opening'&&!hasPrevClose)row('Note','No previous day\'s Closing count found for '+_b+' - nothing to compare Opening against.');
+      row('Total gas in Full cylinders ('+label+', kg)',_countFullKg(st,_b,stage).toFixed(2));
+      row('Total gas capacity of Empty cylinders ('+label+', kg)',_countEmptyCapacityKg(st,_b,stage).toFixed(2));
+    }
+    countSection('Opening',counts.Opening,'Opening');
+    countSection('Closing',counts.Closing,'Closing');
+
+    // ---- Manifold cylinders on hand (latest reading per slot, any stage) ----
+    var manLatestBySlot={};
+    man.forEach(function(m){var cur=manLatestBySlot[m.cyl];if(!cur||(m._time||'')>(cur._time||''))manLatestBySlot[m.cyl]=m;});
+    var manLatestRows=Object.keys(manLatestBySlot).sort().map(function(k){return manLatestBySlot[k];});
+    if(manLatestRows.length){
+      section('Manifold - Cylinders on Hand');
+      row('Slot','Stage','Brand','Gas','Weight (kg)','Condition','Note');
+      var manLatestTotalKg=0;
+      manLatestRows.forEach(function(m){manLatestTotalKg+=num(m.gasLeft);row(m.cyl,m.stage||'Opening',m.brand||'',m.gasType||'',(+m.gasLeft).toFixed(2),m.cylState||'',m.notes||'');});
+      row('Total on manifold (latest reading per slot, kg)',manLatestTotalKg.toFixed(2));
+    }
+
+    // ---- Stock Received, grouped by delivery ----
+    if(recvRows.length){
+      var dGroups={},dOrder=[];
+      recvRows.forEach(function(r){
+        var key=r.size+'|'+(r.invoiceNo||'')+'|'+(r.deliveryNote||'')+'|'+(r.supplier||'');
+        if(!dGroups[key]){dGroups[key]={size:r.size,invoiceNo:r.invoiceNo,deliveryNote:r.deliveryNote,supplier:r.supplier,recv:{},ret:{},reason:''};dOrder.push(key);}
+        var g=dGroups[key];
+        if(num(r.fullIn)>0)g.recv[r.brand]=(g.recv[r.brand]||0)+num(r.fullIn);
+        if(num(r.emptyOut)>0)g.ret[r.brand]=(g.ret[r.brand]||0)+num(r.emptyOut);
+        if(r.overrideReason&&!g.reason)g.reason=r.overrideReason;
+      });
+      section('Stock Received');
+      row('Size','Brand','Full In','Empty Out','Supplier','Invoice #','Delivery Note #');
+      var grandFullIn=0,grandEmptyOut=0;
+      dOrder.forEach(function(key){
+        var g=dGroups[key];
+        var brands=Object.keys(g.recv).concat(Object.keys(g.ret).filter(function(b){return g.recv[b]===undefined;}));
+        var fullTot=Object.keys(g.recv).reduce(function(s,b){return s+g.recv[b];},0);
+        var emptyTot=Object.keys(g.ret).reduce(function(s,b){return s+g.ret[b];},0);
+        grandFullIn+=fullTot;grandEmptyOut+=emptyTot;
+        brands.forEach(function(b){row(g.size,b,g.recv[b]||0,g.ret[b]||0,g.supplier||'',g.invoiceNo||'',g.deliveryNote||'');});
+        var diff=fullTot-emptyTot;
+        row('Balance - '+g.size,'','',diff===0?'balanced':((diff>0?'+':'')+diff+' ('+(diff>0?'more full in':'more empty out')+')'),g.supplier||'',g.invoiceNo||'',g.deliveryNote||'',g.reason||'');
+      });
+      row('Total - all deliveries','',grandFullIn,grandEmptyOut);
+      row('Total gas received (Full in only, kg)',recvKg.toFixed(2));
+    }
+
+    // ---- Refills ----
+    if(rf.length){
+      section('Refills');
+      row('Size','Brand','Gas','Pumped (kg)','Seal #','Notes');
+      rf.forEach(function(r){row(r.size,r.brand,r.gasType||'',(+r.pumped).toFixed(2),r.seal||'',r.notes||'');});
+      row('Total pumped (kg)',rfTot.toFixed(2));
+    }
+
+    // ---- Private Refills ----
+    if(pv.length){
+      section('Private Refills');
+      row('Cyl Brand','Gas','Pumped (kg)','Customer / Notes','Filled By','Supplier');
+      pv.forEach(function(r){
+        var cb=(r.cylBrand==='Other'&&r.otherBrand)?('Other: '+r.otherBrand):(r.cylBrand||'');
+        row(cb,r.gasType||'',(+r.pumped).toFixed(2),r.customer||'',(r.filledBy==='Supplier'?'Supplier':'Us'),(r.filledBy==='Supplier'&&r.fillSupplier)?privateSupplierName(r):'');
+      });
+      row('Total kg pumped',pvTot.toFixed(2),'By us (counts toward Manifold balance): '+pvUsTot.toFixed(2)+'kg');
+    }
+
+    // ---- Manifold weights (full history, every stage) ----
+    if(man.length){
+      section('Manifold - Cylinder Weights');
+      row('Stage','Cyl','Gas','Scale','Tare','Left (kg)','Condition','Note');
+      ['Opening','Removed','Added','Closing'].forEach(function(stg){
+        man.filter(function(m){return (m.stage||'Opening')===stg;}).forEach(function(m){
+          row(stg,m.cyl,m.gasType||'',(+m.scale).toFixed(2),(+m.tare).toFixed(2),(+m.gasLeft).toFixed(2),m.cylState||'',m.notes||'');
+        });
+      });
+    }
+
+    // ---- Daily Stock Balance ----
+    if(man.length||faultyTot.count){
+      section('Daily Stock Balance');
+      if(man.length){
+        row('Manifold Balance','kg');
+        row('Opening gas (cylinders)',bal.opening.toFixed(2));
+        row('+ Added mid-day (fresh cylinders)',bal.added.toFixed(2));
+        row('- Closing gas (cylinders)',bal.closing.toFixed(2));
+        row('- Removed (swapped-out residual)',bal.removed.toFixed(2));
+        row('= Gas out',bal.gasOut.toFixed(2));
+        row('Refills pumped',bal.refKg.toFixed(2));
+        row('+ Private refills (filled by us only)',bal.privKg.toFixed(2));
+        row('= Pumped (counted toward this manifold)',bal.pumped.toFixed(2));
+        row('Manifold balance (Gas out - Pumped)',(bal.diff>0?'+':'')+bal.diff.toFixed(2),bal.balanced?'OK':'NEEDS REVIEW');
+      }
+      if(faultyTot.count){
+        blank();
+        row('Faulty Cylinders - gas at risk (currently Faulty-Held)');
+        row('Size','Brand','Reason','Gas at risk (kg)');
+        faultyRows.forEach(function(r){row(r.Size||'',r.Brand||'',(r.FaultReason||'')+(r.FaultDetail?(': '+r.FaultDetail):''),num(r.GasLoss).toFixed(2));});
+        row('Total gas at risk (kg)',faultyTot.gasLoss.toFixed(2));
+      }
+      if(man.length&&faultyTot.count){
+        var totalUnexplained=bal.diff+faultyTot.gasLoss;
+        blank();
+        row('Manifold balance',(bal.diff>0?'+':'')+bal.diff.toFixed(2));
+        row('+ Faulty cylinder gas at risk','+'+faultyTot.gasLoss.toFixed(2));
+        row('Total unexplained gas movement today (kg)',(totalUnexplained>0?'+':'')+totalUnexplained.toFixed(2));
+      }
+      if(src.manifoldOverride)row('Manifold imbalance override reason',src.manifoldOverride);
+    }
+
+    // ---- Residual Gas ----
+    if(residualRows.length){
+      section('Residual Gas');
+      row('Size','Brand','Residual (kg)','Note');
+      residualRows.forEach(function(r){row(r.Size,r.Brand,num(r.Residual).toFixed(2),r.Note||'');});
+      row('Total residual (kg)',residual.kg.toFixed(2),residual.count+' cylinder shell(s) - counted in Total Cylinder Shells');
+    }
+
+    // ---- Estimated Stock Sales & Cylinder Exchange ----
+    var salesSizes=ALLSIZES.filter(function(sz){
+      return totalOf(counts.Opening.Full[sz])||totalOf(counts.Closing.Full[sz])||totalOf(counts.Opening.Empty[sz])||totalOf(counts.Closing.Empty[sz])||
+        (recvAgg[sz]&&(recvAgg[sz].fullIn||recvAgg[sz].emptyOut))||refillCountBySize[sz];
+    });
+    if(salesSizes.length){
+      var soldTotal=0,soldKg=0,recvBackTotal=0;
+      section('Estimated Stock Sales & Cylinder Exchange');
+      row('Note','Inferred, not observed - the app has no point-of-sale record.');
+      blank();
+      row('Full cylinders sold (estimate)');
+      row('Size','Opening','+ Received in','+ Refilled','- Closing','- Faulty (Full)','= Est. sold');
+      var recvBackRows=[];
+      salesSizes.forEach(function(sz){
+        var openF=totalOf(counts.Opening.Full[sz]),closeF=totalOf(counts.Closing.Full[sz]);
+        var recvIn=(recvAgg[sz]&&recvAgg[sz].fullIn)||0,refilled=refillCountBySize[sz]||0,faultyF=faultyFullBySize[sz]||0;
+        var sold=openF+recvIn+refilled-closeF-faultyF;
+        soldTotal+=sold;soldKg+=sold*_nominalKg(sz);
+        row(sz,openF,recvIn,refilled,closeF,faultyF,sold);
+        var openE=totalOf(counts.Opening.Empty[sz]),closeE=totalOf(counts.Closing.Empty[sz]);
+        var sentOut=(recvAgg[sz]&&recvAgg[sz].emptyOut)||0,faultyE=faultyEmptyBySize[sz]||0;
+        var received=closeE-openE+sentOut+faultyE;
+        recvBackTotal+=received;
+        recvBackRows.push([sz,closeE,openE,sentOut,faultyE,received]);
+      });
+      row('Total units sold','','','','','',soldTotal);
+      blank();
+      row('Empty cylinders received back (estimate)');
+      row('Size','Closing','- Opening','+ Sent to supplier','+ Faulty (Empty)','= Est. received');
+      recvBackRows.forEach(function(r){row.apply(null,r);});
+      row('Total units received','','','','',recvBackTotal);
+      var pvAllTot=pv.reduce(function(a,r){return a+num(r.pumped);},0);
+      var estSoldKgTotal=soldKg+pvAllTot;
+      var netExchange=soldTotal-recvBackTotal;
+      blank();
+      row('Estimated gas sold today (kg)',estSoldKgTotal.toFixed(2),soldKg.toFixed(2)+'kg from '+soldTotal+' cylinders (estimate) + '+pvAllTot.toFixed(2)+'kg Private Refill (exact)');
+      row('Net cylinder exchange',(netExchange>0?'+':'')+netExchange+' shells',soldTotal+' sold - '+recvBackTotal+' received back');
+    }
+
+    // ---- Grand Totals ----
+    section('Grand Totals at Close of Day');
+    row('Total gas on hand','kg');
+    row('Closing Full cylinders (estimate)',closingFullKg.toFixed(2));
+    row('+ Manifold, Closing stage (weighed)',manClosingKg.toFixed(2));
+    row('+ Faulty-Held cylinders (weighed)',faultyTot.gasRemaining.toFixed(2));
+    row('= Total gas on hand',grandGasKg.toFixed(2));
+    blank();
+    row('Total cylinder shells','#');
+    row('Closing Full',closingFullCount);
+    row('+ Closing Empty',closingEmptyCount);
+    row('+ Manifold (cylinders on manifold now)',manSlots);
+    row('+ Faulty-Held',faultyTot.count);
+    row('+ Residual Gas',residual.count);
+    row('= Total cylinder shells',grandShellCount);
+
+    return rowsToCSV(out);
+  });
+}
+function downloadCountCSV(){
+  toast('Building CSV…');
+  buildCountCSVAsync(_todaySrc()).then(function(csv){
+    var blobObj=new Blob([csv],{type:'text/csv'});
+    var url=URL.createObjectURL(blobObj);
+    var a=document.createElement('a');a.href=url;
+    var _br=histBranch||branch||'Branch';
+    a.download=_br+' - Stock Take - '+today+'.csv';
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast('CSV downloaded ✓');
+  }).catch(function(e){toast('Could not build CSV: '+(e&&e.message?e.message:'unknown error'),true);});
 }
 // today's live source
 function _todaySrc(){
