@@ -8025,6 +8025,7 @@ function unlockSig(id){
     var signer=(u.level==='Owner'&&wantLevel!=='Owner')?(u.name+' (Owner override)'):u.name;
     sigUnlocked[id]=true;sigSignedBy[id]=signer;
     __unlockSigApply(id,signer);
+    saveWorkingStore(); // persist sigSignedBy immediately - see saveWorkingStore()'s own comment
   });
 }
 function __unlockSigApply(id,signer){
@@ -8038,14 +8039,33 @@ function initSigPad(id){
   var cv=document.getElementById(id);if(!cv||cv._init)return;cv._init=true;
   var ctx=cv.getContext('2d');ctx.lineWidth=2.2;ctx.lineCap='round';ctx.strokeStyle='#16202B';
   var drawing=false,last=null;
+  // Restore a signature persisted by saveWorkingStore() (same device, e.g. after a reload or
+  // re-login) - the canvas itself starts blank on every page load regardless of what sigData
+  // already holds, so the drawn image has to be explicitly repainted onto it. Drawing/editing
+  // still requires unlocking again (sigUnlocked is deliberately never persisted - see
+  // saveWorkingStore()'s comment), so this only restores what's already SHOWN, not the
+  // ability to add to it without a password.
+  if(sigData[id]){
+    var img=new Image();
+    img.onload=function(){ctx.drawImage(img,0,0,cv.width,cv.height);};
+    img.src=sigData[id];
+    if(!sigUnlocked[id]&&sigSignedBy[id]){
+      var lockEl=document.getElementById(id+'-lock');
+      if(lockEl){
+        var boxLabel=(id==='sigOp')?'Operator':'Manager';
+        lockEl.innerHTML='<div style="font-size:11px;color:var(--ok);font-weight:700">✓ Previously signed by '+sigSignedBy[id]+'</div>'+
+          '<button class="sigClear" style="width:100%;background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel);margin-top:4px" onclick="unlockSig(\''+id+'\')">🔒 Unlock '+boxLabel+' box to re-sign</button>';
+      }
+    }
+  }
   function pos(e){var r=cv.getBoundingClientRect();var t=e.touches?e.touches[0]:e;return {x:(t.clientX-r.left)*(cv.width/r.width),y:(t.clientY-r.top)*(cv.height/r.height)};}
   function start(e){if(!sigUnlocked[id]){toast('Unlock this box with a password first',true);return;}drawing=true;last=pos(e);e.preventDefault();}
   function move(e){if(!drawing)return;var p=pos(e);ctx.beginPath();ctx.moveTo(last.x,last.y);ctx.lineTo(p.x,p.y);ctx.stroke();last=p;sigData[id]=cv.toDataURL('image/png');e.preventDefault();}
-  function end(){drawing=false;}
+  function end(){if(!drawing)return;drawing=false;saveWorkingStore();} // once per stroke, not per pixel
   cv.addEventListener('mousedown',start);cv.addEventListener('mousemove',move);cv.addEventListener('mouseup',end);cv.addEventListener('mouseleave',end);
   cv.addEventListener('touchstart',start,{passive:false});cv.addEventListener('touchmove',move,{passive:false});cv.addEventListener('touchend',end);
 }
-function sigClear(id){var cv=document.getElementById(id);if(cv){cv.getContext('2d').clearRect(0,0,cv.width,cv.height);}sigData[id]='';}
+function sigClear(id){var cv=document.getElementById(id);if(cv){cv.getContext('2d').clearRect(0,0,cv.width,cv.height);}sigData[id]='';saveWorkingStore();}
 var dayClosed=false;
 // ===== MANIFOLD GAS BALANCE =====
 // Gas OUT = sum opening gasLeft + sum added gasLeft - sum closing gasLeft - sum removed
@@ -8572,6 +8592,16 @@ function saveWorkingStore(){
       slice[k]=(store[k]||[]).filter(function(r){return !r.branch&&!r.Branch||r.branch===branch||r.Branch===branch;});
     });
     slice._startedBy=store._startedBy||operator;slice._startedAt=store._startedAt||nowStamp();
+    // Signatures - "signatures don't show on preview PDF" (traced earlier this session to
+    // sigData/sigSignedBy being pure in-memory JS variables, never saved anywhere until Close
+    // Day actually succeeds - a reload or re-login on the SAME device wiped a signature that
+    // was already drawn, with no way to get it back short of signing again). Persisted here,
+    // scoped to the same (today,branch) key everything else in this slice already uses, so it
+    // survives a reload/re-login on this device. Deliberately NOT cross-device (sigUnlocked
+    // also deliberately excluded, stays session-only) - see the design doc this was scoped
+    // against; drawing/re-signing still requires re-entering a password after any reload.
+    slice._sigData={sigOp:sigData.sigOp,sigMgr:sigData.sigMgr};
+    slice._sigSignedBy={sigOp:sigSignedBy.sigOp,sigMgr:sigSignedBy.sigMgr};
     localStorage.setItem(workKey(today,branch),JSON.stringify(slice));
   }catch(e){}
 }
@@ -8587,6 +8617,8 @@ function loadWorkingStore(){
       store[k]=others.concat(slice[k]||[]);
     });
     store._startedBy=slice._startedBy;store._startedAt=slice._startedAt;
+    if(slice._sigData){sigData.sigOp=slice._sigData.sigOp||'';sigData.sigMgr=slice._sigData.sigMgr||'';}
+    if(slice._sigSignedBy){sigSignedBy.sigOp=slice._sigSignedBy.sigOp||'';sigSignedBy.sigMgr=slice._sigSignedBy.sigMgr||'';}
   }catch(e){}
 }
 function clearWorkingStore(){try{if(today&&branch)localStorage.removeItem(workKey(today,branch));}catch(e){}}
