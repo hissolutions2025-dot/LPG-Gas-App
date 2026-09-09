@@ -9955,6 +9955,36 @@ function _fetchFaultyHeld(br){
     return (res.rows||[]).filter(function(r){return r.Branch===br&&r.Status==='Faulty-Held';});
   },function(){return [];});
 }
+// Previous day's Closing count (per size+state+brand), for the report's Opening Count table
+// to actually show what it's being compared against - "no previous day closing count on
+// full and empty to compare any difference with" (2026-09-09 feedback). Same shape/source
+// _fetchLiveExpectedOpening already uses for the live Count screen's own blind check, but a
+// plain one-off fetch here (no global cache write) since the report only ever needs it once
+// per build. Same empty-snapshot guard as the mismatch-flagging fix (2026-09-07/08): a
+// day_closes row can exist with a genuinely empty count array (a Close Day that happened
+// before that branch's Closing count was itself visible) - that must read as "no real
+// baseline", not "expected zero of everything", so an empty result here means the Opening
+// table renders with no comparison column rather than a misleading all-zero one.
+function _fetchPrevCloseExpected(br,date){
+  var yDate;
+  try{yDate=_dayBefore(date);}catch(e){return Promise.resolve({});}
+  return sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
+    if(res.error||!res.data)return {};
+    var exp={};
+    ((res.data.store_snapshot&&res.data.store_snapshot.count)||[]).filter(function(r){return r.countType==='Closing';}).forEach(function(r){
+      var st=(r.state==='Empty')?'Empty':'Full';
+      if(!exp[r.size])exp[r.size]={Full:{},Empty:{}};
+      exp[r.size][st][r.brand]=(exp[r.size][st][r.brand]||0)+num(r.qty);
+    });
+    return Object.keys(exp).length?exp:{};
+  },function(){return {};});
+}
+// Sum of every brand's qty for one size+state in an _fetchPrevCloseExpected() result.
+function _prevCloseTotal(exp,sz,st){
+  if(!exp||!exp[sz]||!exp[sz][st])return 0;
+  var b=exp[sz][st];
+  return Object.keys(b).reduce(function(s,k){return s+num(b[k]);},0);
+}
 // GasLoss (server-computed, same formula as the live entry-screen preview - see
 // faultyCalcUpdate()) is nominal minus what's actually left, clamped to never go below
 // zero - so it doubles as both "gas at risk" (the app's own existing term for it) and the
@@ -9999,9 +10029,9 @@ function buildCountDocAsync(src){
     // stock count is not reflecting in the report").
   ]):Promise.resolve();
   return _liveFetch.then(function(){
-    return Promise.all([_fetchDayActivity(_b,src.date),_fetchFaultyHeld(_b)]);
+    return Promise.all([_fetchDayActivity(_b,src.date),_fetchFaultyHeld(_b),_fetchPrevCloseExpected(_b,src.date)]);
   }).then(function(fetched){
-    var activityRows=fetched[0], faultyRows=fetched[1];
+    var activityRows=fetched[0], faultyRows=fetched[1], prevCloseExp=fetched[2];
     var people=_groupActivityByPerson(activityRows);
     var excGroups=_groupExceptions(activityRows);
     var faultyTot=_faultyHeldTotals(faultyRows);
@@ -10105,15 +10135,37 @@ function buildCountDocAsync(src){
     }
 
     // ---- Cylinder Counts ----
+    // Opening only: show what the previous day's Closing count actually was per size,
+    // right alongside today's Opening total, with the difference - "no previous day closing
+    // count on full and empty to compare any difference with" (2026-09-09 feedback). Closing
+    // has no equivalent "previous" figure to compare against in this report (its comparison
+    // point, today's own Opening, is the row directly above it), so this stays Opening-only.
+    var _hasPrevClose=Object.keys(prevCloseExp||{}).length>0;
+    function _diffCell(actual,expected){
+      var d=actual-expected;
+      return '<td class="n" style="font-weight:400;color:#8B96A3">'+expected+'</td>'+
+        '<td class="n" style="color:'+(d===0?'#1E8449':'#C0392B')+'">'+(d>0?'+':'')+d+'</td>';
+    }
     function countSection(label,data,stage){
       var szs=ALLSIZES.filter(function(sz){return data.Full[sz]||data.Empty[sz];});
       if(szs.length===0)return '';
+      var showPrev=(stage==='Opening')&&_hasPrevClose;
       var trs=szs.map(function(sz){
-        return '<tr><td class="sz">'+sz+'</td><td>'+cell(data.Full[sz])+'</td><td class="n">'+totalOf(data.Full[sz])+
-          '</td><td>'+cell(data.Empty[sz])+'</td><td class="n">'+totalOf(data.Empty[sz])+'</td></tr>';
+        var fullTot=totalOf(data.Full[sz]),emptyTot=totalOf(data.Empty[sz]);
+        return '<tr><td class="sz">'+sz+'</td><td>'+cell(data.Full[sz])+'</td><td class="n">'+fullTot+'</td>'+
+          (showPrev?_diffCell(fullTot,_prevCloseTotal(prevCloseExp,sz,'Full')):'')+
+          '<td>'+cell(data.Empty[sz])+'</td><td class="n">'+emptyTot+'</td>'+
+          (showPrev?_diffCell(emptyTot,_prevCloseTotal(prevCloseExp,sz,'Empty')):'')+
+          '</tr>';
       }).join('');
+      var head='<tr><th>Size</th><th>Full \u2014 by brand</th><th>Full total</th>'+
+        (showPrev?'<th>Prev Close (Full)</th><th>Diff</th>':'')+
+        '<th>Empty \u2014 by brand</th><th>Empty total</th>'+
+        (showPrev?'<th>Prev Close (Empty)</th><th>Diff</th>':'')+
+        '</tr>';
       return '<h2>'+label+' Count</h2>'+
-        '<table><tr><th>Size</th><th>Full \u2014 by brand</th><th>Full total</th><th>Empty \u2014 by brand</th><th>Empty total</th></tr>'+trs+'</table>'+
+        '<table>'+head+trs+'</table>'+
+        (stage==='Opening'&&!_hasPrevClose?'<p style="font-size:11px;color:#B9761F;margin:2px 0 8px">No previous day\'s Closing count found for '+_b+' \u2014 nothing to compare Opening against.</p>':'')+
         '<div class="callout">Total gas in Full cylinders ('+label+'): <b>\u2248 '+_countFullKg(st,_b,stage).toFixed(2)+' kg</b></div>'+
         '<div class="callout">Total gas capacity of Empty cylinders ('+label+'): <b>\u2248 '+_countEmptyCapacityKg(st,_b,stage).toFixed(2)+' kg</b><span class="note">What these shells could take once refilled, not gas held now.</span></div>';
     }
