@@ -42,12 +42,13 @@ built, tested, and deployed independently:
 - **Phase 3** — Date-Range Stock Balance report (ties Phase 1 + 2 + existing daily data
   together)
 
-Out of scope for this round: solo/independent counts compared against the operator's
-own count (confirmed not needed — all verified counts are joint, one agreed number);
-replacing the daily Operator Opening/Closing flow (confirmed: Verified Stock Takes run
-*alongside* the normal daily count, never instead of it); transfers of Manifold
-installations themselves (only cylinder stock moves between branches — the manifold
-rig itself does not).
+Out of scope for this round: replacing the daily Operator Opening/Closing flow
+(confirmed: Verified Stock Takes run *alongside* the normal daily count, never instead
+of it); transfers of Manifold installations themselves (only cylinder stock moves
+between branches — the manifold rig itself does not).
+
+(Solo/independent counts — originally scoped out, now back in as a supported mode
+alongside joint counts; see Phase 1 below.)
 
 ## Why one spec, three plans
 
@@ -84,12 +85,13 @@ One row per joint Auditor+Operator count.
 | `date` | text, not null | `YYYY-MM-DD`, same convention as `stock_counts.date` |
 | `count` | jsonb, not null | array of `{size, brand, state, qty, note}` — same per-line shape as a `store.count` row, minus `countType` (the table itself is the type; there's no Opening/Closing distinction for a verified take, it's one point-in-time count) |
 | `manifold` | jsonb, not null | array of `{cyl, brand, gasType, scale, tare, gasLeft, cylState, notes}` — same per-slot shape as a `store.manifold` row, minus `stage` (one point-in-time weigh-in, not a sequence) |
+| `mode` | text, not null | `'joint'` or `'solo'` — see Phase 1 |
 | `auditor_id` | uuid, references `profiles(id)` | |
 | `auditor_name_snapshot` | text | |
 | `auditor_sig` | text | data URL, same signature-pad format `sigData.sigOp` already uses |
-| `operator_id` | uuid, references `profiles(id)` | |
-| `operator_name_snapshot` | text | |
-| `operator_sig` | text | data URL |
+| `operator_id` | uuid, references `profiles(id)`, nullable | null when `mode='solo'` — no operator involved in a solo count |
+| `operator_name_snapshot` | text, nullable | |
+| `operator_sig` | text, nullable | data URL |
 | `committed_at` | timestamptz, default now() | |
 
 RLS: same permissive pattern as `stock_counts` — `select`/`insert` for any authenticated
@@ -148,15 +150,25 @@ New value in the existing role system (`Operator` / `Manager` / `Owner` today, g
 1. Auditor logs in → lands directly on Verified Stock Take (only tile available).
 2. Picks branch + date (defaults to today; any date is explicitly allowed, per your
    "we want the option for any date as well").
-3. Counts the full grid + weighs the Manifold, same as a normal daily count.
-4. Auditor signs, then hands the device to the on-duty Operator, who signs.
-5. One atomic insert into `verified_stock_takes`. Nothing is written to any existing
-   table.
+3. Picks **mode**:
+   - **Joint** — Auditor and the on-duty Operator count together, one agreed number.
+     Both sign before commit (same hard gate Day Close already enforces).
+   - **Solo** — Auditor counts alone, Operator not involved at all. Only the
+     Auditor signs. This is the original "independent, no stake in the outcome"
+     check — the count is never shown the Operator's own recorded figures while
+     counting (same blindness guarantee the daily Opening count already has against
+     the previous Closing).
+4. Counts the full grid + weighs the Manifold, same as a normal daily count.
+5. One atomic insert into `verified_stock_takes` (`operator_*` columns null for
+   solo). Nothing is written to any existing table.
 6. Immediate feedback: a toast comparing this Verified count's totals (per size, and
    Manifold total) against that same date's Operator-recorded Closing count, if one
    exists yet for that date — surfaces same-day drift immediately rather than only
    showing up later in a Phase 3 range report. (If Closing hasn't been captured yet
-   for that date, the toast says so instead of comparing against nothing.)
+   for that date, the toast says so instead of comparing against nothing.) For a
+   solo take this comparison is the whole point — it's the one mode genuinely
+   checking the Operator's own numbers against an outside count, rather than
+   producing them together.
 
 **Also syncs to Google Sheets**, same dual-write convention every other capture type in
 this app already follows (`syncPush` alongside the Supabase write) — new `VerifiedTakes`
@@ -267,12 +279,38 @@ brainstorming session, deliberately deferred).
 
 ## Rollout
 
-Ship in the order that avoids depending on incomplete work:
-1. **Phase 1** (Auditor + Verified Stock Take) — no dependency on the other two,
-   ships and is useful standalone (same-day comparison toast already delivers value).
-2. **Phase 2** (Branch Transfers) — no dependency on Phase 1, ships and is useful
-   standalone (dispatch/receipt/approval tracking has value even before the range
-   report exists).
+**Build order: Phase 2 (Transfers) first.** The three phases are independent of each
+other to build, but not equally urgent. Branch transfers are already happening
+informally today, uncaptured — every day that passes before Transfers ships is another
+day of movements that will permanently corrupt any date range Phase 3 later tries to
+balance (no way to reconstruct them after the fact). Verified Takes and the Balance
+report don't have that same cost of delay — shipping them a week later just means one
+fewer checkpoint or no report yet, not silently-lost data. So:
+
+1. **Phase 2** (Branch Transfers) — ships first, stops the data gap from growing.
+2. **Phase 1** (Auditor + Verified Stock Take) — no dependency on Phase 2, ships and
+   is useful standalone (same-day comparison toast already delivers value).
 3. **Phase 3** (Date-Range Balance) — depends on both; the aggregation formula needs
    Transfers and Verified Takes to already exist and have real data flowing in before
    it's meaningfully testable end-to-end.
+
+### Build-time safety: Owner-only until each phase is verified live
+
+Today's session found a real bug where a deploy disrupted an Operator's live capture
+mid-shift (the service-worker auto-reload issue, fixed separately). Building three new
+screens/flows over several deploys carries the same risk if any of it is visible to
+staff before it's proven solid. So during development:
+
+- Every new tile/screen from all three phases (Verified Stock Take, Stock Transfer,
+  Date-Range Balance) is gated to **`role==='Owner'` only**, regardless of that
+  phase's eventual target role — Owner can see and exercise the full Transfer
+  dispatch→receipt→approval cycle, the full Auditor joint/solo count flow, and the
+  Balance report, all from their own login, without needing a real Auditor account or
+  a second device to test with.
+- Every existing Operator/Manager tile and flow is completely unchanged and untouched
+  by any of this — staff see zero difference in the app during the whole build.
+- Once a phase is verified working end-to-end (real data, no regressions), its
+  permission gate is relaxed to its real target audience in its own small follow-up
+  change: Verified Stock Take opens up to the real Auditor role, Stock Transfer opens
+  up to Operators at both branches, Date-Range Balance stays Manager/Owner (already
+  its intended audience).
