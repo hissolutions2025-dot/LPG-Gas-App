@@ -1160,6 +1160,110 @@ function _pushManifoldPendingOverrides(rows,br){
     else{_manifoldPendingFlush();}
   },function(e){console.error('_pushManifoldPendingOverrides rejected:',e&&e.message);_manifoldPendingQueue(payload);});
 }
+// ===== Branch Transfers (stock_transfers) - Phase 2 of the Stock Balance Management
+// spec (docs/superpowers/specs/2026-09-09-stock-balance-management-design.md).
+// Dispatch = insert. Receipt/Approval = .update() on the same row (Supabase supports
+// this directly, unlike the Sheet - see _syncTransferUpdate below for the Sheet side,
+// which mirrors _handleAdjustRow's RowId-match pattern via the new transferUpdate
+// Apps Script action). A push failure here queues to localStorage and retries at
+// login, same convention _pushManifoldLiveRows already uses.
+function _pushTransferDispatch(items,fromBranch,toBranch,note){
+  var rid='xfer_'+Date.now()+'_'+Math.floor(Math.random()*100000);
+  var payload={
+    row_id:rid, from_branch:fromBranch, to_branch:toBranch, items:items, note:note||'',
+    status:'pending_receipt',
+    dispatch_operator_id:currentProfile&&currentProfile.id, dispatch_operator_name_snapshot:operator,
+    dispatch_sig:_xferSig.dispatch||''
+  };
+  return sb.from('stock_transfers').insert(payload).select().then(function(res){
+    if(res.error){console.error('_pushTransferDispatch failed:',res.error.message);_transferQueue({kind:'dispatch',payload:payload});return null;}
+    syncPush('Transfer',items.map(function(it){
+      return {ts:_nowISO(),date:today,branch:fromBranch,FromBranch:fromBranch,ToBranch:toBranch,
+        Size:it.size,Brand:it.brand,State:it.state,QtyDispatched:it.qtyDispatched,QtyReceived:'',
+        ShortfallReason:'',Note:note||'',Status:'pending_receipt',DispatchOperator:operator,
+        ReceiveOperator:'',Manager:'',RowId:rid};
+    }),'transferDispatch');
+    return (res.data&&res.data[0])||null;
+  },function(e){console.error('_pushTransferDispatch rejected:',e&&e.message);_transferQueue({kind:'dispatch',payload:payload});return null;});
+}
+function _fetchTransfersAwaitingReceipt(br){
+  return sb.from('stock_transfers').select('*').eq('to_branch',br).eq('status','pending_receipt').then(function(res){
+    if(res.error){console.error('_fetchTransfersAwaitingReceipt failed:',res.error.message);return [];}
+    return res.data||[];
+  },function(){return [];});
+}
+function _fetchTransfersAwaitingApproval(){
+  return sb.from('stock_transfers').select('*').eq('status','received').then(function(res){
+    if(res.error){console.error('_fetchTransfersAwaitingApproval failed:',res.error.message);return [];}
+    return res.data||[];
+  },function(){return [];});
+}
+// items = the same array, with qtyReceived/shortfallReason filled in per line
+function _confirmTransferReceipt(id,items){
+  var patch={items:items,status:'received',receive_operator_id:currentProfile&&currentProfile.id,
+    receive_operator_name_snapshot:operator,receive_sig:_xferSig.receive||'',receive_at:new Date().toISOString()};
+  return sb.from('stock_transfers').update(patch).eq('id',id).select().then(function(res){
+    if(res.error){console.error('_confirmTransferReceipt failed:',res.error.message);return false;}
+    var row=(res.data&&res.data[0])||null;
+    if(row&&row.row_id){
+      items.forEach(function(it){
+        apiPost('transferUpdate',{rowId:row.row_id,updates:{QtyReceived:it.qtyReceived,ShortfallReason:it.shortfallReason||'',Status:'received',ReceiveOperator:operator}});
+      });
+    }
+    return true;
+  },function(e){console.error('_confirmTransferReceipt rejected:',e&&e.message);return false;});
+}
+function _approveTransfer(id,rowId){
+  var patch={status:'approved',manager_id:currentProfile&&currentProfile.id,manager_name_snapshot:operator,
+    manager_sig:_xferSig.approve||'',approved_at:new Date().toISOString()};
+  return sb.from('stock_transfers').update(patch).eq('id',id).then(function(res){
+    if(res.error){console.error('_approveTransfer failed:',res.error.message);return false;}
+    if(rowId)apiPost('transferUpdate',{rowId:rowId,updates:{Status:'approved',Manager:operator}});
+    return true;
+  },function(e){console.error('_approveTransfer rejected:',e&&e.message);return false;});
+}
+// Same-day/branch gate for closeDay() - see Task 7 (not yours - future task).
+function _fetchUnapprovedTransfersTouching(br,date){
+  return sb.from('stock_transfers').select('id,from_branch,to_branch,status')
+    .or('from_branch.eq.'+br+',to_branch.eq.'+br)
+    .neq('status','approved').neq('status','cancelled')
+    .gte('dispatch_at',date+'T00:00:00').lte('dispatch_at',date+'T23:59:59')
+    .then(function(res){
+      if(res.error){console.error('_fetchUnapprovedTransfersTouching failed:',res.error.message);return [];}
+      return res.data||[];
+    },function(){return [];});
+}
+function _transferQueue(entry){
+  try{var q=JSON.parse(localStorage.getItem('gs_transfer_queue')||'[]');q.push(entry);localStorage.setItem('gs_transfer_queue',JSON.stringify(q.slice(-200)));}catch(e){}
+}
+function _transferFlush(){
+  var q;try{q=JSON.parse(localStorage.getItem('gs_transfer_queue')||'[]');}catch(e){return;}
+  if(!q.length)return;
+  localStorage.setItem('gs_transfer_queue','[]');
+  q.forEach(function(entry){
+    if(entry.kind==='dispatch'){
+      sb.from('stock_transfers').insert(entry.payload).then(function(res){if(res.error)_transferQueue(entry);},function(){_transferQueue(entry);});
+    }
+  });
+}
+// One-shot signature capture for the three transfer signers - deliberately NOT the
+// persistent Day-Close-style sig pad (sigData/sigUnlocked/sigSignedBy): each of these
+// three signatures happens once, immediately, at its own stage, not accumulated over
+// a whole shift with lock/unlock/restore-after-reload semantics. Plain canvas, drawn
+// then read via toDataURL at submit time.
+var _xferSig={dispatch:'',receive:'',approve:''};
+function _initXferSigCanvas(canvasId,sigKey){
+  var cv=document.getElementById(canvasId);if(!cv||cv._init)return;cv._init=true;
+  var ctx=cv.getContext('2d');ctx.lineWidth=2.2;ctx.lineCap='round';ctx.strokeStyle='#16202B';
+  var drawing=false,last=null;
+  function pos(e){var r=cv.getBoundingClientRect();var t=e.touches?e.touches[0]:e;return {x:(t.clientX-r.left)*(cv.width/r.width),y:(t.clientY-r.top)*(cv.height/r.height)};}
+  function start(e){drawing=true;last=pos(e);e.preventDefault();}
+  function move(e){if(!drawing)return;var p=pos(e);ctx.beginPath();ctx.moveTo(last.x,last.y);ctx.lineTo(p.x,p.y);ctx.stroke();last=p;_xferSig[sigKey]=cv.toDataURL('image/png');e.preventDefault();}
+  function end(){drawing=false;}
+  cv.addEventListener('mousedown',start);cv.addEventListener('mousemove',move);cv.addEventListener('mouseup',end);cv.addEventListener('mouseleave',end);
+  cv.addEventListener('touchstart',start,{passive:false});cv.addEventListener('touchmove',move,{passive:false});cv.addEventListener('touchend',end);
+}
+function _xferSigClear(canvasId,sigKey){var cv=document.getElementById(canvasId);if(cv)cv.getContext('2d').clearRect(0,0,cv.width,cv.height);_xferSig[sigKey]='';}
 function _manifoldPendingQueue(payload){
   try{
     var q=JSON.parse(localStorage.getItem('gs_manifoldpending_queue')||'[]');
@@ -3529,6 +3633,7 @@ function _finishLogin(u,b){
   syncFlush();
   _manifoldLiveFlush();
   _manifoldPendingFlush();
+  _transferFlush();
   _fetchManifoldPendingOverrides();
   _closeDayFlushQueue();
   _updateCloseDayPendingBadge();
