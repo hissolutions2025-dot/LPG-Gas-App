@@ -3321,7 +3321,7 @@ function syncRowsReceived(list,br){return list.map(function(r){var w=_who(r);
   // confirmed against the deployed v6/v7 Apps Script. Same class of bug as the earlier
   // Private SupplierName/Invoice mismatch: was silently dropping every Invoice # on commit.
   return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Size:r.size,Brand:r.brand,FullIn:r.fullIn,EmptyOut:r.emptyOut,Note:(r.note||''),OverrideReason:(r.overrideReason||''),Supplier:(r.supplier||''),DeliveryNote:(r.deliveryNote||''),Invoice:(r.invoiceNo||''),PhotoLinks:(r.photoLinks||''),RowId:(r._rid||'')};});}
-function syncRowsRefill(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Size:r.size,Brand:r.brand,GasType:(r.gasType||''),Scale:(r.scale!==undefined?r.scale:''),Tare:(r.tare!==undefined?r.tare:''),GasLeft:(r.gasLeft!==undefined?r.gasLeft:''),Pumped:r.pumped,Seal:(r.seal||''),SealFlag:(r._sealOverride||r._sealFlag||''),FlagReason:(r._flagReason||r._sealReason||''),Notes:(r.notes||''),RowId:(r._rid||'')};});}
+function syncRowsRefill(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,Size:r.size,Brand:r.brand,GasType:(r.gasType||''),Scale:(r.scale!==undefined?r.scale:''),Tare:(r.tare!==undefined?r.tare:''),GasLeft:(r.gasLeft!==undefined?r.gasLeft:''),Pumped:r.pumped,Seal:(r.seal||''),SealFlag:(r._sealOverride||r._sealFlag||''),FlagReason:(r._flagReason||r._sealReason||''),Notes:(r.notes||''),PhotoLinks:(r._photoLink||''),RowId:(r._rid||'')};});}
 function syncRowsPrivate(list,br){return list.map(function(r){var w=_who(r);var viaSupplier=(r.filledBy==='Supplier');
   // Field names here MUST match the backend's TABS.Private key names exactly
   // (SupplierName / Invoice, not FillSupplier / InvoiceNo) - confirmed against the
@@ -5876,7 +5876,8 @@ const CAP={
       {k:'scale',label:'Scale weight (kg)',type:'number'},{k:'tare',label:'Tare weight (kg)',type:'number'},
       {k:'gasLeft',label:'Gas left (auto)',type:'auto',calc:function(d,item){return num(d.scale)-num(d.tare);}},
       {k:'pumped',label:'Gas pumped (auto)',type:'auto',calc:function(d,item){var s=SIZEKG[item];return s?s-(num(d.scale)-num(d.tare)):'';}},
-      {k:'seal',label:'Seal number',type:'number'},{k:'notes',label:'Notes',type:'text',opt:true}],
+      {k:'seal',label:'Seal number',type:'number'},{k:'notes',label:'Notes',type:'text',opt:true},
+      {k:'photo',label:'Photo',type:'photo',max:2,opt:true}],
     weigh:true },
   manifold:{title:'Manifold Count',hint:'Opening = cylinders at start. Added = tap a slot to swap it — weigh the outgoing cylinder\'s residual first, then the incoming cylinder. Closing = cylinders at end.',grid:function(){return _manifoldCylLabels(capBranch);},
     header:[], gate:[], multi:false,
@@ -7678,15 +7679,15 @@ async function _capCommitReal(){
     // can re-run and re-flush store[capType] (would mean re-uploading pointlessly). Only
     // freshRows need this - an already-_committed row already has its _photoLink/photoLinks
     // set from its own commit and must not be re-uploaded.
-    if(capType==='manifold' || capType==='private'){
-      var photoKey = capType==='manifold' ? 'photo' : 'supplierPhoto';
-      var linkKey = capType==='manifold' ? '_photoLink' : 'photoLinks';
+    if(capType==='manifold' || capType==='private' || capType==='refill'){
+      var photoKey = capType==='private' ? 'supplierPhoto' : 'photo'; // manifold and refill both use the plain 'photo' key
+      var linkKey = capType==='private' ? 'photoLinks' : '_photoLink';
       var rowsWithPhotos = freshRows.filter(function(r){return (r[photoKey]||[]).length;});
       if(rowsWithPhotos.length){
         toast('Uploading photo(s)…');
         for(var pi=0;pi<rowsWithPhotos.length;pi++){
           var pr=rowsWithPhotos[pi];
-          pr[linkKey]=await uploadPhotoSet(capType==='manifold'?'Manifold':'Private', capBranch, pr[photoKey]);
+          pr[linkKey]=await uploadPhotoSet(capType==='manifold'?'Manifold':(capType==='refill'?'Refill':'Private'), capBranch, pr[photoKey]);
         }
       }
     }
@@ -10222,9 +10223,9 @@ function buildCountDocAsync(src){
     rf.forEach(function(r){refillCountBySize[r.size]=(refillCountBySize[r.size]||0)+1;});
     if(rf.length){
       var rfTot=rf.reduce(function(a,r){return a+num(r.pumped);},0);
-      rows+='<h2>Refills</h2><table><tr><th>Size</th><th>Brand</th><th>Gas</th><th>Pumped</th><th>Seal #</th><th>Notes</th></tr>'+
-        rf.map(function(r){return '<tr><td class="sz">'+r.size+'</td><td>'+r.brand+'</td><td>'+r.gasType+'</td><td class="n">'+(+r.pumped).toFixed(2)+'</td><td>'+(r.seal||'\u2014')+'</td><td>'+(r.notes||'\u2014')+'</td></tr>';}).join('')+
-        '<tr><td colspan="3"><b>Total pumped</b></td><td class="n"><b>'+rfTot.toFixed(2)+'</b></td><td colspan="2"></td></tr></table>';
+      rows+='<h2>Refills</h2><table><tr><th>Size</th><th>Brand</th><th>Gas</th><th>Pumped</th><th>Seal #</th><th>Notes</th><th>Photo</th></tr>'+
+        rf.map(function(r){var ph=Array.isArray(r.photo)?r.photo:[];return '<tr><td class="sz">'+r.size+'</td><td>'+r.brand+'</td><td>'+r.gasType+'</td><td class="n">'+(+r.pumped).toFixed(2)+'</td><td>'+(r.seal||'\u2014')+'</td><td>'+(r.notes||'\u2014')+'</td><td>'+(ph.length?ph.map(function(s){return '<img src="'+s+'" style="max-height:40px;border-radius:4px;margin:1px">';}).join(''):'\u2014')+'</td></tr>';}).join('')+
+        '<tr><td colspan="3"><b>Total pumped</b></td><td class="n"><b>'+rfTot.toFixed(2)+'</b></td><td colspan="3"></td></tr></table>';
     }
 
     // ---- Private Refills ----
