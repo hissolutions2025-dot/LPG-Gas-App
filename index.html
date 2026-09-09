@@ -3592,6 +3592,7 @@ function triggerIdleLock(){
   document.getElementById('idleLockOverlay').style.display='flex';
   setTimeout(function(){var el=document.getElementById('idleLockPw');if(el)el.focus();},50);
   auditLog('Idle lock','Auto-locked after '+(IDLE_LOCK_MS/60000)+' min inactivity');
+  _maybeApplyPendingReload(); // safe point - nothing being actively typed/committed under the lock overlay
 }
 function idleUnlock(){
   if(!idleLockActive)return;
@@ -3662,7 +3663,7 @@ function syncHeader(id){
   var who=document.getElementById('who');
   if(who)who.style.display=(id==='landing'&&operator)?'block':'none';
 }
-function goHome(){show('landing');renderLandingHeader();document.getElementById('backBtn').style.display='none';greyTiles();applyHomeLayout();_saveCurrentSection('home');}
+function goHome(){show('landing');renderLandingHeader();document.getElementById('backBtn').style.display='none';greyTiles();applyHomeLayout();_saveCurrentSection('home');_maybeApplyPendingReload();}
 function greyTiles(){
   // Keyed on data-key directly now, not the tile's color class (t1..t6) - several tiles
   // reuse the same color class for visual variety (e.g. Stock Count and Manage Users are
@@ -11421,6 +11422,31 @@ function syncCfg(){return { url: SUPABASE_URL+'/functions/v1/sheets-sync' };}
 // flag) since every supported mobile browser here has supported service workers
 // for years; an older/unsupported browser just skips this block via the 'in'
 // check and behaves exactly as before (no service worker, ordinary HTTP caching).
+//
+// Used to reload unconditionally, 1.2s after a new version took over - "only costs
+// a form/popup left open mid-edit, same as a manual refresh" was the reasoning, but
+// that didn't account for a COMMIT actually in flight (network calls already fired,
+// not yet finished) - a reload landing mid-commit can abort some of those calls
+// while others (already a few ms ahead) complete, leaving a genuinely inconsistent
+// partial write instead of just a lost draft. Confirmed live 2026-09-09: a deploy
+// landed ~3 min after a Manifold Closing commit's Sheets push had gone out but
+// before its Supabase live-mirror write and audit-log write finished - the reload
+// cut those two off mid-flight, so the Sheet had the correct data and the live
+// cross-device mirror silently didn't (had to be patched by hand). Multiple deploys
+// in one live shift also meant the operator got dumped back to Sign In repeatedly
+// all day (every "new version" reload is a full app reload = fresh login).
+// Now DEFERRED instead of forced: the reload only actually happens once it's safe -
+// see _maybeApplyPendingReload() below - never while a commit is in flight
+// (capCommitBusy), and only once the operator is genuinely not mid-task (back on
+// Home, or already idle-locked).
+var _pendingReload=false, _pendingReloadToasted=false;
+function _maybeApplyPendingReload(){
+  if(!_pendingReload)return;
+  if(capCommitBusy)return; // never interrupt an in-flight commit
+  var s=_loadCurrentSection();
+  var onHome=!s||s.section==='home';
+  if(onHome||idleLockActive)location.reload();
+}
 if('serviceWorker' in navigator){
   window.addEventListener('load', function(){
     navigator.serviceWorker.register('./sw.js').then(function(reg){
@@ -11430,18 +11456,27 @@ if('serviceWorker' in navigator){
         if(!nw)return;
         nw.addEventListener('statechange', function(){
           if(nw.state==='activated' && hadController){
-            // A NEW version just took over control while this tab was already open -
-            // reload to actually run it. Every committed capture already persists
-            // through an app restart the same way (localStorage), so this only
-            // costs a form/popup left open mid-edit - the same loss a manual
-            // refresh would already cause today.
-            toast('A new version of the app is available — reloading…');
-            setTimeout(function(){location.reload();},1200);
+            // A NEW version just took over control while this tab was already open.
+            // Don't reload immediately - queue it and apply at the next safe point
+            // (see _maybeApplyPendingReload, called from goHome/triggerIdleLock/the
+            // periodic fallback below) so an in-flight or in-progress capture is
+            // never interrupted.
+            _pendingReload=true;
+            if(!_pendingReloadToasted){
+              _pendingReloadToasted=true;
+              toast('A new version of the app is ready — it\'ll apply once you\'re back on Home or idle.');
+            }
+            _maybeApplyPendingReload(); // in case we're already on Home/idle right now
           }
         });
       });
     }).catch(function(){});
   });
+  // Fallback safety net - if the operator never happens to hit Home or go idle for a
+  // long stretch (a whole shift on one capture screen), still catch up eventually
+  // rather than running stale code indefinitely. Cheap no-op check when nothing's
+  // pending.
+  setInterval(_maybeApplyPendingReload, 120000);
 }
 </script>
 </body>
