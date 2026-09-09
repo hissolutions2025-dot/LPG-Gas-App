@@ -10229,38 +10229,51 @@ function buildCountDocAsync(src){
     // meant the section had nothing to show, and simply vanished, for every hour of the day
     // before Closing actually gets captured ("I cannot see it" - 2026-09-09, confirmed live:
     // Helderberg had 4 Opening readings and zero Closing ones at the time). Was then a single
-    // "latest reading per slot, whichever stage" table - but that collapses Opening and
-    // Closing into one row per slot, so there was no way to see both readings side by side
-    // ("I want to see opening and closing data of the manifold" - 2026-09-09). Now split into
-    // two separate sections, Opening and Closing, mirroring the Opening/Closing Count tables
-    // above - each shows the latest reading per slot WITHIN that stage (in case a slot got
-    // re-weighed more than once in the same stage), so both stages are visible at once and
-    // each stays independently accurate as the day progresses.
+    // "latest reading per slot, whichever stage" table (collapsed Opening/Closing into one
+    // row, no side-by-side view - "I want to see opening and closing data of the manifold").
+    // Was then two full separate tables, one per stage - correct data, but took up a lot of
+    // the report with no comparison, totals or difference between them ("hard to figure out"
+    // - 2026-09-09). Now ONE compact table, one row per slot, Opening/Closing/Diff side by
+    // side per slot plus a totals row - same shape as the Opening/Closing Count table's own
+    // Prev-Close/Diff columns above, so the two "compare against what came before" sections
+    // in this report now read the same way. All the underlying detail (every stage including
+    // Added/Removed swaps, tare/gas-type flags, photos) is unchanged and still fully shown
+    // in the "Manifold — Cylinder Weights" history table further down - this is purely a
+    // compressed at-a-glance summary, nothing is dropped.
     function _manStageRows(stage){
       var bySlot={};
       _sumMan.filter(function(m){return (m.stage||'Opening')===stage;}).forEach(function(m){
         var cur=bySlot[m.cyl];
         if(!cur||(m._time||'')>(cur._time||''))bySlot[m.cyl]=m;
       });
-      return Object.keys(bySlot).sort().map(function(k){return bySlot[k];});
+      return bySlot;
     }
-    function _manStageSection(label,stageRows){
-      if(!stageRows.length)return '';
-      var totalKg=stageRows.reduce(function(s,m){return s+num(m.gasLeft);},0);
-      return '<h2>Manifold — '+label+'</h2>'+
-        '<table><tr><th>Slot</th><th>Brand</th><th>Gas</th><th>Weight (kg)</th><th>Condition</th><th>Note</th></tr>'+
-        stageRows.map(function(m){
-          return '<tr><td class="sz">'+m.cyl+'</td><td>'+(m.brand||'—')+'</td><td>'+(m.gasType||'—')+'</td>'+
-            '<td class="n">'+(+m.gasLeft).toFixed(2)+'</td><td>'+(m.cylState||'—')+'</td><td>'+(m.notes||'—')+'</td></tr>';
-        }).join('')+
-        '<tr><td colspan="3"><b>Total '+label+' (manifold)</b></td><td class="n"><b>'+totalKg.toFixed(2)+'</b></td><td colspan="2"></td></tr></table>';
-    }
-    var _manOpeningRows=_manStageRows('Opening');
-    var _manClosingRows=_manStageRows('Closing');
-    var _manStagesHtml=_manStageSection('Opening',_manOpeningRows)+_manStageSection('Closing',_manClosingRows);
-    if(_manStagesHtml){
-      rows+=_manStagesHtml;
-      if(_manOpeningRows.length&&!_manClosingRows.length){
+    var _manOpeningBySlot=_manStageRows('Opening');
+    var _manClosingBySlot=_manStageRows('Closing');
+    var _manAllSlots=Object.keys(Object.assign({},_manOpeningBySlot,_manClosingBySlot)).sort();
+    if(_manAllSlots.length){
+      var _manTotOpen=0,_manTotClose=0,_manTotDiff=0,_manHasClose=false;
+      var _manTrs=_manAllSlots.map(function(slot){
+        var o=_manOpeningBySlot[slot], c=_manClosingBySlot[slot];
+        var ref=c||o; // Condition/Note/Brand shown from whichever stage is latest available
+        var oKg=o?num(o.gasLeft):null, cKg=c?num(c.gasLeft):null;
+        if(oKg!==null)_manTotOpen+=oKg;
+        if(cKg!==null){_manTotClose+=cKg;_manHasClose=true;}
+        var diff=(oKg!==null&&cKg!==null)?(oKg-cKg):null;
+        if(diff!==null)_manTotDiff+=diff;
+        return '<tr><td class="sz">'+slot+'</td><td>'+(ref.brand||'—')+'</td><td>'+(ref.gasType||'—')+'</td>'+
+          '<td class="n">'+(oKg!==null?oKg.toFixed(2):'—')+'</td>'+
+          '<td class="n">'+(cKg!==null?cKg.toFixed(2):'—')+'</td>'+
+          '<td class="n">'+(diff!==null?diff.toFixed(2):'—')+'</td>'+
+          '<td>'+(ref.cylState||'—')+'</td><td>'+(ref.notes||'—')+'</td></tr>';
+      }).join('');
+      rows+='<h2>Manifold — Opening vs Closing</h2>'+
+        '<table><tr><th>Slot</th><th>Brand</th><th>Gas</th><th>Opening (kg)</th><th>Closing (kg)</th><th>Diff (kg)</th><th>Condition</th><th>Note</th></tr>'+
+        _manTrs+
+        '<tr><td colspan="3"><b>Total</b></td><td class="n"><b>'+_manTotOpen.toFixed(2)+'</b></td>'+
+        '<td class="n"><b>'+(_manHasClose?_manTotClose.toFixed(2):'—')+'</b></td>'+
+        '<td class="n"><b>'+(_manHasClose?_manTotDiff.toFixed(2):'—')+'</b></td><td colspan="2"></td></tr></table>';
+      if(!_manHasClose){
         rows+='<p style="font-size:11px;color:#B9761F;margin:2px 0 8px">No Closing manifold reading captured yet for '+_b+'.</p>';
       }
     }
