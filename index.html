@@ -1259,18 +1259,29 @@ function _transferFlush(){
   if(!q.length)return;
   localStorage.setItem('gs_transfer_queue','[]');
   q.forEach(function(entry){
-    if(entry.kind==='dispatch'){
-      sb.from('stock_transfers').insert(entry.payload).then(function(res){
-        if(res.error){_transferQueue(entry);return;}
-        var p=entry.payload;
-        syncPush('transferDispatch',(p.items||[]).map(function(it){
-          return {ts:_nowISO(),date:today,branch:p.from_branch,FromBranch:p.from_branch,ToBranch:p.to_branch,
-            Size:it.size,Brand:it.brand,State:it.state,QtyDispatched:it.qtyDispatched,QtyReceived:'',
-            ShortfallReason:'',Note:p.note||'',Status:'pending_receipt',DispatchOperator:(p.dispatch_operator_name_snapshot||''),
-            ReceiveOperator:'',Manager:'',RowId:p.row_id};
-        }));
-      },function(){_transferQueue(entry);});
+    if(entry.kind!=='dispatch')return;
+    var p=entry.payload;
+    function mirror(){
+      // date/ts here are flush-time, not dispatch-time - the queued payload carries no
+      // dispatch timestamp, so an offline dispatch flushed at next login shows the login
+      // day in the Sheet. Acceptable for now; add a dispatched_ts to the payload later if
+      // this matters.
+      syncPush('transferDispatch',(p.items||[]).map(function(it){
+        return {ts:_nowISO(),date:today,branch:p.from_branch,FromBranch:p.from_branch,ToBranch:p.to_branch,
+          Size:it.size,Brand:it.brand,State:it.state,QtyDispatched:it.qtyDispatched,QtyReceived:'',
+          ShortfallReason:'',Note:p.note||'',Status:'pending_receipt',DispatchOperator:(p.dispatch_operator_name_snapshot||''),
+          ReceiveOperator:'',Manager:'',RowId:p.row_id};
+      }));
     }
+    sb.from('stock_transfers').insert(p).then(function(res){
+      if(res.error){
+        var m=String(res.error.message||'');
+        var alreadyExists=(res.error.code==='23505'||m.indexOf('duplicate key')>-1||m.indexOf('stock_transfers_row_id_unique')>-1);
+        if(alreadyExists){mirror();return;} // row already landed - just do the Sheet mirror
+        _transferQueue(entry);return;        // any other error - retry next login
+      }
+      mirror();
+    },function(){_transferQueue(entry);});
   });
 }
 // One-shot signature capture for the three transfer signers - deliberately NOT the
@@ -1291,6 +1302,7 @@ function _initXferSigCanvas(canvasId,sigKey){
   cv.addEventListener('touchstart',start,{passive:false});cv.addEventListener('touchmove',move,{passive:false});cv.addEventListener('touchend',end);
 }
 function _xferSigClear(canvasId,sigKey){var cv=document.getElementById(canvasId);if(cv)cv.getContext('2d').clearRect(0,0,cv.width,cv.height);_xferSig[sigKey]='';}
+// ===== Manifold remote override approval (read / badge side) =====
 var _manifoldPendingOverrides=[]; // cached list of PENDING items, fetched at login for
                                     // EVERY role (not just Manager/Owner) - Close Day's gate
                                     // (a later task) needs this to be accurate regardless of
