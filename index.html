@@ -1254,9 +1254,12 @@ function _fetchTransfersAwaitingApproval(){
 function _confirmTransferReceipt(id,items){
   var patch={items:items,status:'received',receive_operator_id:currentProfile&&currentProfile.id,
     receive_operator_name_snapshot:operator,receive_sig:_xferSig.receive||'',receive_at:new Date().toISOString()};
-  return sb.from('stock_transfers').update(patch).eq('id',id).select().then(function(res){
+  return sb.from('stock_transfers').update(patch).eq('id',id).eq('status','pending_receipt').select().then(function(res){
     if(res.error){console.error('_confirmTransferReceipt failed:',res.error.message);return false;}
     var row=(res.data&&res.data[0])||null;
+    // update matched zero rows (row not in pending_receipt state - double-tap, or already
+    // received/approved on another device) - .select() returns []; treat as a failure.
+    if(!row){console.warn('_confirmTransferReceipt: no pending_receipt row for',id);return false;}
     if(row&&row.row_id){
       items.forEach(function(it){
         apiPost('transferUpdate',{rowId:row.row_id,updates:{QtyReceived:it.qtyReceived,ShortfallReason:it.shortfallReason||'',Status:'received',ReceiveOperator:operator}});
@@ -1324,24 +1327,26 @@ function _transferFlush(){
 // three signatures happens once, immediately, at its own stage, not accumulated over
 // a whole shift with lock/unlock/restore-after-reload semantics. Plain canvas, drawn
 // then read via toDataURL at submit time.
-var _xferSig={dispatch:'',receive:'',approve:''};
+var _xferSig={dispatch:'',receive:'',approve:'',_activeCanvas:''};
 function _initXferSigCanvas(canvasId,sigKey){
   var cv=document.getElementById(canvasId);if(!cv||cv._init)return;cv._init=true;
   var ctx=cv.getContext('2d');ctx.lineWidth=2.2;ctx.lineCap='round';ctx.strokeStyle='#16202B';
   var drawing=false,last=null;
   function pos(e){var r=cv.getBoundingClientRect();var t=e.touches?e.touches[0]:e;return {x:(t.clientX-r.left)*(cv.width/r.width),y:(t.clientY-r.top)*(cv.height/r.height)};}
   function start(e){drawing=true;last=pos(e);e.preventDefault();}
-  function move(e){if(!drawing)return;var p=pos(e);ctx.beginPath();ctx.moveTo(last.x,last.y);ctx.lineTo(p.x,p.y);ctx.stroke();last=p;_xferSig[sigKey]=cv.toDataURL('image/png');e.preventDefault();}
+  function move(e){if(!drawing)return;var p=pos(e);ctx.beginPath();ctx.moveTo(last.x,last.y);ctx.lineTo(p.x,p.y);ctx.stroke();last=p;_xferSig[sigKey]=cv.toDataURL('image/png');_xferSig._activeCanvas=canvasId;e.preventDefault();}
   function end(){drawing=false;}
   cv.addEventListener('mousedown',start);cv.addEventListener('mousemove',move);cv.addEventListener('mouseup',end);cv.addEventListener('mouseleave',end);
   cv.addEventListener('touchstart',start,{passive:false});cv.addEventListener('touchmove',move,{passive:false});cv.addEventListener('touchend',end);
 }
-function _xferSigClear(canvasId,sigKey){var cv=document.getElementById(canvasId);if(cv)cv.getContext('2d').clearRect(0,0,cv.width,cv.height);_xferSig[sigKey]='';}
+function _xferSigClear(canvasId,sigKey){var cv=document.getElementById(canvasId);if(cv)cv.getContext('2d').clearRect(0,0,cv.width,cv.height);_xferSig[sigKey]='';if(_xferSig._activeCanvas===canvasId)_xferSig._activeCanvas='';}
 
 // ===== Branch Transfers - UI (Task 4: tile + New Transfer/dispatch tab). The Receipt
 // and Approval tab bodies are filled by Tasks 5/6 - xferLoadReceiptList/xferLoadApprovalList
 // do not exist yet, so the two calls below are typeof-guarded.
 var XFER_STATES=['Full','Empty'];
+var _xferReceiptCache=[];
+var _xferCommitBusy=false;
 function xferRenderItems(){
   var g=document.getElementById('xferItemsGrid');
   g.innerHTML=ALLSIZES.map(function(sz){
@@ -1399,10 +1404,11 @@ function xferCommitDispatch(){
 // TO this branch still pending_receipt; per-line received-qty inputs, shortfall reason,
 // receiving-operator signature, Confirm Receipt.
 function xferLoadReceiptList(){
+  _xferSig.receive='';_xferSig._activeCanvas='';
   var el=document.getElementById('xferReceiptList');
   el.innerHTML='Loading…';
   _fetchTransfersAwaitingReceipt(branch).then(function(rows){
-    window._xferReceiptCache=rows;
+    _xferReceiptCache=rows;
     if(!rows.length){el.innerHTML='<p style="color:#999">Nothing awaiting receipt for '+branch+'.</p>';return;}
     el.innerHTML=rows.map(function(t){
       var itemsHtml=t.items.map(function(it,i){
@@ -1428,13 +1434,15 @@ function xferLoadReceiptList(){
   });
 }
 function xferCommitReceipt(id){
-  if(!_xferSig.receive){toast('Receiving operator must sign first',true);return;}
-  var t=(window._xferReceiptCache||[]).filter(function(r){return r.id===id;})[0];
+  if(!_xferSig.receive||_xferSig._activeCanvas!=='xfrSig-'+id){toast('Sign in THIS transfer’s signature box to confirm it',true);return;}
+  if(_xferCommitBusy)return;
+  var t=(_xferReceiptCache||[]).filter(function(r){return r.id===id;})[0];
   if(!t){toast('Transfer not found — reload the list',true);return;}
   var reason=(document.getElementById('xfr-'+id+'-reason').value||'').trim();
   // Validate FIRST (before building anything), so a missing shortfall reason is a plain
   // early return with a toast - no throwing out of a .map() callback.
   var anyShortfall=false;
+  // render and commit both iterate the same cached t.items array (jsonb preserves order), so index i is a stable key
   for(var i=0;i<t.items.length;i++){
     var got=Math.round(num(document.getElementById('xfr-'+id+'-'+i).value));
     if(got!==t.items[i].qtyDispatched)anyShortfall=true;
@@ -1444,7 +1452,9 @@ function xferCommitReceipt(id){
     var got=Math.round(num(document.getElementById('xfr-'+id+'-'+i).value));
     return Object.assign({},it,{qtyReceived:got,shortfallReason:(got!==it.qtyDispatched)?reason:''});
   });
+  _xferCommitBusy=true;
   _confirmTransferReceipt(id,items).then(function(ok){
+    _xferCommitBusy=false;
     if(!ok){toast('Could not confirm receipt — try again',true);return;}
     toast('Receipt confirmed');
     auditLog('Stock Transfer received',t.from_branch+' → '+t.to_branch+' — '+items.length+' line(s)');
