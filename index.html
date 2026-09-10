@@ -1221,6 +1221,7 @@ function _manifoldPendingFlush(){
 // login, same convention _pushManifoldLiveRows already uses.
 function _pushTransferDispatch(items,fromBranch,toBranch,note){
   var rid='xfer_'+Date.now()+'_'+Math.floor(Math.random()*100000);
+  items.forEach(function(it,i){ it._lineRid=rid+'-'+i; });
   var payload={
     row_id:rid, from_branch:fromBranch, to_branch:toBranch, items:items, note:note||'',
     status:'pending_receipt',
@@ -1233,7 +1234,7 @@ function _pushTransferDispatch(items,fromBranch,toBranch,note){
       return {ts:_nowISO(),date:today,branch:fromBranch,FromBranch:fromBranch,ToBranch:toBranch,
         Size:it.size,Brand:it.brand,State:it.state,QtyDispatched:it.qtyDispatched,QtyReceived:'',
         ShortfallReason:'',Note:note||'',Status:'pending_receipt',DispatchOperator:operator,
-        ReceiveOperator:'',Manager:'',RowId:rid};
+        ReceiveOperator:'',Manager:'',RowId:it._lineRid};
     }));
     return (res.data&&res.data[0])||null;
   },function(e){console.error('_pushTransferDispatch rejected:',e&&e.message);_transferQueue({kind:'dispatch',payload:payload});return null;});
@@ -1261,8 +1262,12 @@ function _confirmTransferReceipt(id,items){
     // received/approved on another device) - .select() returns []; treat as a failure.
     if(!row){console.warn('_confirmTransferReceipt: no pending_receipt row for',id);return false;}
     if(row&&row.row_id){
+      var _mirrorWarned=false;
+      var _mirrorFail=function(){if(!_mirrorWarned){_mirrorWarned=true;toast('Saved, but the Sheets copy of this transfer line may be out of date — check the Transfers tab',true);}};
       items.forEach(function(it){
-        apiPost('transferUpdate',{rowId:row.row_id,updates:{QtyReceived:it.qtyReceived,ShortfallReason:it.shortfallReason||'',Status:'received',ReceiveOperator:operator}});
+        apiPost('transferUpdate',{rowId:(it._lineRid||row.row_id),updates:{QtyReceived:it.qtyReceived,ShortfallReason:it.shortfallReason||'',Status:'received',ReceiveOperator:operator}}).then(function(r){
+          if(!r||!r.ok)_mirrorFail();
+        },function(){_mirrorFail();});
       });
     }
     return true;
@@ -1277,21 +1282,27 @@ function _approveTransfer(id,rowId){
     // update matched zero rows (not in received state - double-tap, or already approved on
     // another device) - .select() returns []; treat as a failure and don't re-fire the mirror.
     if(!row){console.warn('_approveTransfer: no row matched (already approved elsewhere, or not in received state)');return false;}
-    if(rowId)apiPost('transferUpdate',{rowId:rowId,updates:{Status:'approved',Manager:operator}});
+    var _mirrorWarned=false;
+    var _mirrorFail=function(){if(!_mirrorWarned){_mirrorWarned=true;toast('Saved, but the Sheets copy of this transfer line may be out of date — check the Transfers tab',true);}};
+    var _lines=(row.items&&row.items.length)?row.items:[{_lineRid:rowId}];
+    _lines.forEach(function(it){
+      apiPost('transferUpdate',{rowId:(it._lineRid||rowId),updates:{Status:'approved',Manager:operator}}).then(function(r){
+        if(!r||!r.ok)_mirrorFail();
+      },function(){_mirrorFail();});
+    });
     return true;
   },function(e){console.error('_approveTransfer rejected:',e&&e.message);return false;});
 }
-// Same-day/branch gate for closeDay() - see Task 7 (not yours - future task).
-function _fetchUnapprovedTransfersTouching(br,date){
+// Branch gate for closeDay() - blocks on ANY unapproved transfer touching the branch, regardless of dispatch date.
+function _fetchUnapprovedTransfersTouching(br){
   return sb.from('stock_transfers').select('id,from_branch,to_branch,status')
     // br is always a fixed branch-name constant (never user text) - safe to interpolate into the .or() filter string
     .or('from_branch.eq.'+br+',to_branch.eq.'+br)
     .neq('status','approved').neq('status','cancelled')
-    .gte('dispatch_at',date+'T00:00:00').lte('dispatch_at',date+'T23:59:59')
     .then(function(res){
-      if(res.error){console.error('_fetchUnapprovedTransfersTouching failed:',res.error.message);return [];}
+      if(res.error){console.error('_fetchUnapprovedTransfersTouching failed:',res.error.message);return {error:true};}
       return res.data||[];
-    },function(e){console.error('_fetchUnapprovedTransfersTouching rejected:',e&&e.message);return [];});
+    },function(e){console.error('_fetchUnapprovedTransfersTouching rejected:',e&&e.message);return {error:true};});
 }
 function _transferQueue(entry){
   try{var q=JSON.parse(localStorage.getItem('gs_transfer_queue')||'[]');q.push(entry);localStorage.setItem('gs_transfer_queue',JSON.stringify(q.slice(-200)));}catch(e){}
@@ -8635,16 +8646,20 @@ function closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,_unapprovedTr
     toast('Cannot close: '+_pendingForBranch.length+' Manifold override(s) still awaiting Manager/Owner approval — see the Pending Overrides screen.',true);
     return;
   }
-  // #4d BLOCK: any Branch Transfer that touched this branch today and isn't yet
-  // 'approved' - same live-refetch-first reasoning as the pending-overrides gate just
+  // #4d BLOCK: any Branch Transfer that touched this branch and isn't yet
+  // 'approved' (any dispatch date) - same live-refetch-first reasoning as the pending-overrides gate just
   // above (Close Day is irreversible, so a stale local cache here could let a branch
   // close right past a transfer another device just dispatched/received).
   if(!_skipTransfersRefresh){
-    _fetchUnapprovedTransfersTouching(branch,today).then(function(rows){closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,rows);},function(){closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,[]);});
+    _fetchUnapprovedTransfersTouching(branch).then(function(rows){closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,rows);},function(){closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,{error:true});});
+    return;
+  }
+  if(_unapprovedTransfers&&_unapprovedTransfers.error){
+    toast('Cannot close: couldn’t check for outstanding Stock Transfers (network issue) — try again in a moment.',true);
     return;
   }
   if(_unapprovedTransfers&&_unapprovedTransfers.length){
-    toast('Cannot close: '+_unapprovedTransfers.length+' Stock Transfer(s) touching '+branch+' today still need Owner approval. Ask an Owner to approve them on the Stock Transfer screen.',true);
+    toast('Cannot close: '+_unapprovedTransfers.length+' Stock Transfer(s) touching '+branch+' still need Owner approval. Ask an Owner to approve them on the Stock Transfer screen.',true);
     return;
   }
   // Close Day requires: an authoriser WITH close-day permission. The high-risk second

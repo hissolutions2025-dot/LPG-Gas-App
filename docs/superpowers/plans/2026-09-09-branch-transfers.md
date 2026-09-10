@@ -254,15 +254,14 @@ function _approveTransfer(id,rowId){
   },function(e){console.error('_approveTransfer rejected:',e&&e.message);return false;});
 }
 // Same-day/branch gate for closeDay() - see Task 7.
-function _fetchUnapprovedTransfersTouching(br,date){
+function _fetchUnapprovedTransfersTouching(br){
   return sb.from('stock_transfers').select('id,from_branch,to_branch,status')
     .or('from_branch.eq.'+br+',to_branch.eq.'+br)
     .neq('status','approved').neq('status','cancelled')
-    .gte('dispatch_at',date+'T00:00:00').lte('dispatch_at',date+'T23:59:59')
     .then(function(res){
-      if(res.error){console.error('_fetchUnapprovedTransfersTouching failed:',res.error.message);return [];}
+      if(res.error){console.error('_fetchUnapprovedTransfersTouching failed:',res.error.message);return {error:true};}
       return res.data||[];
-    },function(){return [];});
+    },function(){return {error:true};});
 }
 function _transferQueue(entry){
   try{var q=JSON.parse(localStorage.getItem('gs_transfer_queue')||'[]');q.push(entry);localStorage.setItem('gs_transfer_queue',JSON.stringify(q.slice(-200)));}catch(e){}
@@ -609,16 +608,20 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 `closeDay()` already re-fetches-then-recurses once for the pending-overrides check (the `_skipPendingOverridesRefresh` flag). Reuse that exact same one-shot-recursion-guard shape for this gate — add a second flag parameter and a second guarded block right after the existing one (after `index.html:8298`, before the `if(!store._closeAuth){` block):
 
 ```javascript
-  // #4d BLOCK: any Branch Transfer that touched this branch today and isn't yet
+  // #4d BLOCK: any Branch Transfer that touched this branch and isn't yet
   // 'approved' - same live-refetch-first reasoning as the pending-overrides gate just
   // above (Close Day is irreversible, so a stale local cache here could let a branch
   // close right past a transfer another device just dispatched/received).
   if(!_skipTransfersRefresh){
-    _fetchUnapprovedTransfersTouching(branch,today).then(function(rows){closeDay(true,_dayActivitySummary,rows);},function(){closeDay(true,_dayActivitySummary,[]);});
+    _fetchUnapprovedTransfersTouching(branch).then(function(rows){closeDay(true,_dayActivitySummary,rows);},function(){closeDay(true,_dayActivitySummary,{error:true});});
+    return;
+  }
+  if(_unapprovedTransfers&&_unapprovedTransfers.error){
+    toast('Cannot close: couldn’t check for outstanding Stock Transfers (network issue) — try again in a moment.',true);
     return;
   }
   if(_unapprovedTransfers&&_unapprovedTransfers.length){
-    toast('Cannot close: '+_unapprovedTransfers.length+' Stock Transfer(s) touching '+branch+' today still need Owner approval. Ask an Owner to approve them on the Stock Transfer screen.',true);
+    toast('Cannot close: '+_unapprovedTransfers.length+' Stock Transfer(s) touching '+branch+' still need Owner approval. Ask an Owner to approve them on the Stock Transfer screen.',true);
     return;
   }
 ```
