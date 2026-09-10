@@ -618,10 +618,12 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
     return;
   }
   if(_unapprovedTransfers&&_unapprovedTransfers.length){
-    toast('Cannot close: '+_unapprovedTransfers.length+' Stock Transfer(s) touching '+branch+' today still need Manager/Owner approval — see the Stock Transfer screen.',true);
+    toast('Cannot close: '+_unapprovedTransfers.length+' Stock Transfer(s) touching '+branch+' today still need Owner approval. Ask an Owner to approve them on the Stock Transfer screen.',true);
     return;
   }
 ```
+
+> **Note (from Task 7 review):** the toast points to an Owner-only screen, so it says "Ask an Owner" — revisit this wording if/when the rollout gate opens the transfer screen to Managers.
 
 - [ ] **Step 2: Update `closeDay()`'s signature and the two other call sites**
 

@@ -8644,7 +8644,7 @@ function closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,_unapprovedTr
     return;
   }
   if(_unapprovedTransfers&&_unapprovedTransfers.length){
-    toast('Cannot close: '+_unapprovedTransfers.length+' Stock Transfer(s) touching '+branch+' today still need Manager/Owner approval — see the Stock Transfer screen.',true);
+    toast('Cannot close: '+_unapprovedTransfers.length+' Stock Transfer(s) touching '+branch+' today still need Owner approval. Ask an Owner to approve them on the Stock Transfer screen.',true);
     return;
   }
   // Close Day requires: an authoriser WITH close-day permission. The high-risk second
