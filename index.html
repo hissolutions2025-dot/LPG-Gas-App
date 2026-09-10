@@ -1506,7 +1506,8 @@ function xferCommitApproval(id,rowId){
     _xferCommitBusy=false;
     if(!ok){toast('Could not approve — try again',true);return;}
     toast('Transfer approved');
-    auditLog('Stock Transfer approved','id '+id);
+    var _t=(_xferApprovalCache||[]).filter(function(r){return r.id===id;})[0];
+    auditLog('Stock Transfer approved',_t?(_t.from_branch+' → '+_t.to_branch+' — '+_t.items.length+' line(s)'):('id '+id));
     _xferSigClear('xfaSig-'+id,'approve');
     xferLoadApprovalList();
   });
