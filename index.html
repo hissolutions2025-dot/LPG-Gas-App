@@ -1160,6 +1160,23 @@ function _pushManifoldPendingOverrides(rows,br){
     else{_manifoldPendingFlush();}
   },function(e){console.error('_pushManifoldPendingOverrides rejected:',e&&e.message);_manifoldPendingQueue(payload);});
 }
+function _manifoldPendingQueue(payload){
+  try{
+    var q=JSON.parse(localStorage.getItem('gs_manifoldpending_queue')||'[]');
+    q.push(payload);
+    localStorage.setItem('gs_manifoldpending_queue',JSON.stringify(q.slice(-200)));
+  }catch(e){}
+}
+function _manifoldPendingFlush(){
+  var q;try{q=JSON.parse(localStorage.getItem('gs_manifoldpending_queue')||'[]');}catch(e){return;}
+  if(!q.length)return;
+  localStorage.setItem('gs_manifoldpending_queue','[]');
+  q.forEach(function(payload){
+    sb.from('manifold_pending_overrides').insert(payload).then(function(res){
+      if(res.error)_manifoldPendingQueue(payload);
+    },function(e){_manifoldPendingQueue(payload);});
+  });
+}
 // ===== Branch Transfers (stock_transfers) - Phase 2 of the Stock Balance Management
 // spec (docs/superpowers/specs/2026-09-09-stock-balance-management-design.md).
 // Dispatch = insert. Receipt/Approval = .update() on the same row (Supabase supports
@@ -1177,12 +1194,12 @@ function _pushTransferDispatch(items,fromBranch,toBranch,note){
   };
   return sb.from('stock_transfers').insert(payload).select().then(function(res){
     if(res.error){console.error('_pushTransferDispatch failed:',res.error.message);_transferQueue({kind:'dispatch',payload:payload});return null;}
-    syncPush('Transfer',items.map(function(it){
+    syncPush('transferDispatch',items.map(function(it){
       return {ts:_nowISO(),date:today,branch:fromBranch,FromBranch:fromBranch,ToBranch:toBranch,
         Size:it.size,Brand:it.brand,State:it.state,QtyDispatched:it.qtyDispatched,QtyReceived:'',
         ShortfallReason:'',Note:note||'',Status:'pending_receipt',DispatchOperator:operator,
         ReceiveOperator:'',Manager:'',RowId:rid};
-    }),'transferDispatch');
+    }));
     return (res.data&&res.data[0])||null;
   },function(e){console.error('_pushTransferDispatch rejected:',e&&e.message);_transferQueue({kind:'dispatch',payload:payload});return null;});
 }
@@ -1190,13 +1207,13 @@ function _fetchTransfersAwaitingReceipt(br){
   return sb.from('stock_transfers').select('*').eq('to_branch',br).eq('status','pending_receipt').then(function(res){
     if(res.error){console.error('_fetchTransfersAwaitingReceipt failed:',res.error.message);return [];}
     return res.data||[];
-  },function(){return [];});
+  },function(e){console.error('_fetchTransfersAwaitingReceipt rejected:',e&&e.message);return [];});
 }
 function _fetchTransfersAwaitingApproval(){
   return sb.from('stock_transfers').select('*').eq('status','received').then(function(res){
     if(res.error){console.error('_fetchTransfersAwaitingApproval failed:',res.error.message);return [];}
     return res.data||[];
-  },function(){return [];});
+  },function(e){console.error('_fetchTransfersAwaitingApproval rejected:',e&&e.message);return [];});
 }
 // items = the same array, with qtyReceived/shortfallReason filled in per line
 function _confirmTransferReceipt(id,items){
@@ -1225,13 +1242,14 @@ function _approveTransfer(id,rowId){
 // Same-day/branch gate for closeDay() - see Task 7 (not yours - future task).
 function _fetchUnapprovedTransfersTouching(br,date){
   return sb.from('stock_transfers').select('id,from_branch,to_branch,status')
+    // br is always a fixed branch-name constant (never user text) - safe to interpolate into the .or() filter string
     .or('from_branch.eq.'+br+',to_branch.eq.'+br)
     .neq('status','approved').neq('status','cancelled')
     .gte('dispatch_at',date+'T00:00:00').lte('dispatch_at',date+'T23:59:59')
     .then(function(res){
       if(res.error){console.error('_fetchUnapprovedTransfersTouching failed:',res.error.message);return [];}
       return res.data||[];
-    },function(){return [];});
+    },function(e){console.error('_fetchUnapprovedTransfersTouching rejected:',e&&e.message);return [];});
 }
 function _transferQueue(entry){
   try{var q=JSON.parse(localStorage.getItem('gs_transfer_queue')||'[]');q.push(entry);localStorage.setItem('gs_transfer_queue',JSON.stringify(q.slice(-200)));}catch(e){}
@@ -1242,7 +1260,16 @@ function _transferFlush(){
   localStorage.setItem('gs_transfer_queue','[]');
   q.forEach(function(entry){
     if(entry.kind==='dispatch'){
-      sb.from('stock_transfers').insert(entry.payload).then(function(res){if(res.error)_transferQueue(entry);},function(){_transferQueue(entry);});
+      sb.from('stock_transfers').insert(entry.payload).then(function(res){
+        if(res.error){_transferQueue(entry);return;}
+        var p=entry.payload;
+        syncPush('transferDispatch',(p.items||[]).map(function(it){
+          return {ts:_nowISO(),date:today,branch:p.from_branch,FromBranch:p.from_branch,ToBranch:p.to_branch,
+            Size:it.size,Brand:it.brand,State:it.state,QtyDispatched:it.qtyDispatched,QtyReceived:'',
+            ShortfallReason:'',Note:p.note||'',Status:'pending_receipt',DispatchOperator:(p.dispatch_operator_name_snapshot||''),
+            ReceiveOperator:'',Manager:'',RowId:p.row_id};
+        }));
+      },function(){_transferQueue(entry);});
     }
   });
 }
@@ -1264,23 +1291,6 @@ function _initXferSigCanvas(canvasId,sigKey){
   cv.addEventListener('touchstart',start,{passive:false});cv.addEventListener('touchmove',move,{passive:false});cv.addEventListener('touchend',end);
 }
 function _xferSigClear(canvasId,sigKey){var cv=document.getElementById(canvasId);if(cv)cv.getContext('2d').clearRect(0,0,cv.width,cv.height);_xferSig[sigKey]='';}
-function _manifoldPendingQueue(payload){
-  try{
-    var q=JSON.parse(localStorage.getItem('gs_manifoldpending_queue')||'[]');
-    q.push(payload);
-    localStorage.setItem('gs_manifoldpending_queue',JSON.stringify(q.slice(-200)));
-  }catch(e){}
-}
-function _manifoldPendingFlush(){
-  var q;try{q=JSON.parse(localStorage.getItem('gs_manifoldpending_queue')||'[]');}catch(e){return;}
-  if(!q.length)return;
-  localStorage.setItem('gs_manifoldpending_queue','[]');
-  q.forEach(function(payload){
-    sb.from('manifold_pending_overrides').insert(payload).then(function(res){
-      if(res.error)_manifoldPendingQueue(payload);
-    },function(e){_manifoldPendingQueue(payload);});
-  });
-}
 var _manifoldPendingOverrides=[]; // cached list of PENDING items, fetched at login for
                                     // EVERY role (not just Manager/Owner) - Close Day's gate
                                     // (a later task) needs this to be accurate regardless of
