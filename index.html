@@ -322,6 +322,7 @@
       <button class="tile t1" data-key="users" id="tileUsers" onclick="openUsers()" style="display:none"><div class="ic">&#128100;</div><h3>Manage Users</h3><p>Owner: users, levels &amp; branches</p></button>
       <button class="tile t5" data-key="audit" id="tileAudit" onclick="openAudit()" style="display:none"><div class="ic">&#128220;</div><h3>Audit Log</h3><p>Owner only — who did what, when</p></button>
       <button class="tile t2" data-key="admin" id="tileAdmin" onclick="openAdmin()" style="display:none"><div class="ic">&#9881;</div><h3>Admin</h3><p>Seal register &amp; suppliers</p></button>
+      <button class="tile t6" data-key="transfer" id="tileTransfer" onclick="openTransfers()" style="display:none"><div class="ic">&#8646;</div><h3>Stock Transfer</h3><p>Owner: move cylinders between branches</p><span class="badge" id="b-transfer" style="display:none">0</span></button>
     </div>
     <div class="cFooter" id="homeEditBar" style="display:none">
       <button type="button" class="cbGhost" onclick="resetHomeLayout()">Reset layout</button>
@@ -334,6 +335,39 @@
 <div id="pendingOverridesView" class="view"><div class="wrap">
   <div id="pendingOverridesBody"></div>
 </div></div>
+
+<!-- STOCK TRANSFER (Owner) -->
+<div id="transferScreen" class="view">
+  <div class="wrap">
+    <div style="display:flex;gap:8px;margin-bottom:14px">
+      <button class="sigClear" id="xferTabNewBtn" onclick="xferShowTab('new')" style="flex:1">New Transfer</button>
+      <button class="sigClear" id="xferTabReceiptBtn" onclick="xferShowTab('receipt')" style="flex:1">Awaiting Receipt</button>
+      <button class="sigClear" id="xferTabApprovalBtn" onclick="xferShowTab('approval')" style="flex:1">Awaiting Approval</button>
+    </div>
+
+    <div id="xferTabNew">
+      <label>From branch</label>
+      <select id="xferFromBranch" onchange="xferRenderItems()"><option>Helderberg</option><option>Kleinmond</option></select>
+      <label>To branch</label>
+      <select id="xferToBranch"><option>Kleinmond</option><option>Helderberg</option></select>
+      <div id="xferItemsGrid"></div>
+      <label>Note (optional)</label>
+      <textarea id="xferNote" rows="2" style="width:100%"></textarea>
+      <label>Dispatch operator signature</label>
+      <canvas id="xferDispatchSig" width="600" height="150" style="border:1.5px solid var(--steel);border-radius:8px;width:100%;touch-action:none"></canvas>
+      <button class="sigClear" onclick="_xferSigClear('xferDispatchSig','dispatch')">Clear signature</button>
+      <button onclick="xferCommitDispatch()">Dispatch Transfer</button>
+    </div>
+
+    <div id="xferTabReceipt" style="display:none">
+      <div id="xferReceiptList"></div>
+    </div>
+
+    <div id="xferTabApproval" style="display:none">
+      <div id="xferApprovalList"></div>
+    </div>
+  </div>
+</div>
 
 <!-- RESIDUAL GAS (main section) -->
 <div id="residualView" class="view"><div class="wrap">
@@ -1302,6 +1336,60 @@ function _initXferSigCanvas(canvasId,sigKey){
   cv.addEventListener('touchstart',start,{passive:false});cv.addEventListener('touchmove',move,{passive:false});cv.addEventListener('touchend',end);
 }
 function _xferSigClear(canvasId,sigKey){var cv=document.getElementById(canvasId);if(cv)cv.getContext('2d').clearRect(0,0,cv.width,cv.height);_xferSig[sigKey]='';}
+
+// ===== Branch Transfers - UI (Task 4: tile + New Transfer/dispatch tab). The Receipt
+// and Approval tab bodies are filled by Tasks 5/6 - xferLoadReceiptList/xferLoadApprovalList
+// do not exist yet, so the two calls below are typeof-guarded.
+var XFER_STATES=['Full','Empty'];
+function xferRenderItems(){
+  var g=document.getElementById('xferItemsGrid');
+  g.innerHTML=ALLSIZES.map(function(sz){
+    return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">'+
+      '<span style="width:90px;font-size:12px">'+sz+'</span>'+
+      '<select id="xfb-'+sz+'" style="flex:1">'+BRANDS.map(function(b){return '<option>'+b+'</option>';}).join('')+'</select>'+
+      '<select id="xfs-'+sz+'" style="width:80px">'+XFER_STATES.map(function(s){return '<option>'+s+'</option>';}).join('')+'</select>'+
+      '<input id="xfq-'+sz+'" type="number" min="0" value="0" style="width:70px">'+
+      '</div>';
+  }).join('');
+}
+function xferShowTab(name){
+  ['new','receipt','approval'].forEach(function(n){
+    document.getElementById('xferTab'+n[0].toUpperCase()+n.slice(1)).style.display=(n===name)?'block':'none';
+    document.getElementById('xferTab'+n[0].toUpperCase()+n.slice(1)+'Btn').classList.toggle('on',n===name);
+  });
+  if(name==='receipt'&&typeof xferLoadReceiptList==='function')xferLoadReceiptList();
+  if(name==='approval'&&typeof xferLoadApprovalList==='function')xferLoadApprovalList();
+}
+function openTransfers(){
+  show('transferScreen');
+  document.getElementById('backBtn').style.display='block';
+  xferRenderItems();
+  setTimeout(function(){_initXferSigCanvas('xferDispatchSig','dispatch');},50);
+  xferShowTab('new');
+}
+function xferCommitDispatch(){
+  var from=document.getElementById('xferFromBranch').value, to=document.getElementById('xferToBranch').value;
+  if(from===to){toast('From and To branch must differ',true);return;}
+  if(!_xferSig.dispatch){toast('Dispatch operator must sign first',true);return;}
+  var items=[];
+  ALLSIZES.forEach(function(sz){
+    var qty=num(document.getElementById('xfq-'+sz).value);
+    if(qty>0){
+      items.push({size:sz,brand:document.getElementById('xfb-'+sz).value,state:document.getElementById('xfs-'+sz).value,
+        qtyDispatched:qty,qtyReceived:null,shortfallReason:'',note:''});
+    }
+  });
+  if(!items.length){toast('Add at least one line with a quantity',true);return;}
+  var note=document.getElementById('xferNote').value||'';
+  _pushTransferDispatch(items,from,to,note).then(function(row){
+    if(!row){toast('Could not reach the server — queued, will retry at next login',true);return;}
+    toast('Transfer dispatched — '+to+' will see it under Awaiting Receipt');
+    auditLog('Stock Transfer dispatched',from+' → '+to+' — '+items.length+' line(s)');
+    document.getElementById('xferNote').value='';
+    _xferSigClear('xferDispatchSig','dispatch');
+    xferRenderItems();
+  });
+}
 // ===== Manifold remote override approval (read / badge side) =====
 var _manifoldPendingOverrides=[]; // cached list of PENDING items, fetched at login for
                                     // EVERY role (not just Manager/Owner) - Close Day's gate
@@ -3642,6 +3730,7 @@ function _finishLogin(u,b){
   var _ta=document.getElementById('tileAdmin');if(_ta)_ta.style.display=(perm('seal_admin')||perm('faultyCapture')||perm('faultyRegister')||perm('manageSuppliers'))?'flex':'none';
   var _trg=document.getElementById('tileResidual');if(_trg)_trg.style.display=perm('residualGas')?'flex':'none';
   var _tpo=document.getElementById('tilePendingOverrides');if(_tpo)_tpo.style.display=(role==='Manager'||role==='Owner')?'flex':'none';
+  var _ttr=document.getElementById('tileTransfer');if(_ttr)_ttr.style.display=(role==='Owner')?'flex':'none';
   auditLog('Login','Signed in to '+b);
   editUnlocked=false;
   loadWorkingStore();
