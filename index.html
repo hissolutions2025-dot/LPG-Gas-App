@@ -8554,7 +8554,8 @@ function _dayCompletenessOverride(br,missingSummary){
     });
   });
 }
-function closeDay(_skipPendingOverridesRefresh,_dayActivitySummary){
+function closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,_unapprovedTransfers){
+  var _skipTransfersRefresh=(_unapprovedTransfers!==undefined);
   var total=Object.keys(store).filter(function(k){return k[0]!=='_';}).reduce(function(a,k){return a+(Array.isArray(store[k])?store[k].length:0);},0);
   if(total===0){toast('Nothing captured to close the day',true);return;}
   if(!sigData.sigOp){toast('Operator signature box must be signed first',true);return;}
@@ -8632,6 +8633,18 @@ function closeDay(_skipPendingOverridesRefresh,_dayActivitySummary){
   var _pendingForBranch=(_manifoldPendingOverrides||[]).filter(function(p){return p.branch===branch&&(p.date||today)===today;});
   if(_pendingForBranch.length){
     toast('Cannot close: '+_pendingForBranch.length+' Manifold override(s) still awaiting Manager/Owner approval — see the Pending Overrides screen.',true);
+    return;
+  }
+  // #4d BLOCK: any Branch Transfer that touched this branch today and isn't yet
+  // 'approved' - same live-refetch-first reasoning as the pending-overrides gate just
+  // above (Close Day is irreversible, so a stale local cache here could let a branch
+  // close right past a transfer another device just dispatched/received).
+  if(!_skipTransfersRefresh){
+    _fetchUnapprovedTransfersTouching(branch,today).then(function(rows){closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,rows);},function(){closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,[]);});
+    return;
+  }
+  if(_unapprovedTransfers&&_unapprovedTransfers.length){
+    toast('Cannot close: '+_unapprovedTransfers.length+' Stock Transfer(s) touching '+branch+' today still need Manager/Owner approval — see the Stock Transfer screen.',true);
     return;
   }
   // Close Day requires: an authoriser WITH close-day permission. The high-risk second
