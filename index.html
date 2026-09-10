@@ -1395,6 +1395,63 @@ function xferCommitDispatch(){
     xferRenderItems();
   });
 }
+// ===== Branch Transfers - UI (Task 5: Awaiting Receipt tab). Lists transfers dispatched
+// TO this branch still pending_receipt; per-line received-qty inputs, shortfall reason,
+// receiving-operator signature, Confirm Receipt.
+function xferLoadReceiptList(){
+  var el=document.getElementById('xferReceiptList');
+  el.innerHTML='Loading…';
+  _fetchTransfersAwaitingReceipt(branch).then(function(rows){
+    window._xferReceiptCache=rows;
+    if(!rows.length){el.innerHTML='<p style="color:#999">Nothing awaiting receipt for '+branch+'.</p>';return;}
+    el.innerHTML=rows.map(function(t){
+      var itemsHtml=t.items.map(function(it,i){
+        return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">'+
+          '<span style="width:140px;font-size:12px">'+it.size+' · '+it.brand+' · '+it.state+'</span>'+
+          '<span style="width:90px;font-size:12px">Dispatched: '+it.qtyDispatched+'</span>'+
+          '<input id="xfr-'+t.id+'-'+i+'" type="number" min="0" step="1" value="'+it.qtyDispatched+'" style="width:70px"> received'+
+          '</div>';
+      }).join('');
+      return '<div class="histSection" style="border:1.5px solid var(--steel);border-radius:10px;padding:10px;margin-bottom:10px">'+
+        '<b>From '+t.from_branch+'</b> — dispatched by '+(t.dispatch_operator_name_snapshot||'?')+' ('+_tsHM(t.dispatch_at)+')'+
+        (t.note?('<div style="font-size:12px;color:#777">'+t.note+'</div>'):'')+
+        '<div style="margin:8px 0">'+itemsHtml+'</div>'+
+        '<label>Shortfall reason (required if any quantity above differs from dispatched)</label>'+
+        '<input id="xfr-'+t.id+'-reason" style="width:100%">'+
+        '<label>Receiving operator signature</label>'+
+        '<canvas id="xfrSig-'+t.id+'" width="600" height="150" style="border:1.5px solid var(--steel);border-radius:8px;width:100%;touch-action:none"></canvas>'+
+        '<button class="sigClear" onclick="_xferSigClear(\'xfrSig-'+t.id+'\',\'receive\')">Clear signature</button>'+
+        '<button onclick="xferCommitReceipt(\''+t.id+'\')">Confirm Receipt</button>'+
+        '</div>';
+    }).join('');
+    rows.forEach(function(t){setTimeout(function(){_initXferSigCanvas('xfrSig-'+t.id,'receive');},50);});
+  });
+}
+function xferCommitReceipt(id){
+  if(!_xferSig.receive){toast('Receiving operator must sign first',true);return;}
+  var t=(window._xferReceiptCache||[]).filter(function(r){return r.id===id;})[0];
+  if(!t){toast('Transfer not found — reload the list',true);return;}
+  var reason=(document.getElementById('xfr-'+id+'-reason').value||'').trim();
+  // Validate FIRST (before building anything), so a missing shortfall reason is a plain
+  // early return with a toast - no throwing out of a .map() callback.
+  var anyShortfall=false;
+  for(var i=0;i<t.items.length;i++){
+    var got=Math.round(num(document.getElementById('xfr-'+id+'-'+i).value));
+    if(got!==t.items[i].qtyDispatched)anyShortfall=true;
+  }
+  if(anyShortfall&&!reason){toast('A shortfall reason is required — one or more received quantities differ from what was dispatched',true);return;}
+  var items=t.items.map(function(it,i){
+    var got=Math.round(num(document.getElementById('xfr-'+id+'-'+i).value));
+    return Object.assign({},it,{qtyReceived:got,shortfallReason:(got!==it.qtyDispatched)?reason:''});
+  });
+  _confirmTransferReceipt(id,items).then(function(ok){
+    if(!ok){toast('Could not confirm receipt — try again',true);return;}
+    toast('Receipt confirmed');
+    auditLog('Stock Transfer received',t.from_branch+' → '+t.to_branch+' — '+items.length+' line(s)');
+    _xferSigClear('xfrSig-'+id,'receive');
+    xferLoadReceiptList();
+  });
+}
 // ===== Manifold remote override approval (read / badge side) =====
 var _manifoldPendingOverrides=[]; // cached list of PENDING items, fetched at login for
                                     // EVERY role (not just Manager/Owner) - Close Day's gate
