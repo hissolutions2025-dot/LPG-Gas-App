@@ -1271,8 +1271,12 @@ function _confirmTransferReceipt(id,items){
 function _approveTransfer(id,rowId){
   var patch={status:'approved',manager_id:currentProfile&&currentProfile.id,manager_name_snapshot:operator,
     manager_sig:_xferSig.approve||'',approved_at:new Date().toISOString()};
-  return sb.from('stock_transfers').update(patch).eq('id',id).then(function(res){
+  return sb.from('stock_transfers').update(patch).eq('id',id).eq('status','received').select().then(function(res){
     if(res.error){console.error('_approveTransfer failed:',res.error.message);return false;}
+    var row=(res.data&&res.data[0])||null;
+    // update matched zero rows (not in received state - double-tap, or already approved on
+    // another device) - .select() returns []; treat as a failure and don't re-fire the mirror.
+    if(!row){console.warn('_approveTransfer: no row matched (already approved elsewhere, or not in received state)');return false;}
     if(rowId)apiPost('transferUpdate',{rowId:rowId,updates:{Status:'approved',Manager:operator}});
     return true;
   },function(e){console.error('_approveTransfer rejected:',e&&e.message);return false;});
@@ -1346,6 +1350,7 @@ function _xferSigClear(canvasId,sigKey){var cv=document.getElementById(canvasId)
 // do not exist yet, so the two calls below are typeof-guarded.
 var XFER_STATES=['Full','Empty'];
 var _xferReceiptCache=[];
+var _xferApprovalCache=[];
 var _xferCommitBusy=false;
 function xferRenderItems(){
   var g=document.getElementById('xferItemsGrid');
@@ -1460,6 +1465,50 @@ function xferCommitReceipt(id){
     auditLog('Stock Transfer received',t.from_branch+' → '+t.to_branch+' — '+items.length+' line(s)');
     _xferSigClear('xfrSig-'+id,'receive');
     xferLoadReceiptList();
+  });
+}
+// ===== Branch Transfers - UI (Task 6: Awaiting Approval tab). Lists transfers in
+// 'received' status; shows dispatched-vs-received per line (mismatches highlighted),
+// a Manager/Owner signature per card, and Approve Transfer.
+function xferLoadApprovalList(){
+  _xferSig.approve='';_xferSig._activeCanvas='';
+  var el=document.getElementById('xferApprovalList');
+  el.innerHTML='Loading…';
+  _fetchTransfersAwaitingApproval().then(function(rows){
+    _xferApprovalCache=rows;
+    if(!rows.length){el.innerHTML='<p style="color:#999">Nothing awaiting approval.</p>';return;}
+    el.innerHTML=rows.map(function(t){
+      var itemsHtml=t.items.map(function(it){
+        var mismatch=(it.qtyReceived!==it.qtyDispatched);
+        return '<div style="font-size:12px'+(mismatch?';color:#C0392B;font-weight:700':'')+'">'+
+          it.size+' · '+it.brand+' · '+it.state+' — dispatched '+it.qtyDispatched+', received '+it.qtyReceived+
+          (mismatch?(' — '+(it.shortfallReason||'no reason given')):'')+'</div>';
+      }).join('');
+      return '<div class="histSection" style="border:1.5px solid var(--steel);border-radius:10px;padding:10px;margin-bottom:10px">'+
+        '<b>'+t.from_branch+' → '+t.to_branch+'</b><br>'+
+        'Dispatched by '+(t.dispatch_operator_name_snapshot||'?')+', received by '+(t.receive_operator_name_snapshot||'?')+
+        '<div style="margin:8px 0">'+itemsHtml+'</div>'+
+        '<label>Manager/Owner signature</label>'+
+        '<canvas id="xfaSig-'+t.id+'" width="600" height="150" style="border:1.5px solid var(--steel);border-radius:8px;width:100%;touch-action:none"></canvas>'+
+        '<button class="sigClear" onclick="_xferSigClear(\'xfaSig-'+t.id+'\',\'approve\')">Clear signature</button>'+
+        '<button onclick="xferCommitApproval(\''+t.id+'\',\''+(t.row_id||'')+'\')">Approve Transfer</button>'+
+        '</div>';
+    }).join('');
+    rows.forEach(function(t){setTimeout(function(){_initXferSigCanvas('xfaSig-'+t.id,'approve');},50);});
+  });
+}
+function xferCommitApproval(id,rowId){
+  if(!perm('closeday')){toast('Manager/Owner authorisation required',true);return;}
+  if(!_xferSig.approve||_xferSig._activeCanvas!=='xfaSig-'+id){toast('Sign in THIS transfer’s signature box to approve it',true);return;}
+  if(_xferCommitBusy)return;
+  _xferCommitBusy=true;
+  _approveTransfer(id,rowId).then(function(ok){
+    _xferCommitBusy=false;
+    if(!ok){toast('Could not approve — try again',true);return;}
+    toast('Transfer approved');
+    auditLog('Stock Transfer approved','id '+id);
+    _xferSigClear('xfaSig-'+id,'approve');
+    xferLoadApprovalList();
   });
 }
 // ===== Manifold remote override approval (read / badge side) =====
