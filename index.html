@@ -98,6 +98,7 @@
   body[data-view="auditView"] #auditView,
   body[data-view="adminView"] #adminView,
   body[data-view="residualView"] #residualView,
+  body[data-view="transferView"] #transferView,
   body[data-view="pendingOverridesView"] #pendingOverridesView{display:block !important;}
   #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(calc(100% + 40px));background:var(--ok);color:#fff;padding:14px 22px;border-radius:12px;font-weight:700;font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.25);transition:transform .3s;z-index:70;max-width:90%;text-align:center;}
   /* Dismiss slides by the toast's OWN height (+ margin), not a fixed 80px - a fixed offset
@@ -337,12 +338,12 @@
 </div></div>
 
 <!-- STOCK TRANSFER (Owner) -->
-<div id="transferScreen" class="view">
+<div id="transferView" class="view">
   <div class="wrap">
-    <div style="display:flex;gap:8px;margin-bottom:14px">
-      <button class="sigClear" id="xferTabNewBtn" onclick="xferShowTab('new')" style="flex:1">New Transfer</button>
-      <button class="sigClear" id="xferTabReceiptBtn" onclick="xferShowTab('receipt')" style="flex:1">Awaiting Receipt</button>
-      <button class="sigClear" id="xferTabApprovalBtn" onclick="xferShowTab('approval')" style="flex:1">Awaiting Approval</button>
+    <div class="histTabs">
+      <button class="htab" id="xferTabNewBtn" onclick="xferShowTab('new')">New Transfer</button>
+      <button class="htab" id="xferTabReceiptBtn" onclick="xferShowTab('receipt')">Awaiting Receipt</button>
+      <button class="htab" id="xferTabApprovalBtn" onclick="xferShowTab('approval')">Awaiting Approval</button>
     </div>
 
     <div id="xferTabNew">
@@ -1348,7 +1349,7 @@ function xferRenderItems(){
       '<span style="width:90px;font-size:12px">'+sz+'</span>'+
       '<select id="xfb-'+sz+'" style="flex:1">'+BRANDS.map(function(b){return '<option>'+b+'</option>';}).join('')+'</select>'+
       '<select id="xfs-'+sz+'" style="width:80px">'+XFER_STATES.map(function(s){return '<option>'+s+'</option>';}).join('')+'</select>'+
-      '<input id="xfq-'+sz+'" type="number" min="0" value="0" style="width:70px">'+
+      '<input id="xfq-'+sz+'" type="number" min="0" step="1" value="0" style="width:70px">'+
       '</div>';
   }).join('');
 }
@@ -1361,9 +1362,13 @@ function xferShowTab(name){
   if(name==='approval'&&typeof xferLoadApprovalList==='function')xferLoadApprovalList();
 }
 function openTransfers(){
-  show('transferScreen');
+  if(role!=='Owner'){toast('Owner only',true);return;}
+  show('transferView');
+  document.getElementById('hTitle').textContent='Stock Transfer';
+  document.getElementById('hSub').textContent='Move cylinders between branches';
   document.getElementById('backBtn').style.display='block';
   xferRenderItems();
+  _xferSigClear('xferDispatchSig','dispatch');
   setTimeout(function(){_initXferSigCanvas('xferDispatchSig','dispatch');},50);
   xferShowTab('new');
 }
@@ -1373,7 +1378,7 @@ function xferCommitDispatch(){
   if(!_xferSig.dispatch){toast('Dispatch operator must sign first',true);return;}
   var items=[];
   ALLSIZES.forEach(function(sz){
-    var qty=num(document.getElementById('xfq-'+sz).value);
+    var qty=Math.round(num(document.getElementById('xfq-'+sz).value));
     if(qty>0){
       items.push({size:sz,brand:document.getElementById('xfb-'+sz).value,state:document.getElementById('xfs-'+sz).value,
         qtyDispatched:qty,qtyReceived:null,shortfallReason:'',note:''});

@@ -348,15 +348,17 @@ var _ttr=document.getElementById('tileTransfer');if(_ttr)_ttr.style.display=(rol
 
 - [ ] **Step 3: Add the screen shell (3 tabs) as a new `<div class="view">`**
 
-Add near the other screen divs (same pattern as e.g. the Received or Manifold screen — a `<div id="transferScreen" class="view">` with a `<div class="wrap">` inside). Full markup:
+Add near the other screen divs (same pattern as e.g. the Received or Manifold screen — a `<div id="transferView" class="view">` with a `<div class="wrap">` inside). Full markup:
+
+> **Note (from Task 4 review):** The screen div id is `transferView` (NOT `transferScreen`) so it matches the `*View` convention used by every other screen. It MUST also get a matching entry in the CSS `body[data-view=...] #<id>{display:block !important;}` allow-list block (~line 81–101 of `index.html`) — that block hides every `.view` that is not explicitly listed, so a screen with no allow-list line renders completely blank. Add `body[data-view="transferView"] #transferView,` to that comma-separated list. The tab strip below uses the shared `class="histTabs"` container + `class="htab"` buttons (which have a real `.htab.on` active-highlight rule) — NOT inline-styled `class="sigClear"` buttons (no `.sigClear.on` rule exists, so the active tab would be invisible). `openTransfers()` also needs a role guard (`if(role!=='Owner'){toast('Owner only',true);return;}`) as its first line, matching every sibling `open*()`.
 
 ```html
-<div id="transferScreen" class="view">
+<div id="transferView" class="view">
   <div class="wrap">
-    <div style="display:flex;gap:8px;margin-bottom:14px">
-      <button class="sigClear" id="xferTabNewBtn" onclick="xferShowTab('new')" style="flex:1">New Transfer</button>
-      <button class="sigClear" id="xferTabReceiptBtn" onclick="xferShowTab('receipt')" style="flex:1">Awaiting Receipt</button>
-      <button class="sigClear" id="xferTabApprovalBtn" onclick="xferShowTab('approval')" style="flex:1">Awaiting Approval</button>
+    <div class="histTabs">
+      <button class="htab" id="xferTabNewBtn" onclick="xferShowTab('new')">New Transfer</button>
+      <button class="htab" id="xferTabReceiptBtn" onclick="xferShowTab('receipt')">Awaiting Receipt</button>
+      <button class="htab" id="xferTabApprovalBtn" onclick="xferShowTab('approval')">Awaiting Approval</button>
     </div>
 
     <div id="xferTabNew">
@@ -408,7 +410,10 @@ function xferShowTab(name){
   if(name==='approval')xferLoadApprovalList();
 }
 function openTransfers(){
-  show('transferScreen');
+  if(role!=='Owner'){toast('Owner only',true);return;}
+  show('transferView');
+  document.getElementById('hTitle').textContent='Stock Transfer';
+  document.getElementById('hSub').textContent='Move cylinders between branches';
   document.getElementById('backBtn').style.display='block';
   greyTiles('transfer');
   xferRenderItems();
