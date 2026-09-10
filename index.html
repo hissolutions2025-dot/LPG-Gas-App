@@ -1323,7 +1323,7 @@ function _transferFlush(){
         return {ts:_nowISO(),date:today,branch:p.from_branch,FromBranch:p.from_branch,ToBranch:p.to_branch,
           Size:it.size,Brand:it.brand,State:it.state,QtyDispatched:it.qtyDispatched,QtyReceived:'',
           ShortfallReason:'',Note:p.note||'',Status:'pending_receipt',DispatchOperator:(p.dispatch_operator_name_snapshot||''),
-          ReceiveOperator:'',Manager:'',RowId:p.row_id};
+          ReceiveOperator:'',Manager:'',RowId:(it._lineRid||p.row_id)};
       }));
     }
     sb.from('stock_transfers').insert(p).then(function(res){
