@@ -613,7 +613,7 @@
   <input type="tel" class="mField" id="uePhone" placeholder="+27 82 555 1234">
   <div class="mNote" style="margin-top:4px">For future SMS / login features. Stored as +27… format.</div>
   <label class="mLabel">Level</label>
-  <select class="mField" id="ueLevel" onchange="ueLevelChanged()"><option>Operator</option><option>Manager</option><option>Owner</option></select>
+  <select class="mField" id="ueLevel" onchange="ueLevelChanged()"><option>Operator</option><option>Auditor</option><option>Manager</option><option>Owner</option></select>
   <div id="ueBranchWrap">
     <label class="mLabel">Branch</label>
     <div id="ueBranchControl"></div>
@@ -2681,11 +2681,12 @@ function suppliersMgmtRemove(name){
 // ===== USER STORE (demo, localStorage) =====
 // user = {name, level:'Owner|Manager|Operator', branches:[...], pw, perms:{...}}
 // Granular permissions. Levels are PRESETS that pre-tick these; Owner can override per user.
-var PERM_KEYS=['view','capture','edit','closeday','history','users','audit','adjust','seal_admin','seal_create','seal_void_open','seal_edit_used','seal_boundary','branch_setup','faultyCapture','faultyRegister','residualGas','manageSuppliers'];
-var PERM_LABELS={view:'View counts',capture:'Capture counts',edit:'Edit / correct',closeday:'Close day',history:'Open history',users:'Manage users',audit:'View audit log',adjust:'Adjust mismatches',seal_admin:'Seal: open Admin area',seal_create:'Seal: create/edit roll (unused)',seal_void_open:'Seal: void seal (open day)',seal_edit_used:'Seal: edit used roll / void closed day',seal_boundary:'Seal: pump boundary override',branch_setup:'Branch Setup: activate/deactivate sections & items',faultyCapture:'Faulty — capture',faultyRegister:'Faulty — manage register',residualGas:'Residual Gas — capture',manageSuppliers:'Manage Suppliers (Received)'};
+var PERM_KEYS=['view','capture','edit','closeday','history','users','audit','adjust','seal_admin','seal_create','seal_void_open','seal_edit_used','seal_boundary','branch_setup','faultyCapture','faultyRegister','residualGas','manageSuppliers','verifiedCount'];
+var PERM_LABELS={view:'View counts',capture:'Capture counts',edit:'Edit / correct',closeday:'Close day',history:'Open history',users:'Manage users',audit:'View audit log',adjust:'Adjust mismatches',seal_admin:'Seal: open Admin area',seal_create:'Seal: create/edit roll (unused)',seal_void_open:'Seal: void seal (open day)',seal_edit_used:'Seal: edit used roll / void closed day',seal_boundary:'Seal: pump boundary override',branch_setup:'Branch Setup: activate/deactivate sections & items',faultyCapture:'Faulty — capture',faultyRegister:'Faulty — manage register',residualGas:'Residual Gas — capture',manageSuppliers:'Manage Suppliers (Received)',verifiedCount:'Verified Stock Take — capture'};
 function permPreset(level){
   if(level==='Owner')   return {view:1,capture:1,edit:1,closeday:1,history:1,users:1,audit:1,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:1,seal_boundary:1,branch_setup:1,faultyCapture:1,faultyRegister:1,residualGas:1,manageSuppliers:1};
   if(level==='Manager') return {view:1,capture:1,edit:1,closeday:1,history:1,users:0,audit:0,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:0,seal_boundary:0,branch_setup:1,faultyCapture:1,faultyRegister:1,residualGas:1,manageSuppliers:1};
+  if(level==='Auditor') return {view:1,verifiedCount:1};
   return                       {view:1,capture:1,edit:1,closeday:0,history:0,users:0,audit:0,adjust:0,seal_admin:0,seal_create:0,seal_void_open:0,seal_edit_used:0,seal_boundary:0,faultyCapture:1,faultyRegister:0,residualGas:1,manageSuppliers:0}; // Operator
 }
 function userPerms(u){
@@ -3973,9 +3974,9 @@ function ueLevelChanged(){
     :'Temporarily disable their login — keeps the account, history and permissions intact so they can be reactivated anytime. Not the same as deleting.';
   var wrap=document.getElementById('ueBranchControl');var note=document.getElementById('ueBranchNote');
   if(lvl==='Owner'){wrap.innerHTML='<div style="padding:12px;background:#EEF3F8;border-radius:10px;font-weight:700;color:var(--navy)">All branches</div>';note.textContent='Owners have access to all branches.';return;}
-  if(lvl==='Manager'){
+  if(lvl==='Manager'||lvl==='Auditor'){
     wrap.innerHTML='<label style="display:block;margin-bottom:6px"><input type="checkbox" class="ueBr" value="Helderberg"> Helderberg</label><label style="display:block"><input type="checkbox" class="ueBr" value="Kleinmond"> Kleinmond</label>';
-    note.textContent='Managers can be assigned one or both branches.';
+    note.textContent=(lvl==='Auditor')?'Auditors can be assigned one or both branches to verify.':'Managers can be assigned one or both branches.';
   } else {
     wrap.innerHTML='<select class="mField" id="ueBrOne"><option>Helderberg</option><option>Kleinmond</option></select>';
     note.textContent='Operators work one branch (can be reassigned later).';
