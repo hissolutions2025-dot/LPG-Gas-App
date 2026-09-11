@@ -99,7 +99,8 @@
   body[data-view="adminView"] #adminView,
   body[data-view="residualView"] #residualView,
   body[data-view="transferView"] #transferView,
-  body[data-view="pendingOverridesView"] #pendingOverridesView{display:block !important;}
+  body[data-view="pendingOverridesView"] #pendingOverridesView,
+  body[data-view="verifiedTakeView"] #verifiedTakeView{display:block !important;}
   #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(calc(100% + 40px));background:var(--ok);color:#fff;padding:14px 22px;border-radius:12px;font-weight:700;font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.25);transition:transform .3s;z-index:70;max-width:90%;text-align:center;}
   /* Dismiss slides by the toast's OWN height (+ margin), not a fixed 80px - a fixed offset
      hid a short one-line toast fine but left a tall, wrapped multi-line message (e.g. the
@@ -324,6 +325,7 @@
       <button class="tile t5" data-key="audit" id="tileAudit" onclick="openAudit()" style="display:none"><div class="ic">&#128220;</div><h3>Audit Log</h3><p>Owner only — who did what, when</p></button>
       <button class="tile t2" data-key="admin" id="tileAdmin" onclick="openAdmin()" style="display:none"><div class="ic">&#9881;</div><h3>Admin</h3><p>Seal register &amp; suppliers</p></button>
       <button class="tile t6" data-key="transfer" id="tileTransfer" onclick="openTransfers()" style="display:none"><div class="ic">&#8646;</div><h3>Stock Transfer</h3><p>Owner: move cylinders between branches</p><span class="badge" id="b-transfer" style="display:none">0</span></button>
+      <button class="tile t1" data-key="verifiedTake" id="tileVerifiedTake" onclick="openVerifiedTake()" style="display:none"><div class="ic">&#9745;</div><h3>Verified Stock Take</h3><p>Auditor: independent physical count</p></button>
     </div>
     <div class="cFooter" id="homeEditBar" style="display:none">
       <button type="button" class="cbGhost" onclick="resetHomeLayout()">Reset layout</button>
@@ -367,6 +369,40 @@
     <div id="xferTabApproval" style="display:none">
       <div id="xferApprovalList"></div>
     </div>
+  </div>
+</div>
+
+<!-- VERIFIED STOCK TAKE (Phase 1) -->
+<div id="verifiedTakeView" class="view">
+  <div class="wrap">
+    <label>Branch</label>
+    <select id="vstBranch"><option>Helderberg</option><option>Kleinmond</option></select>
+    <label>Date</label>
+    <input id="vstDate" type="date">
+    <label>Mode</label>
+    <select id="vstMode" onchange="vstModeChanged()">
+      <option value="joint">Joint — Auditor + Operator count together</option>
+      <option value="solo">Solo — Auditor counts independently</option>
+    </select>
+
+    <h3 style="margin:16px 0 6px">Cylinder count</h3>
+    <div id="vstCountGrid"></div>
+
+    <h3 style="margin:16px 0 6px">Manifold</h3>
+    <div id="vstManifoldGrid"></div>
+
+    <label>Auditor signature</label>
+    <canvas id="vstAuditorSig" width="600" height="150" style="border:1.5px solid var(--steel);border-radius:8px;width:100%;touch-action:none"></canvas>
+    <button class="sigClear" onclick="_vstSigClear('vstAuditorSig','auditor')">Clear signature</button>
+
+    <div id="vstOperatorSigWrap">
+      <label>Operator signature (joint mode)</label>
+      <input id="vstOperatorName" placeholder="Operator name" style="width:100%">
+      <canvas id="vstOperatorSig" width="600" height="150" style="border:1.5px solid var(--steel);border-radius:8px;width:100%;touch-action:none"></canvas>
+      <button class="sigClear" onclick="_vstSigClear('vstOperatorSig','operator')">Clear signature</button>
+    </div>
+
+    <button onclick="vstCommit()">Commit Verified Stock Take</button>
   </div>
 </div>
 
@@ -648,7 +684,7 @@
   <input type="tel" class="mField" id="uePhone" placeholder="+27 82 555 1234">
   <div class="mNote" style="margin-top:4px">For future SMS / login features. Stored as +27… format.</div>
   <label class="mLabel">Level</label>
-  <select class="mField" id="ueLevel" onchange="ueLevelChanged()"><option>Operator</option><option>Manager</option><option>Owner</option></select>
+  <select class="mField" id="ueLevel" onchange="ueLevelChanged()"><option>Operator</option><option>Auditor</option><option>Manager</option><option>Owner</option></select>
   <div id="ueBranchWrap">
     <label class="mLabel">Branch</label>
     <div id="ueBranchControl"></div>
@@ -1177,6 +1213,217 @@ function _manifoldLiveFlush(){
     sb.from('manifold_live_rows').insert(payload).then(function(res){
       if(res.error)_manifoldLiveQueue(payload);
     },function(e){_manifoldLiveQueue(payload);});
+  });
+}
+// ===== Verified Stock Takes (verified_stock_takes) - Phase 1 of the Stock Balance
+// Management spec. A neutral Auditor's full physical count, stored separately from the
+// daily Operator flow. Committed once, atomically - never updated - so no retry-in-place
+// machinery, just an insert + two append-only Sheet pushes. A push failure queues to
+// localStorage and retries at login, same convention _manifoldLiveFlush already uses.
+function _pushVerifiedTake(payload){
+  // payload = {branch, date, mode, count:[...], manifold:[...], auditorName, auditorSig,
+  //            operatorName, operatorSig, _operatorId}  (operator*/_operatorId null for solo)
+  // takeId is the CLIENT-generated key (client_row_id column) - `id` itself is a
+  // server-generated uuid and is deliberately never set here. takeId is what identifies
+  // this take for idempotent-retry detection (the unique partial index on client_row_id)
+  // and is what the Sheet mirror uses as TakeId.
+  var takeId='vst_'+Date.now()+'_'+Math.floor(Math.random()*100000);
+  var row={
+    client_row_id:takeId, branch:payload.branch, date:payload.date, mode:payload.mode,
+    count:payload.count, manifold:payload.manifold,
+    auditor_id:currentProfile&&currentProfile.id, auditor_name_snapshot:payload.auditorName, auditor_sig:payload.auditorSig,
+    operator_id:(payload.mode==='joint'?(payload._operatorId||null):null),
+    operator_name_snapshot:(payload.mode==='joint'?(payload.operatorName||null):null),
+    operator_sig:(payload.mode==='joint'?(payload.operatorSig||null):null)
+  };
+  return sb.from('verified_stock_takes').insert(row).select().then(function(res){
+    if(res.error){console.error('_pushVerifiedTake failed:',res.error.message);_vstQueue(row);return null;}
+    _vstSheetPush(payload,takeId);
+    return (res.data&&res.data[0])||{client_row_id:takeId};
+  },function(e){console.error('_pushVerifiedTake rejected:',e&&e.message);_vstQueue(row);return null;});
+}
+function _vstSheetPush(payload,takeId){
+  var meta={ts:_nowISO(),date:payload.date,branch:payload.branch};
+  syncPush('VerifiedCounts',(payload.count||[]).map(function(c){
+    return Object.assign({},meta,{Auditor:payload.auditorName,Operator:(payload.operatorName||''),Mode:payload.mode,
+      CountType:'Verified',State:c.state,Size:c.size,Brand:c.brand,Qty:c.qty,Note:(c.note||''),TakeId:takeId});
+  }));
+  syncPush('VerifiedManifold',(payload.manifold||[]).map(function(m){
+    return Object.assign({},meta,{Auditor:payload.auditorName,Operator:(payload.operatorName||''),Mode:payload.mode,
+      Cylinder:m.cyl,Brand:(m.brand||''),GasType:(m.gasType||''),Scale:m.scale,Tare:m.tare,GasLeft:m.gasLeft,
+      Condition:(m.cylState||''),Note:(m.notes||''),TakeId:takeId});
+  }));
+}
+function _vstQueue(row){
+  try{var q=JSON.parse(localStorage.getItem('gs_vst_queue')||'[]');q.push(row);localStorage.setItem('gs_vst_queue',JSON.stringify(q.slice(-50)));}catch(e){}
+}
+function _vstFlush(){
+  var q;try{q=JSON.parse(localStorage.getItem('gs_vst_queue')||'[]');}catch(e){return;}
+  if(!q.length)return;
+  localStorage.setItem('gs_vst_queue','[]');
+  q.forEach(function(row){
+    // Reconstructs the _vstSheetPush payload shape from the queued DB row - needed on
+    // BOTH the clean-success and the "already landed" (23505) branches below, mirroring
+    // Branch Transfers' _transferFlush fix for the identical gap: without this, a take
+    // whose original insert response was lost (but which DID land server-side) would
+    // stay permanently correct in verified_stock_takes while its Sheet mirror silently
+    // never got written - no error surfaced anywhere.
+    function mirror(){
+      _vstSheetPush({branch:row.branch,date:row.date,mode:row.mode,count:row.count,manifold:row.manifold,
+        auditorName:row.auditor_name_snapshot,operatorName:row.operator_name_snapshot},row.client_row_id);
+    }
+    sb.from('verified_stock_takes').insert(row).then(function(res){
+      if(res.error){
+        var m=String(res.error.message||'');
+        if(res.error.code==='23505'||m.indexOf('duplicate key')>-1){mirror();return;} // already landed - still mirror it
+        _vstQueue(row); // any other error - retry next login
+        return;
+      }
+      mirror();
+    },function(){_vstQueue(row);});
+  });
+}
+// After a take commits: pull the Operator's own Closing stock_counts for this branch+date
+// and return a per-size comparison so the capture screen can toast "you counted X, the
+// day's Closing said Y" immediately - the whole point of a verified take. Returns
+// {hasClosing:bool, lines:[{size,verified,closing,diff}]} - never invents a zero baseline
+// (same non-negotiable this app already enforces for the Opening-vs-prev-close check).
+function _fetchVerifiedTakeComparison(br,date,verifiedCount){
+  return sb.from('stock_counts').select('*').eq('branch',br).eq('date',date).eq('count_type','Closing').then(function(res){
+    if(res.error||!res.data||!res.data.length)return {hasClosing:false,lines:[]};
+    var closeBySize={};
+    res.data.forEach(function(r){ closeBySize[r.size]=(closeBySize[r.size]||0)+num(r.qty); });
+    var vBySize={};
+    (verifiedCount||[]).forEach(function(c){ vBySize[c.size]=(vBySize[c.size]||0)+num(c.qty); });
+    var sizes={}; Object.keys(closeBySize).forEach(function(s){sizes[s]=1;}); Object.keys(vBySize).forEach(function(s){sizes[s]=1;});
+    var lines=Object.keys(sizes).sort().map(function(s){
+      var v=vBySize[s]||0, c=closeBySize[s]||0;
+      return {size:s,verified:v,closing:c,diff:v-c};
+    }).filter(function(l){return l.diff!==0;});
+    return {hasClosing:true,lines:lines};
+  },function(){return {hasClosing:false,lines:[]};});
+}
+// One-shot signature capture - deliberately NOT the persistent Day-Close sigData/
+// sigUnlocked pad, which is day-scoped and would collide with an in-progress Close Day
+// on the same device.
+var _vstSig={auditor:'',operator:'',_activeCanvas:''};
+function _initVstSigCanvas(canvasId,sigKey){
+  var cv=document.getElementById(canvasId);if(!cv||cv._init)return;cv._init=true;
+  var ctx=cv.getContext('2d');ctx.lineWidth=2.2;ctx.lineCap='round';ctx.strokeStyle='#16202B';
+  var drawing=false,last=null;
+  function pos(e){var r=cv.getBoundingClientRect();var t=e.touches?e.touches[0]:e;return {x:(t.clientX-r.left)*(cv.width/r.width),y:(t.clientY-r.top)*(cv.height/r.height)};}
+  function start(e){drawing=true;last=pos(e);e.preventDefault();}
+  function move(e){if(!drawing)return;var p=pos(e);ctx.beginPath();ctx.moveTo(last.x,last.y);ctx.lineTo(p.x,p.y);ctx.stroke();last=p;_vstSig[sigKey]=cv.toDataURL('image/png');_vstSig._activeCanvas=canvasId;e.preventDefault();}
+  function end(){drawing=false;}
+  cv.addEventListener('mousedown',start);cv.addEventListener('mousemove',move);cv.addEventListener('mouseup',end);cv.addEventListener('mouseleave',end);
+  cv.addEventListener('touchstart',start,{passive:false});cv.addEventListener('touchmove',move,{passive:false});cv.addEventListener('touchend',end);
+}
+function _vstSigClear(canvasId,sigKey){var cv=document.getElementById(canvasId);if(cv)cv.getContext('2d').clearRect(0,0,cv.width,cv.height);_vstSig[sigKey]='';if(_vstSig._activeCanvas===canvasId)_vstSig._activeCanvas='';}
+// ===== Verified Stock Take capture screen (Task 5) =====
+var VST_STATES=['Full','Empty'];
+var VST_MANIFOLD_SLOTS=['Cyl 1','Cyl 2','Cyl 3','Cyl 4']; // matches SECTION_ITEMS.manifold
+function vstRenderCountGrid(){
+  var g=document.getElementById('vstCountGrid');
+  g.innerHTML='<div style="font-size:11px;color:var(--muted);margin-bottom:6px">One row per size. Enter the count for each brand present; leave a size at 0 if none.</div>'+
+    ALLSIZES.map(function(sz){
+      return '<div style="border:1px solid var(--steel);border-radius:8px;padding:6px;margin-bottom:6px">'+
+        '<b style="font-size:12px">'+sz+'</b>'+
+        VST_STATES.map(function(st){
+          return '<div style="display:flex;gap:6px;align-items:center;margin-top:4px">'+
+            '<span style="width:44px;font-size:11px">'+st+'</span>'+
+            '<select id="vstb-'+sz+'-'+st+'" style="flex:1">'+BRANDS.map(function(b){return '<option>'+b+'</option>';}).join('')+'</select>'+
+            '<input id="vstq-'+sz+'-'+st+'" type="number" min="0" step="1" value="0" style="width:70px">'+
+            '</div>';
+        }).join('')+
+        '</div>';
+    }).join('');
+}
+function vstRenderManifoldGrid(){
+  var g=document.getElementById('vstManifoldGrid');
+  g.innerHTML=VST_MANIFOLD_SLOTS.map(function(cyl){
+    return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">'+
+      '<span style="width:52px;font-size:12px">'+cyl+'</span>'+
+      '<input id="vstms-'+cyl+'" type="number" step="0.01" placeholder="scale" style="width:80px" oninput="vstManGasLeft(\''+cyl+'\')">'+
+      '<input id="vstmt-'+cyl+'" type="number" step="0.01" placeholder="tare" style="width:80px" oninput="vstManGasLeft(\''+cyl+'\')">'+
+      '<span style="font-size:12px">= <b id="vstmg-'+cyl+'">0.00</b> kg left</span>'+
+      '</div>';
+  }).join('');
+}
+function vstManGasLeft(cyl){
+  var s=num(document.getElementById('vstms-'+cyl).value), t=num(document.getElementById('vstmt-'+cyl).value);
+  document.getElementById('vstmg-'+cyl).textContent=Math.max(0,s-t).toFixed(2);
+}
+function vstModeChanged(){
+  var joint=(document.getElementById('vstMode').value==='joint');
+  document.getElementById('vstOperatorSigWrap').style.display=joint?'block':'none';
+}
+function openVerifiedTake(){
+  if(role!=='Owner'){toast('Owner only',true);return;} // rollout gate - flip to perm('verifiedCount') once verified live
+  show('verifiedTakeView');
+  document.getElementById('backBtn').style.display='block';
+  document.getElementById('hTitle').textContent='Verified Stock Take';
+  document.getElementById('hSub').textContent='Auditor — independent count';
+  // Clear the actual canvas pixels too, not just the _vstSig state - these canvases are
+  // static DOM nodes toggled by display (never recreated), so a signature drawn on a
+  // prior take stays visibly painted next time this screen opens even though the state
+  // reset already forces a fresh "must sign" gate on commit - misleading the Auditor into
+  // thinking they're already signed. Same staleness class Branch Transfers had to fix.
+  _vstSigClear('vstAuditorSig','auditor');_vstSigClear('vstOperatorSig','operator');
+  document.getElementById('vstDate').value=today;
+  document.getElementById('vstBranch').value=(branch||'Helderberg');
+  document.getElementById('vstMode').value='joint';
+  vstModeChanged();
+  vstRenderCountGrid();
+  vstRenderManifoldGrid();
+  setTimeout(function(){_initVstSigCanvas('vstAuditorSig','auditor');_initVstSigCanvas('vstOperatorSig','operator');},50);
+}
+var _vstCommitBusy=false;
+function vstCommit(){
+  if(_vstCommitBusy)return;
+  var mode=document.getElementById('vstMode').value;
+  var br=document.getElementById('vstBranch').value;
+  var date=document.getElementById('vstDate').value;
+  if(!date){toast('Pick a date',true);return;}
+  if(!_vstSig.auditor){toast('Auditor must sign',true);return;}
+  var operatorName='';
+  if(mode==='joint'){
+    operatorName=(document.getElementById('vstOperatorName').value||'').trim();
+    if(!operatorName){toast('Enter the Operator name for a joint count',true);return;}
+    if(!_vstSig.operator){toast('Operator must sign for a joint count',true);return;}
+  }
+  var count=[];
+  ALLSIZES.forEach(function(sz){
+    VST_STATES.forEach(function(st){
+      var q=Math.round(num(document.getElementById('vstq-'+sz+'-'+st).value));
+      if(q>0)count.push({size:sz,brand:document.getElementById('vstb-'+sz+'-'+st).value,state:st,qty:q,note:''});
+    });
+  });
+  if(!count.length){toast('Enter at least one cylinder count',true);return;}
+  var manifold=VST_MANIFOLD_SLOTS.map(function(cyl){
+    var s=num(document.getElementById('vstms-'+cyl).value), t=num(document.getElementById('vstmt-'+cyl).value);
+    return {cyl:cyl,brand:'',gasType:'',scale:s,tare:t,gasLeft:Math.max(0,s-t),cylState:'',notes:''};
+  }).filter(function(m){return m.scale>0||m.tare>0;});
+  _vstCommitBusy=true;
+  // Stays true (Commit stays blocked) through the whole push+comparison round-trip, not
+  // just the push - between "push succeeded" and goHome() actually firing, the screen is
+  // still visible and fully populated with a now-truthy _vstSig, so a second tap in that
+  // window would silently push a duplicate take + duplicate Sheet rows. Only cleared right
+  // before each terminal goHome() (or on the "couldn't reach the server" early-out, where
+  // the screen legitimately stays open for the Auditor to retry).
+  _pushVerifiedTake({branch:br,date:date,mode:mode,count:count,manifold:manifold,
+    auditorName:operator,auditorSig:_vstSig.auditor,
+    operatorName:(mode==='joint'?operatorName:null),operatorSig:(mode==='joint'?_vstSig.operator:null)
+  }).then(function(res){
+    if(!res){_vstCommitBusy=false;toast('Could not reach the server — queued, will retry at next login',true);return;}
+    auditLog('Verified Stock Take committed',mode+' — '+br+' '+date+' — '+count.length+' count line(s)');
+    toast('Verified Stock Take saved. Checking against the day’s Closing count…');
+    _fetchVerifiedTakeComparison(br,date,count).then(function(cmp){
+      if(!cmp.hasClosing){toast('No Operator Closing count for '+br+' on '+date+' yet — nothing to compare against.',true);_vstCommitBusy=false;goHome();return;}
+      if(!cmp.lines.length){toast('✅ Verified count matches the day’s Closing count on every size.');_vstCommitBusy=false;goHome();return;}
+      var msg=cmp.lines.slice(0,6).map(function(l){return l.size+': you '+l.verified+' vs Closing '+l.closing+' ('+(l.diff>0?'+':'')+l.diff+')';}).join('  ·  ');
+      toast('⚠ Verified count differs from Closing on '+cmp.lines.length+' size(s): '+msg,true);
+      _vstCommitBusy=false;goHome();
+    });
   });
 }
 // ===== Manifold remote override approval (manifold_pending_overrides) =====
@@ -3028,11 +3275,12 @@ function suppliersMgmtRemove(name){
 // ===== USER STORE (demo, localStorage) =====
 // user = {name, level:'Owner|Manager|Operator', branches:[...], pw, perms:{...}}
 // Granular permissions. Levels are PRESETS that pre-tick these; Owner can override per user.
-var PERM_KEYS=['view','capture','edit','closeday','history','users','audit','adjust','seal_admin','seal_create','seal_void_open','seal_edit_used','seal_boundary','branch_setup','faultyCapture','faultyRegister','residualGas','manageSuppliers'];
-var PERM_LABELS={view:'View counts',capture:'Capture counts',edit:'Edit / correct',closeday:'Close day',history:'Open history',users:'Manage users',audit:'View audit log',adjust:'Adjust mismatches',seal_admin:'Seal: open Admin area',seal_create:'Seal: create/edit roll (unused)',seal_void_open:'Seal: void seal (open day)',seal_edit_used:'Seal: edit used roll / void closed day',seal_boundary:'Seal: pump boundary override',branch_setup:'Branch Setup: activate/deactivate sections & items',faultyCapture:'Faulty — capture',faultyRegister:'Faulty — manage register',residualGas:'Residual Gas — capture',manageSuppliers:'Manage Suppliers (Received)'};
+var PERM_KEYS=['view','capture','edit','closeday','history','users','audit','adjust','seal_admin','seal_create','seal_void_open','seal_edit_used','seal_boundary','branch_setup','faultyCapture','faultyRegister','residualGas','manageSuppliers','verifiedCount'];
+var PERM_LABELS={view:'View counts',capture:'Capture counts',edit:'Edit / correct',closeday:'Close day',history:'Open history',users:'Manage users',audit:'View audit log',adjust:'Adjust mismatches',seal_admin:'Seal: open Admin area',seal_create:'Seal: create/edit roll (unused)',seal_void_open:'Seal: void seal (open day)',seal_edit_used:'Seal: edit used roll / void closed day',seal_boundary:'Seal: pump boundary override',branch_setup:'Branch Setup: activate/deactivate sections & items',faultyCapture:'Faulty — capture',faultyRegister:'Faulty — manage register',residualGas:'Residual Gas — capture',manageSuppliers:'Manage Suppliers (Received)',verifiedCount:'Verified Stock Take — capture'};
 function permPreset(level){
   if(level==='Owner')   return {view:1,capture:1,edit:1,closeday:1,history:1,users:1,audit:1,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:1,seal_boundary:1,branch_setup:1,faultyCapture:1,faultyRegister:1,residualGas:1,manageSuppliers:1};
   if(level==='Manager') return {view:1,capture:1,edit:1,closeday:1,history:1,users:0,audit:0,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:0,seal_boundary:0,branch_setup:1,faultyCapture:1,faultyRegister:1,residualGas:1,manageSuppliers:1};
+  if(level==='Auditor') return {view:1,verifiedCount:1};
   return                       {view:1,capture:1,edit:1,closeday:0,history:0,users:0,audit:0,adjust:0,seal_admin:0,seal_create:0,seal_void_open:0,seal_edit_used:0,seal_boundary:0,faultyCapture:1,faultyRegister:0,residualGas:1,manageSuppliers:0}; // Operator
 }
 function userPerms(u){
@@ -3864,6 +4112,8 @@ function _finishLogin(u,b){
   var _trg=document.getElementById('tileResidual');if(_trg)_trg.style.display=perm('residualGas')?'flex':'none';
   var _tpo=document.getElementById('tilePendingOverrides');if(_tpo)_tpo.style.display=(role==='Manager'||role==='Owner')?'flex':'none';
   var _ttr=document.getElementById('tileTransfer');if(_ttr)_ttr.style.display=(role==='Owner')?'flex':'none';
+  // rollout gate — flip to perm('verifiedCount') once verified live, so real Auditor accounts can see it.
+  var _tvt=document.getElementById('tileVerifiedTake');if(_tvt)_tvt.style.display=(role==='Owner')?'flex':'none';
   auditLog('Login','Signed in to '+b);
   editUnlocked=false;
   loadWorkingStore();
@@ -3878,6 +4128,7 @@ function _finishLogin(u,b){
   _manifoldLiveFlush();
   _manifoldPendingFlush();
   _transferFlush();
+  _vstFlush();
   _fetchManifoldPendingOverrides();
   _closeDayFlushQueue();
   _updateCloseDayPendingBadge();
@@ -4322,9 +4573,9 @@ function ueLevelChanged(){
     :'Temporarily disable their login — keeps the account, history and permissions intact so they can be reactivated anytime. Not the same as deleting.';
   var wrap=document.getElementById('ueBranchControl');var note=document.getElementById('ueBranchNote');
   if(lvl==='Owner'){wrap.innerHTML='<div style="padding:12px;background:#EEF3F8;border-radius:10px;font-weight:700;color:var(--navy)">All branches</div>';note.textContent='Owners have access to all branches.';return;}
-  if(lvl==='Manager'){
+  if(lvl==='Manager'||lvl==='Auditor'){
     wrap.innerHTML='<label style="display:block;margin-bottom:6px"><input type="checkbox" class="ueBr" value="Helderberg"> Helderberg</label><label style="display:block"><input type="checkbox" class="ueBr" value="Kleinmond"> Kleinmond</label>';
-    note.textContent='Managers can be assigned one or both branches.';
+    note.textContent=(lvl==='Auditor')?'Auditors can be assigned one or both branches to verify.':'Managers can be assigned one or both branches.';
   } else {
     wrap.innerHTML='<select class="mField" id="ueBrOne"><option>Helderberg</option><option>Kleinmond</option></select>';
     note.textContent='Operators work one branch (can be reassigned later).';
@@ -4344,7 +4595,7 @@ function userEdit(id){
   ueLevelChanged();
   // prefill branches
   if(u){
-    if(u.level==='Manager'){(u.branches||[]).forEach(function(b){var cb=document.querySelector('.ueBr[value="'+b+'"]');if(cb)cb.checked=true;});}
+    if(u.level==='Manager'||u.level==='Auditor'){(u.branches||[]).forEach(function(b){var cb=document.querySelector('.ueBr[value="'+b+'"]');if(cb)cb.checked=true;});}
     else if(u.level==='Operator'){var s=document.getElementById('ueBrOne');if(s)s.value=(u.branches||['Helderberg'])[0];}
   }
   document.getElementById('ueDeleteBtn').style.display=(u&&u.level!=='Owner')?'block':'none';
@@ -4412,7 +4663,7 @@ function userSave(){
   var phone=_ph.value;
   var branches;
   if(lvl==='Owner')branches=['Helderberg','Kleinmond'];
-  else if(lvl==='Manager'){branches=[].slice.call(document.querySelectorAll('.ueBr:checked')).map(function(c){return c.value;});if(branches.length===0){toast('Pick at least one branch',true);return;}}
+  else if(lvl==='Manager'||lvl==='Auditor'){branches=[].slice.call(document.querySelectorAll('.ueBr:checked')).map(function(c){return c.value;});if(branches.length===0){toast('Pick at least one branch',true);return;}}
   else branches=[document.getElementById('ueBrOne').value];
   // read permission checkboxes; store the full explicit set
   var permsObj={};[].slice.call(document.querySelectorAll('.uePerm')).forEach(function(c){permsObj[c.getAttribute('data-k')]=c.checked?1:0;});
