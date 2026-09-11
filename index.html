@@ -3996,7 +3996,7 @@ function userEdit(id){
   ueLevelChanged();
   // prefill branches
   if(u){
-    if(u.level==='Manager'){(u.branches||[]).forEach(function(b){var cb=document.querySelector('.ueBr[value="'+b+'"]');if(cb)cb.checked=true;});}
+    if(u.level==='Manager'||u.level==='Auditor'){(u.branches||[]).forEach(function(b){var cb=document.querySelector('.ueBr[value="'+b+'"]');if(cb)cb.checked=true;});}
     else if(u.level==='Operator'){var s=document.getElementById('ueBrOne');if(s)s.value=(u.branches||['Helderberg'])[0];}
   }
   document.getElementById('ueDeleteBtn').style.display=(u&&u.level!=='Owner')?'block':'none';
@@ -4064,7 +4064,7 @@ function userSave(){
   var phone=_ph.value;
   var branches;
   if(lvl==='Owner')branches=['Helderberg','Kleinmond'];
-  else if(lvl==='Manager'){branches=[].slice.call(document.querySelectorAll('.ueBr:checked')).map(function(c){return c.value;});if(branches.length===0){toast('Pick at least one branch',true);return;}}
+  else if(lvl==='Manager'||lvl==='Auditor'){branches=[].slice.call(document.querySelectorAll('.ueBr:checked')).map(function(c){return c.value;});if(branches.length===0){toast('Pick at least one branch',true);return;}}
   else branches=[document.getElementById('ueBrOne').value];
   // read permission checkboxes; store the full explicit set
   var permsObj={};[].slice.call(document.querySelectorAll('.uePerm')).forEach(function(c){permsObj[c.getAttribute('data-k')]=c.checked?1:0;});
