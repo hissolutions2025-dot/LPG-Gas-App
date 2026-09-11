@@ -5377,10 +5377,21 @@ function _fetchRangeClosingCounts(br,endDate){
 // _fetchCaptureLiveRows already unwraps for a single day; this does the same unwrap
 // for every row in the range at once (select('row') only, same column as the single-
 // day fetch - date isn't needed since the range is already the query filter).
+// _rid dedup (code-review catch): capture_live_rows has no unique constraint on row id
+// server-side, so a retried-but-already-succeeded push can leave two copies of the same
+// committed row in the table - _fetchCaptureLiveRows/_fetchManifoldLiveRows both already
+// filter this by _rid for a single day; this does the same across the whole range.
 function _fetchRangeCaptureLiveRows(kind,br,startDate,endDate){
   return sb.from('capture_live_rows').select('row').eq('kind',kind).eq('branch',br).gte('date',startDate).lte('date',endDate).then(function(res){
     if(res.error){console.error('_fetchRangeCaptureLiveRows('+kind+') failed:',res.error.message);return [];}
-    return (res.data||[]).map(function(r){return r.row||{};});
+    var rows=(res.data||[]).map(function(r){return r.row||{};});
+    var seen={};
+    return rows.filter(function(r){
+      if(!r._rid)return true;
+      if(seen[r._rid])return false;
+      seen[r._rid]=true;
+      return true;
+    });
   },function(){return [];});
 }
 // Manifold: latest reading per slot WITHIN each stage, at range start (Opening) and
@@ -5484,13 +5495,18 @@ function fetchRangeStockBalance(br,startDate,endDate){
 
     // Estimated Sold, per the spec's formula: Opening + Received + Refilled + Transfers In
     // - Transfers Out - Faulty(logged in range) = ... vs Closing. Computed per-size then
-    // summed, same shape the single-day report's "Estimated Stock Sales" section uses.
+    // summed, same shape the single-day report's "Estimated Stock Sales" section uses
+    // (matches the single-day precedent's sold=openF+recvIn+refilled-closeF-faultyF shape,
+    // code-review catch: refilled was originally missing from this sum entirely).
+    var refillCountBySize={};
+    refillRows.forEach(function(r){ if(r.size)refillCountBySize[r.size]=(refillCountBySize[r.size]||0)+1; });
     var allSizes=ALLSIZES;
     var estSoldBySize={}, estSoldTotal=0;
     allSizes.forEach(function(sz){
       var openF=openingFullBySize[sz]||0, closeF=closingFullBySize[sz]||0;
       var recvIn=receivedFullIn[sz]||0, tIn=transfers.inBySize[sz]||0, tOut=transfers.outBySize[sz]||0;
-      var sold=openF+recvIn+tIn-tOut-closeF; // faulty is a total-only figure (no size breakdown from the Sheet), applied below
+      var refl=refillCountBySize[sz]||0;
+      var sold=openF+recvIn+refl+tIn-tOut-closeF; // faulty is a total-only figure (no size breakdown from the Sheet), applied below
       estSoldBySize[sz]=sold; estSoldTotal+=sold;
     });
     estSoldTotal-=faulty.loggedInRangeCount;
