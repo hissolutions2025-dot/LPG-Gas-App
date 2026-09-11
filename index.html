@@ -1327,7 +1327,12 @@ function openVerifiedTake(){
   document.getElementById('backBtn').style.display='block';
   document.getElementById('hTitle').textContent='Verified Stock Take';
   document.getElementById('hSub').textContent='Auditor — independent count';
-  _vstSig.auditor='';_vstSig.operator='';_vstSig._activeCanvas='';
+  // Clear the actual canvas pixels too, not just the _vstSig state - these canvases are
+  // static DOM nodes toggled by display (never recreated), so a signature drawn on a
+  // prior take stays visibly painted next time this screen opens even though the state
+  // reset already forces a fresh "must sign" gate on commit - misleading the Auditor into
+  // thinking they're already signed. Same staleness class Branch Transfers had to fix.
+  _vstSigClear('vstAuditorSig','auditor');_vstSigClear('vstOperatorSig','operator');
   document.getElementById('vstDate').value=today;
   document.getElementById('vstBranch').value=(branch||'Helderberg');
   document.getElementById('vstMode').value='joint';
@@ -1363,20 +1368,25 @@ function vstCommit(){
     return {cyl:cyl,brand:'',gasType:'',scale:s,tare:t,gasLeft:Math.max(0,s-t),cylState:'',notes:''};
   }).filter(function(m){return m.scale>0||m.tare>0;});
   _vstCommitBusy=true;
+  // Stays true (Commit stays blocked) through the whole push+comparison round-trip, not
+  // just the push - between "push succeeded" and goHome() actually firing, the screen is
+  // still visible and fully populated with a now-truthy _vstSig, so a second tap in that
+  // window would silently push a duplicate take + duplicate Sheet rows. Only cleared right
+  // before each terminal goHome() (or on the "couldn't reach the server" early-out, where
+  // the screen legitimately stays open for the Auditor to retry).
   _pushVerifiedTake({branch:br,date:date,mode:mode,count:count,manifold:manifold,
     auditorName:operator,auditorSig:_vstSig.auditor,
     operatorName:(mode==='joint'?operatorName:null),operatorSig:(mode==='joint'?_vstSig.operator:null)
   }).then(function(res){
-    _vstCommitBusy=false;
-    if(!res){toast('Could not reach the server — queued, will retry at next login',true);return;}
+    if(!res){_vstCommitBusy=false;toast('Could not reach the server — queued, will retry at next login',true);return;}
     auditLog('Verified Stock Take committed',mode+' — '+br+' '+date+' — '+count.length+' count line(s)');
     toast('Verified Stock Take saved. Checking against the day’s Closing count…');
     _fetchVerifiedTakeComparison(br,date,count).then(function(cmp){
-      if(!cmp.hasClosing){toast('No Operator Closing count for '+br+' on '+date+' yet — nothing to compare against.',true);goHome();return;}
-      if(!cmp.lines.length){toast('✅ Verified count matches the day’s Closing count on every size.');goHome();return;}
+      if(!cmp.hasClosing){toast('No Operator Closing count for '+br+' on '+date+' yet — nothing to compare against.',true);_vstCommitBusy=false;goHome();return;}
+      if(!cmp.lines.length){toast('✅ Verified count matches the day’s Closing count on every size.');_vstCommitBusy=false;goHome();return;}
       var msg=cmp.lines.slice(0,6).map(function(l){return l.size+': you '+l.verified+' vs Closing '+l.closing+' ('+(l.diff>0?'+':'')+l.diff+')';}).join('  ·  ');
       toast('⚠ Verified count differs from Closing on '+cmp.lines.length+' size(s): '+msg,true);
-      goHome();
+      _vstCommitBusy=false;goHome();
     });
   });
 }
