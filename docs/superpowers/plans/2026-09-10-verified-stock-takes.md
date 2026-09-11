@@ -73,7 +73,7 @@ Expected: `Applying migration 20260911000000_verified_stock_takes.sql...` then s
 supabase db query --linked -o json "select column_name,data_type,is_nullable from information_schema.columns where table_name='verified_stock_takes' order by ordinal_position;"
 supabase db query --linked -o json "select policyname,cmd from pg_policies where tablename='verified_stock_takes';"
 ```
-Expected: 12 columns matching the migration; 2 policies (`select`, `insert`).
+Expected: 13 columns matching the migration; 2 policies (`select`, `insert`).
 
 - [ ] **Step 4: Commit**
 
@@ -83,6 +83,19 @@ git commit -m "feat: verified_stock_takes table (Phase 1 — Verified Stock Take
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 ```
+
+> **Note (from Task 1 review, already applied):** the review caught a real defect
+> before it reached Task 4 — `id` is a server-generated `uuid` PK, but Task 4's
+> `_pushVerifiedTake` (below) was originally written to preset `id` with a
+> client-generated string (`'vst_...'`), which fails a `uuid` type cast against real
+> Postgres. Fixed with a follow-up migration
+> `20260911000001_verified_stock_takes_client_row_id.sql` — a separate
+> `client_row_id text` column with a partial unique index (`WHERE client_row_id IS
+> NOT NULL`), same pattern as `stock_transfers.row_id` from Branch Transfers.
+> **`id` stays server-generated and untouched; `client_row_id` is what the client
+> generates, uses for idempotent-retry detection, and sends as the Sheets `TakeId`.**
+> This migration is already written, applied, and committed (`af3b997` → follow-up
+> commit on the same branch) — Task 4's code below already reflects it.
 
 ---
 
@@ -103,7 +116,7 @@ In the `HEADERS` map, add:
 VerifiedCounts:   ['Timestamp','Date','Time','Branch','Auditor','Operator','Mode','Count Type','State','Size','Brand','Qty','Note','Take Id'],
 VerifiedManifold: ['Timestamp','Date','Time','Branch','Auditor','Operator','Mode','Cylinder','Brand','Gas Type','Cyl Scale (kg)','Cyl Tare (kg)','Gas Left (kg)','Condition','Note','Take Id'],
 ```
-(`CountType` is a fixed literal `'Verified'` on every row — it's there so a human filtering the tab, and any future recon formula, can tell these apart from Opening/Closing at a glance without joining to the daily `Counts` tab. `TakeId` = the client-generated `verified_stock_takes` id, so all the rows of one take group together.)
+(`CountType` is a fixed literal `'Verified'` on every row — it's there so a human filtering the tab, and any future recon formula, can tell these apart from Opening/Closing at a glance without joining to the daily `Counts` tab. `TakeId` = the client-generated `verified_stock_takes.client_row_id` — NOT the server-generated `id` — so all the rows of one take group together.)
 
 No new `doPost` action and no migration function — these tabs are written through the existing generic TABS writer (`syncPush('VerifiedCounts', rows)` → `{type:'VerifiedCounts', rows}` → generic append). The tabs auto-create via `setupSheets()` the first time a row is written (the generic writer already calls `setupSheets()` when `sh.getLastRow()===0`).
 
@@ -196,9 +209,13 @@ Serve the worktree, open Manage Users → New user, confirm: the level dropdown 
 function _pushVerifiedTake(payload){
   // payload = {branch, date, mode, count:[...], manifold:[...],
   //            auditorName, auditorSig, operatorName, operatorSig}  (operator* null for solo)
+  // takeId is the CLIENT-generated key (client_row_id column, added by the Task 1 follow-up
+  // migration) - `id` itself is a server-generated uuid and is deliberately never set here.
+  // takeId is what identifies this take for idempotent-retry detection (the unique partial
+  // index on client_row_id) and is what the Sheet mirror uses as TakeId.
   var takeId='vst_'+Date.now()+'_'+Math.floor(Math.random()*100000);
   var row={
-    id:takeId, branch:payload.branch, date:payload.date, mode:payload.mode,
+    client_row_id:takeId, branch:payload.branch, date:payload.date, mode:payload.mode,
     count:payload.count, manifold:payload.manifold,
     auditor_id:currentProfile&&currentProfile.id, auditor_name_snapshot:payload.auditorName, auditor_sig:payload.auditorSig,
     operator_id:(payload.mode==='joint'?(payload._operatorId||null):null),
@@ -208,7 +225,7 @@ function _pushVerifiedTake(payload){
   return sb.from('verified_stock_takes').insert(row).select().then(function(res){
     if(res.error){console.error('_pushVerifiedTake failed:',res.error.message);_vstQueue(row);return null;}
     _vstSheetPush(payload,takeId);
-    return (res.data&&res.data[0])||{id:takeId};
+    return (res.data&&res.data[0])||{client_row_id:takeId};
   },function(e){console.error('_pushVerifiedTake rejected:',e&&e.message);_vstQueue(row);return null;});
 }
 function _vstSheetPush(payload,takeId){
@@ -297,7 +314,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 
 - [ ] **Step 4: Browser verification**
 
-Serve the worktree. Stub `sb.from('verified_stock_takes').insert(...).select()` → `{data:[{id:'vst_x'}],error:null}`, stub `syncPush`/`_nowISO`/`num`, set `currentProfile`. Call `_pushVerifiedTake({branch:'Helderberg',date:'2026-09-10',mode:'joint',count:[{size:'9kg',brand:'Afrox',state:'Full',qty:60,note:''}],manifold:[{cyl:'Cyl 1',scale:57,tare:45,gasLeft:12}],auditorName:'A',auditorSig:'data:x',operatorName:'O',operatorSig:'data:y'})`. Confirm: the insert row has `operator_name_snapshot:'O'` for joint; `syncPush('VerifiedCounts', ...)` got 1 row with `CountType:'Verified'` and `TakeId:'vst_...'`; `syncPush('VerifiedManifold', ...)` got 1 row. Repeat with `mode:'solo'` + `operatorName:null` → confirm the insert row has `operator_id/name/sig` all `null`. Stub `stock_counts` select → a couple of Closing rows and confirm `_fetchVerifiedTakeComparison` returns `{hasClosing:true, lines:[...]}` with correct `diff`, and `{hasClosing:false}` when the select returns `[]`.
+Serve the worktree. Stub `sb.from('verified_stock_takes').insert(...).select()` (capture the actual object passed to `.insert(...)` so you can inspect it) → resolve `{data:[{id:'11111111-1111-1111-1111-111111111111'}],error:null}` (a real-shaped uuid, NOT a `vst_...` string — this is what catches an accidental `id:` preset regressing back in). Stub `syncPush`/`_nowISO`/`num`, set `currentProfile`. Call `_pushVerifiedTake({branch:'Helderberg',date:'2026-09-10',mode:'joint',count:[{size:'9kg',brand:'Afrox',state:'Full',qty:60,note:''}],manifold:[{cyl:'Cyl 1',scale:57,tare:45,gasLeft:12}],auditorName:'A',auditorSig:'data:x',operatorName:'O',operatorSig:'data:y'})`. Confirm: the captured insert payload has `client_row_id:'vst_...'` and NO `id` key at all; `operator_name_snapshot:'O'` for joint; `syncPush('VerifiedCounts', ...)` got 1 row with `CountType:'Verified'` and `TakeId` equal to that same `client_row_id` value; `syncPush('VerifiedManifold', ...)` got 1 row. Repeat with `mode:'solo'` + `operatorName:null` → confirm the insert payload has `operator_id/name/sig` all `null`. Stub `stock_counts` select → a couple of Closing rows and confirm `_fetchVerifiedTakeComparison` returns `{hasClosing:true, lines:[...]}` with correct `diff`, and `{hasClosing:false}` when the select returns `[]`.
 
 ---
 
@@ -522,11 +539,12 @@ Expected: `20260911000000` local+remote in sync; count `0` (not an error).
 - [ ] **Step 2: Real-Supabase lifecycle test**
 
 Via `supabase db query --linked` (write the SQL to a file, run with `-f` — single quotes in inline SQL break the PowerShell arg parser, learned in Phase 2):
-- Insert one `joint` verified take for `Helderberg` / today, with a small `count` jsonb (2-3 lines) and a `manifold` jsonb (1-2 slots), `note` containing `TEST`.
-- `select` it back — confirm `mode`, `count`/`manifold` round-trip as jsonb, `operator_name_snapshot` is set.
-- Insert a `solo` take — confirm `operator_id`/`operator_name_snapshot`/`operator_sig` are all `null` and the insert still succeeds (no NOT NULL violation).
+- Insert one `joint` verified take for `Helderberg` / today, `client_row_id='vst-TEST-joint'`, with a small `count` jsonb (2-3 lines) and a `manifold` jsonb (1-2 slots).
+- `select` it back — confirm `mode`, `count`/`manifold` round-trip as jsonb, `operator_name_snapshot` is set, `id` is a real server-generated uuid distinct from `client_row_id`.
+- Insert a `solo` take (`client_row_id='vst-TEST-solo'`) — confirm `operator_id`/`operator_name_snapshot`/`operator_sig` are all `null` and the insert still succeeds (no NOT NULL violation).
+- Attempt to re-insert `client_row_id='vst-TEST-joint'` again — confirm it's rejected with a `23505` unique-violation on `verified_stock_takes_client_row_id_unique` (proves the idempotent-retry protection is live, same check Phase 2 ran on `stock_transfers.row_id`).
 - Run the comparison query the app uses: `select size, sum(qty::numeric) from stock_counts where branch='Helderberg' and date=<a real recent date with a Closing count, e.g. 2026-09-09> and count_type='Closing' group by size;` — confirm it returns rows (this is what `_fetchVerifiedTakeComparison` reads; verifying it against real Closing data confirms the toast will have something to compare).
-- Delete both test rows (`delete from verified_stock_takes where note ilike '%TEST%' returning id;` — adjust: the table has no `note` column, so tag via a recognisable `branch` or just delete by the two known ids).
+- Delete both test rows — tag them at insert time with a recognisable `client_row_id` prefix (e.g. `'vst-TEST-joint'` / `'vst-TEST-solo'`) so cleanup is a simple `delete from verified_stock_takes where client_row_id like 'vst-TEST-%' returning id, client_row_id;` (same convention Phase 2's Task 8 used for `stock_transfers`).
 
 - [ ] **Step 3: Note what still needs a real run by the owner**
 
