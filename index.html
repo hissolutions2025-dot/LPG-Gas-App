@@ -98,6 +98,7 @@
   body[data-view="auditView"] #auditView,
   body[data-view="adminView"] #adminView,
   body[data-view="residualView"] #residualView,
+  body[data-view="transferView"] #transferView,
   body[data-view="pendingOverridesView"] #pendingOverridesView{display:block !important;}
   #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(calc(100% + 40px));background:var(--ok);color:#fff;padding:14px 22px;border-radius:12px;font-weight:700;font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.25);transition:transform .3s;z-index:70;max-width:90%;text-align:center;}
   /* Dismiss slides by the toast's OWN height (+ margin), not a fixed 80px - a fixed offset
@@ -322,6 +323,7 @@
       <button class="tile t1" data-key="users" id="tileUsers" onclick="openUsers()" style="display:none"><div class="ic">&#128100;</div><h3>Manage Users</h3><p>Owner: users, levels &amp; branches</p></button>
       <button class="tile t5" data-key="audit" id="tileAudit" onclick="openAudit()" style="display:none"><div class="ic">&#128220;</div><h3>Audit Log</h3><p>Owner only — who did what, when</p></button>
       <button class="tile t2" data-key="admin" id="tileAdmin" onclick="openAdmin()" style="display:none"><div class="ic">&#9881;</div><h3>Admin</h3><p>Seal register &amp; suppliers</p></button>
+      <button class="tile t6" data-key="transfer" id="tileTransfer" onclick="openTransfers()" style="display:none"><div class="ic">&#8646;</div><h3>Stock Transfer</h3><p>Owner: move cylinders between branches</p><span class="badge" id="b-transfer" style="display:none">0</span></button>
     </div>
     <div class="cFooter" id="homeEditBar" style="display:none">
       <button type="button" class="cbGhost" onclick="resetHomeLayout()">Reset layout</button>
@@ -334,6 +336,39 @@
 <div id="pendingOverridesView" class="view"><div class="wrap">
   <div id="pendingOverridesBody"></div>
 </div></div>
+
+<!-- STOCK TRANSFER (Owner) -->
+<div id="transferView" class="view">
+  <div class="wrap">
+    <div class="histTabs">
+      <button class="htab" id="xferTabNewBtn" onclick="xferShowTab('new')">New Transfer</button>
+      <button class="htab" id="xferTabReceiptBtn" onclick="xferShowTab('receipt')">Awaiting Receipt</button>
+      <button class="htab" id="xferTabApprovalBtn" onclick="xferShowTab('approval')">Awaiting Approval</button>
+    </div>
+
+    <div id="xferTabNew">
+      <label>From branch</label>
+      <select id="xferFromBranch" onchange="xferRenderItems()"><option>Helderberg</option><option>Kleinmond</option></select>
+      <label>To branch</label>
+      <select id="xferToBranch"><option>Kleinmond</option><option>Helderberg</option></select>
+      <div id="xferItemsGrid"></div>
+      <label>Note (optional)</label>
+      <textarea id="xferNote" rows="2" style="width:100%"></textarea>
+      <label>Dispatch operator signature</label>
+      <canvas id="xferDispatchSig" width="600" height="150" style="border:1.5px solid var(--steel);border-radius:8px;width:100%;touch-action:none"></canvas>
+      <button class="sigClear" onclick="_xferSigClear('xferDispatchSig','dispatch')">Clear signature</button>
+      <button onclick="xferCommitDispatch()">Dispatch Transfer</button>
+    </div>
+
+    <div id="xferTabReceipt" style="display:none">
+      <div id="xferReceiptList"></div>
+    </div>
+
+    <div id="xferTabApproval" style="display:none">
+      <div id="xferApprovalList"></div>
+    </div>
+  </div>
+</div>
 
 <!-- RESIDUAL GAS (main section) -->
 <div id="residualView" class="view"><div class="wrap">
@@ -1177,6 +1212,318 @@ function _manifoldPendingFlush(){
     },function(e){_manifoldPendingQueue(payload);});
   });
 }
+// ===== Branch Transfers (stock_transfers) - Phase 2 of the Stock Balance Management
+// spec (docs/superpowers/specs/2026-09-09-stock-balance-management-design.md).
+// Dispatch = insert. Receipt/Approval = .update() on the same row (Supabase supports
+// this directly, unlike the Sheet - see _syncTransferUpdate below for the Sheet side,
+// which mirrors _handleAdjustRow's RowId-match pattern via the new transferUpdate
+// Apps Script action). A push failure here queues to localStorage and retries at
+// login, same convention _pushManifoldLiveRows already uses.
+function _pushTransferDispatch(items,fromBranch,toBranch,note){
+  var rid='xfer_'+Date.now()+'_'+Math.floor(Math.random()*100000);
+  items.forEach(function(it,i){ it._lineRid=rid+'-'+i; });
+  var payload={
+    row_id:rid, from_branch:fromBranch, to_branch:toBranch, items:items, note:note||'',
+    status:'pending_receipt',
+    dispatch_operator_id:currentProfile&&currentProfile.id, dispatch_operator_name_snapshot:operator,
+    dispatch_sig:_xferSig.dispatch||''
+  };
+  return sb.from('stock_transfers').insert(payload).select().then(function(res){
+    if(res.error){console.error('_pushTransferDispatch failed:',res.error.message);_transferQueue({kind:'dispatch',payload:payload});return null;}
+    syncPush('transferDispatch',items.map(function(it){
+      return {ts:_nowISO(),date:today,branch:fromBranch,FromBranch:fromBranch,ToBranch:toBranch,
+        Size:it.size,Brand:it.brand,State:it.state,QtyDispatched:it.qtyDispatched,QtyReceived:'',
+        ShortfallReason:'',Note:note||'',Status:'pending_receipt',DispatchOperator:operator,
+        ReceiveOperator:'',Manager:'',RowId:it._lineRid};
+    }));
+    return (res.data&&res.data[0])||null;
+  },function(e){console.error('_pushTransferDispatch rejected:',e&&e.message);_transferQueue({kind:'dispatch',payload:payload});return null;});
+}
+function _fetchTransfersAwaitingReceipt(br){
+  return sb.from('stock_transfers').select('*').eq('to_branch',br).eq('status','pending_receipt').then(function(res){
+    if(res.error){console.error('_fetchTransfersAwaitingReceipt failed:',res.error.message);return [];}
+    return res.data||[];
+  },function(e){console.error('_fetchTransfersAwaitingReceipt rejected:',e&&e.message);return [];});
+}
+function _fetchTransfersAwaitingApproval(){
+  return sb.from('stock_transfers').select('*').eq('status','received').then(function(res){
+    if(res.error){console.error('_fetchTransfersAwaitingApproval failed:',res.error.message);return [];}
+    return res.data||[];
+  },function(e){console.error('_fetchTransfersAwaitingApproval rejected:',e&&e.message);return [];});
+}
+// items = the same array, with qtyReceived/shortfallReason filled in per line
+function _confirmTransferReceipt(id,items){
+  var patch={items:items,status:'received',receive_operator_id:currentProfile&&currentProfile.id,
+    receive_operator_name_snapshot:operator,receive_sig:_xferSig.receive||'',receive_at:new Date().toISOString()};
+  return sb.from('stock_transfers').update(patch).eq('id',id).eq('status','pending_receipt').select().then(function(res){
+    if(res.error){console.error('_confirmTransferReceipt failed:',res.error.message);return false;}
+    var row=(res.data&&res.data[0])||null;
+    // update matched zero rows (row not in pending_receipt state - double-tap, or already
+    // received/approved on another device) - .select() returns []; treat as a failure.
+    if(!row){console.warn('_confirmTransferReceipt: no pending_receipt row for',id);return false;}
+    if(row&&row.row_id){
+      var _mirrorWarned=false;
+      var _mirrorFail=function(){if(!_mirrorWarned){_mirrorWarned=true;toast('Saved, but the Sheets copy of this transfer line may be out of date — check the Transfers tab',true);}};
+      items.forEach(function(it){
+        apiPost('transferUpdate',{rowId:(it._lineRid||row.row_id),updates:{QtyReceived:it.qtyReceived,ShortfallReason:it.shortfallReason||'',Status:'received',ReceiveOperator:operator}}).then(function(r){
+          if(!r||!r.ok)_mirrorFail();
+        },function(){_mirrorFail();});
+      });
+    }
+    return true;
+  },function(e){console.error('_confirmTransferReceipt rejected:',e&&e.message);return false;});
+}
+function _approveTransfer(id,rowId){
+  var patch={status:'approved',manager_id:currentProfile&&currentProfile.id,manager_name_snapshot:operator,
+    manager_sig:_xferSig.approve||'',approved_at:new Date().toISOString()};
+  return sb.from('stock_transfers').update(patch).eq('id',id).eq('status','received').select().then(function(res){
+    if(res.error){console.error('_approveTransfer failed:',res.error.message);return false;}
+    var row=(res.data&&res.data[0])||null;
+    // update matched zero rows (not in received state - double-tap, or already approved on
+    // another device) - .select() returns []; treat as a failure and don't re-fire the mirror.
+    if(!row){console.warn('_approveTransfer: no row matched (already approved elsewhere, or not in received state)');return false;}
+    var _mirrorWarned=false;
+    var _mirrorFail=function(){if(!_mirrorWarned){_mirrorWarned=true;toast('Saved, but the Sheets copy of this transfer line may be out of date — check the Transfers tab',true);}};
+    var _lines=(row.items&&row.items.length)?row.items:[{_lineRid:rowId}];
+    _lines.forEach(function(it){
+      apiPost('transferUpdate',{rowId:(it._lineRid||rowId),updates:{Status:'approved',Manager:operator}}).then(function(r){
+        if(!r||!r.ok)_mirrorFail();
+      },function(){_mirrorFail();});
+    });
+    return true;
+  },function(e){console.error('_approveTransfer rejected:',e&&e.message);return false;});
+}
+// Branch gate for closeDay() - blocks on ANY unapproved transfer touching the branch, regardless of dispatch date.
+function _fetchUnapprovedTransfersTouching(br){
+  return sb.from('stock_transfers').select('id,from_branch,to_branch,status')
+    // br is always a fixed branch-name constant (never user text) - safe to interpolate into the .or() filter string
+    .or('from_branch.eq.'+br+',to_branch.eq.'+br)
+    .neq('status','approved').neq('status','cancelled')
+    .then(function(res){
+      if(res.error){console.error('_fetchUnapprovedTransfersTouching failed:',res.error.message);return {error:true};}
+      return res.data||[];
+    },function(e){console.error('_fetchUnapprovedTransfersTouching rejected:',e&&e.message);return {error:true};});
+}
+function _transferQueue(entry){
+  try{var q=JSON.parse(localStorage.getItem('gs_transfer_queue')||'[]');q.push(entry);localStorage.setItem('gs_transfer_queue',JSON.stringify(q.slice(-200)));}catch(e){}
+}
+function _transferFlush(){
+  var q;try{q=JSON.parse(localStorage.getItem('gs_transfer_queue')||'[]');}catch(e){return;}
+  if(!q.length)return;
+  localStorage.setItem('gs_transfer_queue','[]');
+  q.forEach(function(entry){
+    if(entry.kind!=='dispatch')return;
+    var p=entry.payload;
+    function mirror(){
+      // date/ts here are flush-time, not dispatch-time - the queued payload carries no
+      // dispatch timestamp, so an offline dispatch flushed at next login shows the login
+      // day in the Sheet. Acceptable for now; add a dispatched_ts to the payload later if
+      // this matters.
+      syncPush('transferDispatch',(p.items||[]).map(function(it){
+        return {ts:_nowISO(),date:today,branch:p.from_branch,FromBranch:p.from_branch,ToBranch:p.to_branch,
+          Size:it.size,Brand:it.brand,State:it.state,QtyDispatched:it.qtyDispatched,QtyReceived:'',
+          ShortfallReason:'',Note:p.note||'',Status:'pending_receipt',DispatchOperator:(p.dispatch_operator_name_snapshot||''),
+          ReceiveOperator:'',Manager:'',RowId:(it._lineRid||p.row_id)};
+      }));
+    }
+    sb.from('stock_transfers').insert(p).then(function(res){
+      if(res.error){
+        var m=String(res.error.message||'');
+        var alreadyExists=(res.error.code==='23505'||m.indexOf('duplicate key')>-1||m.indexOf('stock_transfers_row_id_unique')>-1);
+        if(alreadyExists){mirror();return;} // row already landed - just do the Sheet mirror
+        _transferQueue(entry);return;        // any other error - retry next login
+      }
+      mirror();
+    },function(){_transferQueue(entry);});
+  });
+}
+// One-shot signature capture for the three transfer signers - deliberately NOT the
+// persistent Day-Close-style sig pad (sigData/sigUnlocked/sigSignedBy): each of these
+// three signatures happens once, immediately, at its own stage, not accumulated over
+// a whole shift with lock/unlock/restore-after-reload semantics. Plain canvas, drawn
+// then read via toDataURL at submit time.
+var _xferSig={dispatch:'',receive:'',approve:'',_activeCanvas:''};
+function _initXferSigCanvas(canvasId,sigKey){
+  var cv=document.getElementById(canvasId);if(!cv||cv._init)return;cv._init=true;
+  var ctx=cv.getContext('2d');ctx.lineWidth=2.2;ctx.lineCap='round';ctx.strokeStyle='#16202B';
+  var drawing=false,last=null;
+  function pos(e){var r=cv.getBoundingClientRect();var t=e.touches?e.touches[0]:e;return {x:(t.clientX-r.left)*(cv.width/r.width),y:(t.clientY-r.top)*(cv.height/r.height)};}
+  function start(e){drawing=true;last=pos(e);e.preventDefault();}
+  function move(e){if(!drawing)return;var p=pos(e);ctx.beginPath();ctx.moveTo(last.x,last.y);ctx.lineTo(p.x,p.y);ctx.stroke();last=p;_xferSig[sigKey]=cv.toDataURL('image/png');_xferSig._activeCanvas=canvasId;e.preventDefault();}
+  function end(){drawing=false;}
+  cv.addEventListener('mousedown',start);cv.addEventListener('mousemove',move);cv.addEventListener('mouseup',end);cv.addEventListener('mouseleave',end);
+  cv.addEventListener('touchstart',start,{passive:false});cv.addEventListener('touchmove',move,{passive:false});cv.addEventListener('touchend',end);
+}
+function _xferSigClear(canvasId,sigKey){var cv=document.getElementById(canvasId);if(cv)cv.getContext('2d').clearRect(0,0,cv.width,cv.height);_xferSig[sigKey]='';if(_xferSig._activeCanvas===canvasId)_xferSig._activeCanvas='';}
+
+// ===== Branch Transfers - UI (Task 4: tile + New Transfer/dispatch tab). The Receipt
+// and Approval tab bodies are filled by Tasks 5/6 - xferLoadReceiptList/xferLoadApprovalList
+// do not exist yet, so the two calls below are typeof-guarded.
+var XFER_STATES=['Full','Empty'];
+var _xferReceiptCache=[];
+var _xferApprovalCache=[];
+var _xferCommitBusy=false;
+function xferRenderItems(){
+  var g=document.getElementById('xferItemsGrid');
+  g.innerHTML=ALLSIZES.map(function(sz){
+    return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">'+
+      '<span style="width:90px;font-size:12px">'+sz+'</span>'+
+      '<select id="xfb-'+sz+'" style="flex:1">'+BRANDS.map(function(b){return '<option>'+b+'</option>';}).join('')+'</select>'+
+      '<select id="xfs-'+sz+'" style="width:80px">'+XFER_STATES.map(function(s){return '<option>'+s+'</option>';}).join('')+'</select>'+
+      '<input id="xfq-'+sz+'" type="number" min="0" step="1" value="0" style="width:70px">'+
+      '</div>';
+  }).join('');
+}
+function xferShowTab(name){
+  ['new','receipt','approval'].forEach(function(n){
+    document.getElementById('xferTab'+n[0].toUpperCase()+n.slice(1)).style.display=(n===name)?'block':'none';
+    document.getElementById('xferTab'+n[0].toUpperCase()+n.slice(1)+'Btn').classList.toggle('on',n===name);
+  });
+  if(name==='receipt'&&typeof xferLoadReceiptList==='function')xferLoadReceiptList();
+  if(name==='approval'&&typeof xferLoadApprovalList==='function')xferLoadApprovalList();
+}
+function openTransfers(){
+  if(role!=='Owner'){toast('Owner only',true);return;}
+  show('transferView');
+  document.getElementById('hTitle').textContent='Stock Transfer';
+  document.getElementById('hSub').textContent='Move cylinders between branches';
+  document.getElementById('backBtn').style.display='block';
+  xferRenderItems();
+  _xferSigClear('xferDispatchSig','dispatch');
+  setTimeout(function(){_initXferSigCanvas('xferDispatchSig','dispatch');},50);
+  xferShowTab('new');
+}
+function xferCommitDispatch(){
+  var from=document.getElementById('xferFromBranch').value, to=document.getElementById('xferToBranch').value;
+  if(from===to){toast('From and To branch must differ',true);return;}
+  if(!_xferSig.dispatch){toast('Dispatch operator must sign first',true);return;}
+  var items=[];
+  ALLSIZES.forEach(function(sz){
+    var qty=Math.round(num(document.getElementById('xfq-'+sz).value));
+    if(qty>0){
+      items.push({size:sz,brand:document.getElementById('xfb-'+sz).value,state:document.getElementById('xfs-'+sz).value,
+        qtyDispatched:qty,qtyReceived:null,shortfallReason:'',note:''});
+    }
+  });
+  if(!items.length){toast('Add at least one line with a quantity',true);return;}
+  var note=document.getElementById('xferNote').value||'';
+  _pushTransferDispatch(items,from,to,note).then(function(row){
+    if(!row){toast('Could not reach the server — queued, will retry at next login',true);return;}
+    toast('Transfer dispatched — '+to+' will see it under Awaiting Receipt');
+    auditLog('Stock Transfer dispatched',from+' → '+to+' — '+items.length+' line(s)');
+    document.getElementById('xferNote').value='';
+    _xferSigClear('xferDispatchSig','dispatch');
+    xferRenderItems();
+  });
+}
+// ===== Branch Transfers - UI (Task 5: Awaiting Receipt tab). Lists transfers dispatched
+// TO this branch still pending_receipt; per-line received-qty inputs, shortfall reason,
+// receiving-operator signature, Confirm Receipt.
+function xferLoadReceiptList(){
+  _xferSig.receive='';_xferSig._activeCanvas='';
+  var el=document.getElementById('xferReceiptList');
+  el.innerHTML='Loading…';
+  _fetchTransfersAwaitingReceipt(branch).then(function(rows){
+    _xferReceiptCache=rows;
+    if(!rows.length){el.innerHTML='<p style="color:#999">Nothing awaiting receipt for '+branch+'.</p>';return;}
+    el.innerHTML=rows.map(function(t){
+      var itemsHtml=t.items.map(function(it,i){
+        return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">'+
+          '<span style="width:140px;font-size:12px">'+it.size+' · '+it.brand+' · '+it.state+'</span>'+
+          '<span style="width:90px;font-size:12px">Dispatched: '+it.qtyDispatched+'</span>'+
+          '<input id="xfr-'+t.id+'-'+i+'" type="number" min="0" step="1" value="'+it.qtyDispatched+'" style="width:70px"> received'+
+          '</div>';
+      }).join('');
+      return '<div class="histSection" style="border:1.5px solid var(--steel);border-radius:10px;padding:10px;margin-bottom:10px">'+
+        '<b>From '+t.from_branch+'</b> — dispatched by '+(t.dispatch_operator_name_snapshot||'?')+' ('+_tsHM(t.dispatch_at)+')'+
+        (t.note?('<div style="font-size:12px;color:#777">'+t.note+'</div>'):'')+
+        '<div style="margin:8px 0">'+itemsHtml+'</div>'+
+        '<label>Shortfall reason (required if any quantity above differs from dispatched)</label>'+
+        '<input id="xfr-'+t.id+'-reason" style="width:100%">'+
+        '<label>Receiving operator signature</label>'+
+        '<canvas id="xfrSig-'+t.id+'" width="600" height="150" style="border:1.5px solid var(--steel);border-radius:8px;width:100%;touch-action:none"></canvas>'+
+        '<button class="sigClear" onclick="_xferSigClear(\'xfrSig-'+t.id+'\',\'receive\')">Clear signature</button>'+
+        '<button onclick="xferCommitReceipt(\''+t.id+'\')">Confirm Receipt</button>'+
+        '</div>';
+    }).join('');
+    rows.forEach(function(t){setTimeout(function(){_initXferSigCanvas('xfrSig-'+t.id,'receive');},50);});
+  });
+}
+function xferCommitReceipt(id){
+  if(!_xferSig.receive||_xferSig._activeCanvas!=='xfrSig-'+id){toast('Sign in THIS transfer’s signature box to confirm it',true);return;}
+  if(_xferCommitBusy)return;
+  var t=(_xferReceiptCache||[]).filter(function(r){return r.id===id;})[0];
+  if(!t){toast('Transfer not found — reload the list',true);return;}
+  var reason=(document.getElementById('xfr-'+id+'-reason').value||'').trim();
+  // Validate FIRST (before building anything), so a missing shortfall reason is a plain
+  // early return with a toast - no throwing out of a .map() callback.
+  var anyShortfall=false;
+  // render and commit both iterate the same cached t.items array (jsonb preserves order), so index i is a stable key
+  for(var i=0;i<t.items.length;i++){
+    var got=Math.round(num(document.getElementById('xfr-'+id+'-'+i).value));
+    if(got!==t.items[i].qtyDispatched)anyShortfall=true;
+  }
+  if(anyShortfall&&!reason){toast('A shortfall reason is required — one or more received quantities differ from what was dispatched',true);return;}
+  var items=t.items.map(function(it,i){
+    var got=Math.round(num(document.getElementById('xfr-'+id+'-'+i).value));
+    return Object.assign({},it,{qtyReceived:got,shortfallReason:(got!==it.qtyDispatched)?reason:''});
+  });
+  _xferCommitBusy=true;
+  _confirmTransferReceipt(id,items).then(function(ok){
+    _xferCommitBusy=false;
+    if(!ok){toast('Could not confirm receipt — try again',true);return;}
+    toast('Receipt confirmed');
+    auditLog('Stock Transfer received',t.from_branch+' → '+t.to_branch+' — '+items.length+' line(s)');
+    _xferSigClear('xfrSig-'+id,'receive');
+    xferLoadReceiptList();
+  });
+}
+// ===== Branch Transfers - UI (Task 6: Awaiting Approval tab). Lists transfers in
+// 'received' status; shows dispatched-vs-received per line (mismatches highlighted),
+// a Manager/Owner signature per card, and Approve Transfer.
+function xferLoadApprovalList(){
+  _xferSig.approve='';_xferSig._activeCanvas='';
+  var el=document.getElementById('xferApprovalList');
+  el.innerHTML='Loading…';
+  _fetchTransfersAwaitingApproval().then(function(rows){
+    _xferApprovalCache=rows;
+    if(!rows.length){el.innerHTML='<p style="color:#999">Nothing awaiting approval.</p>';return;}
+    el.innerHTML=rows.map(function(t){
+      var itemsHtml=t.items.map(function(it){
+        var mismatch=(it.qtyReceived!==it.qtyDispatched);
+        return '<div style="font-size:12px'+(mismatch?';color:#C0392B;font-weight:700':'')+'">'+
+          it.size+' · '+it.brand+' · '+it.state+' — dispatched '+it.qtyDispatched+', received '+it.qtyReceived+
+          (mismatch?(' — '+(it.shortfallReason||'no reason given')):'')+'</div>';
+      }).join('');
+      return '<div class="histSection" style="border:1.5px solid var(--steel);border-radius:10px;padding:10px;margin-bottom:10px">'+
+        '<b>'+t.from_branch+' → '+t.to_branch+'</b><br>'+
+        'Dispatched by '+(t.dispatch_operator_name_snapshot||'?')+', received by '+(t.receive_operator_name_snapshot||'?')+
+        '<div style="margin:8px 0">'+itemsHtml+'</div>'+
+        '<label>Manager/Owner signature</label>'+
+        '<canvas id="xfaSig-'+t.id+'" width="600" height="150" style="border:1.5px solid var(--steel);border-radius:8px;width:100%;touch-action:none"></canvas>'+
+        '<button class="sigClear" onclick="_xferSigClear(\'xfaSig-'+t.id+'\',\'approve\')">Clear signature</button>'+
+        '<button onclick="xferCommitApproval(\''+t.id+'\',\''+(t.row_id||'')+'\')">Approve Transfer</button>'+
+        '</div>';
+    }).join('');
+    rows.forEach(function(t){setTimeout(function(){_initXferSigCanvas('xfaSig-'+t.id,'approve');},50);});
+  });
+}
+function xferCommitApproval(id,rowId){
+  if(!perm('closeday')){toast('Manager/Owner authorisation required',true);return;}
+  if(!_xferSig.approve||_xferSig._activeCanvas!=='xfaSig-'+id){toast('Sign in THIS transfer’s signature box to approve it',true);return;}
+  if(_xferCommitBusy)return;
+  _xferCommitBusy=true;
+  _approveTransfer(id,rowId).then(function(ok){
+    _xferCommitBusy=false;
+    if(!ok){toast('Could not approve — try again',true);return;}
+    toast('Transfer approved');
+    var _t=(_xferApprovalCache||[]).filter(function(r){return r.id===id;})[0];
+    auditLog('Stock Transfer approved',_t?(_t.from_branch+' → '+_t.to_branch+' — '+_t.items.length+' line(s)'):('id '+id));
+    _xferSigClear('xfaSig-'+id,'approve');
+    xferLoadApprovalList();
+  });
+}
+// ===== Manifold remote override approval (read / badge side) =====
 var _manifoldPendingOverrides=[]; // cached list of PENDING items, fetched at login for
                                     // EVERY role (not just Manager/Owner) - Close Day's gate
                                     // (a later task) needs this to be accurate regardless of
@@ -3516,6 +3863,7 @@ function _finishLogin(u,b){
   var _ta=document.getElementById('tileAdmin');if(_ta)_ta.style.display=(perm('seal_admin')||perm('faultyCapture')||perm('faultyRegister')||perm('manageSuppliers'))?'flex':'none';
   var _trg=document.getElementById('tileResidual');if(_trg)_trg.style.display=perm('residualGas')?'flex':'none';
   var _tpo=document.getElementById('tilePendingOverrides');if(_tpo)_tpo.style.display=(role==='Manager'||role==='Owner')?'flex':'none';
+  var _ttr=document.getElementById('tileTransfer');if(_ttr)_ttr.style.display=(role==='Owner')?'flex':'none';
   auditLog('Login','Signed in to '+b);
   editUnlocked=false;
   loadWorkingStore();
@@ -3529,6 +3877,7 @@ function _finishLogin(u,b){
   syncFlush();
   _manifoldLiveFlush();
   _manifoldPendingFlush();
+  _transferFlush();
   _fetchManifoldPendingOverrides();
   _closeDayFlushQueue();
   _updateCloseDayPendingBadge();
@@ -8216,7 +8565,8 @@ function _dayCompletenessOverride(br,missingSummary){
     });
   });
 }
-function closeDay(_skipPendingOverridesRefresh,_dayActivitySummary){
+function closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,_unapprovedTransfers){
+  var _skipTransfersRefresh=(_unapprovedTransfers!==undefined);
   var total=Object.keys(store).filter(function(k){return k[0]!=='_';}).reduce(function(a,k){return a+(Array.isArray(store[k])?store[k].length:0);},0);
   if(total===0){toast('Nothing captured to close the day',true);return;}
   if(!sigData.sigOp){toast('Operator signature box must be signed first',true);return;}
@@ -8294,6 +8644,22 @@ function closeDay(_skipPendingOverridesRefresh,_dayActivitySummary){
   var _pendingForBranch=(_manifoldPendingOverrides||[]).filter(function(p){return p.branch===branch&&(p.date||today)===today;});
   if(_pendingForBranch.length){
     toast('Cannot close: '+_pendingForBranch.length+' Manifold override(s) still awaiting Manager/Owner approval — see the Pending Overrides screen.',true);
+    return;
+  }
+  // #4d BLOCK: any Branch Transfer that touched this branch and isn't yet
+  // 'approved' (any dispatch date) - same live-refetch-first reasoning as the pending-overrides gate just
+  // above (Close Day is irreversible, so a stale local cache here could let a branch
+  // close right past a transfer another device just dispatched/received).
+  if(!_skipTransfersRefresh){
+    _fetchUnapprovedTransfersTouching(branch).then(function(rows){closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,rows);},function(){closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,{error:true});});
+    return;
+  }
+  if(_unapprovedTransfers&&_unapprovedTransfers.error){
+    toast('Cannot close: couldn’t check for outstanding Stock Transfers (network issue) — try again in a moment.',true);
+    return;
+  }
+  if(_unapprovedTransfers&&_unapprovedTransfers.length){
+    toast('Cannot close: '+_unapprovedTransfers.length+' Stock Transfer(s) touching '+branch+' still need Owner approval. Ask an Owner to approve them on the Stock Transfer screen.',true);
     return;
   }
   // Close Day requires: an authoriser WITH close-day permission. The high-risk second
