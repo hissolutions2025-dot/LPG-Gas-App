@@ -1144,6 +1144,97 @@ function _manifoldLiveFlush(){
     },function(e){_manifoldLiveQueue(payload);});
   });
 }
+// ===== Verified Stock Takes (verified_stock_takes) - Phase 1 of the Stock Balance
+// Management spec. A neutral Auditor's full physical count, stored separately from the
+// daily Operator flow. Committed once, atomically - never updated - so no retry-in-place
+// machinery, just an insert + two append-only Sheet pushes. A push failure queues to
+// localStorage and retries at login, same convention _manifoldLiveFlush already uses.
+function _pushVerifiedTake(payload){
+  // payload = {branch, date, mode, count:[...], manifold:[...],
+  //            auditorName, auditorSig, operatorName, operatorSig}  (operator* null for solo)
+  // takeId is the CLIENT-generated key (client_row_id column) - `id` itself is a
+  // server-generated uuid and is deliberately never set here. takeId is what identifies
+  // this take for idempotent-retry detection (the unique partial index on client_row_id)
+  // and is what the Sheet mirror uses as TakeId.
+  var takeId='vst_'+Date.now()+'_'+Math.floor(Math.random()*100000);
+  var row={
+    client_row_id:takeId, branch:payload.branch, date:payload.date, mode:payload.mode,
+    count:payload.count, manifold:payload.manifold,
+    auditor_id:currentProfile&&currentProfile.id, auditor_name_snapshot:payload.auditorName, auditor_sig:payload.auditorSig,
+    operator_id:(payload.mode==='joint'?(payload._operatorId||null):null),
+    operator_name_snapshot:(payload.mode==='joint'?(payload.operatorName||null):null),
+    operator_sig:(payload.mode==='joint'?(payload.operatorSig||null):null)
+  };
+  return sb.from('verified_stock_takes').insert(row).select().then(function(res){
+    if(res.error){console.error('_pushVerifiedTake failed:',res.error.message);_vstQueue(row);return null;}
+    _vstSheetPush(payload,takeId);
+    return (res.data&&res.data[0])||{client_row_id:takeId};
+  },function(e){console.error('_pushVerifiedTake rejected:',e&&e.message);_vstQueue(row);return null;});
+}
+function _vstSheetPush(payload,takeId){
+  var meta={ts:_nowISO(),date:payload.date,branch:payload.branch};
+  syncPush('VerifiedCounts',(payload.count||[]).map(function(c){
+    return Object.assign({},meta,{Auditor:payload.auditorName,Operator:(payload.operatorName||''),Mode:payload.mode,
+      CountType:'Verified',State:c.state,Size:c.size,Brand:c.brand,Qty:c.qty,Note:(c.note||''),TakeId:takeId});
+  }));
+  syncPush('VerifiedManifold',(payload.manifold||[]).map(function(m){
+    return Object.assign({},meta,{Auditor:payload.auditorName,Operator:(payload.operatorName||''),Mode:payload.mode,
+      Cylinder:m.cyl,Brand:(m.brand||''),GasType:(m.gasType||''),Scale:m.scale,Tare:m.tare,GasLeft:m.gasLeft,
+      Condition:(m.cylState||''),Note:(m.notes||''),TakeId:takeId});
+  }));
+}
+function _vstQueue(row){
+  try{var q=JSON.parse(localStorage.getItem('gs_vst_queue')||'[]');q.push(row);localStorage.setItem('gs_vst_queue',JSON.stringify(q.slice(-50)));}catch(e){}
+}
+function _vstFlush(){
+  var q;try{q=JSON.parse(localStorage.getItem('gs_vst_queue')||'[]');}catch(e){return;}
+  if(!q.length)return;
+  localStorage.setItem('gs_vst_queue','[]');
+  q.forEach(function(row){
+    sb.from('verified_stock_takes').insert(row).then(function(res){
+      if(res.error){
+        var m=String(res.error.message||'');
+        if(res.error.code!=='23505'&&m.indexOf('duplicate key')===-1)_vstQueue(row); // 23505 = already landed
+      }
+    },function(){_vstQueue(row);});
+  });
+}
+// After a take commits: pull the Operator's own Closing stock_counts for this branch+date
+// and return a per-size comparison so the capture screen can toast "you counted X, the
+// day's Closing said Y" immediately - the whole point of a verified take. Returns
+// {hasClosing:bool, lines:[{size,verified,closing,diff}]} - never invents a zero baseline
+// (same non-negotiable this app already enforces for the Opening-vs-prev-close check).
+function _fetchVerifiedTakeComparison(br,date,verifiedCount){
+  return sb.from('stock_counts').select('*').eq('branch',br).eq('date',date).eq('count_type','Closing').then(function(res){
+    if(res.error||!res.data||!res.data.length)return {hasClosing:false,lines:[]};
+    var closeBySize={};
+    res.data.forEach(function(r){ closeBySize[r.size]=(closeBySize[r.size]||0)+num(r.qty); });
+    var vBySize={};
+    (verifiedCount||[]).forEach(function(c){ vBySize[c.size]=(vBySize[c.size]||0)+num(c.qty); });
+    var sizes={}; Object.keys(closeBySize).forEach(function(s){sizes[s]=1;}); Object.keys(vBySize).forEach(function(s){sizes[s]=1;});
+    var lines=Object.keys(sizes).sort().map(function(s){
+      var v=vBySize[s]||0, c=closeBySize[s]||0;
+      return {size:s,verified:v,closing:c,diff:v-c};
+    }).filter(function(l){return l.diff!==0;});
+    return {hasClosing:true,lines:lines};
+  },function(){return {hasClosing:false,lines:[]};});
+}
+// One-shot signature capture - deliberately NOT the persistent Day-Close sigData/
+// sigUnlocked pad, which is day-scoped and would collide with an in-progress Close Day
+// on the same device.
+var _vstSig={auditor:'',operator:'',_activeCanvas:''};
+function _initVstSigCanvas(canvasId,sigKey){
+  var cv=document.getElementById(canvasId);if(!cv||cv._init)return;cv._init=true;
+  var ctx=cv.getContext('2d');ctx.lineWidth=2.2;ctx.lineCap='round';ctx.strokeStyle='#16202B';
+  var drawing=false,last=null;
+  function pos(e){var r=cv.getBoundingClientRect();var t=e.touches?e.touches[0]:e;return {x:(t.clientX-r.left)*(cv.width/r.width),y:(t.clientY-r.top)*(cv.height/r.height)};}
+  function start(e){drawing=true;last=pos(e);e.preventDefault();}
+  function move(e){if(!drawing)return;var p=pos(e);ctx.beginPath();ctx.moveTo(last.x,last.y);ctx.lineTo(p.x,p.y);ctx.stroke();last=p;_vstSig[sigKey]=cv.toDataURL('image/png');_vstSig._activeCanvas=canvasId;e.preventDefault();}
+  function end(){drawing=false;}
+  cv.addEventListener('mousedown',start);cv.addEventListener('mousemove',move);cv.addEventListener('mouseup',end);cv.addEventListener('mouseleave',end);
+  cv.addEventListener('touchstart',start,{passive:false});cv.addEventListener('touchmove',move,{passive:false});cv.addEventListener('touchend',end);
+}
+function _vstSigClear(canvasId,sigKey){var cv=document.getElementById(canvasId);if(cv)cv.getContext('2d').clearRect(0,0,cv.width,cv.height);_vstSig[sigKey]='';if(_vstSig._activeCanvas===canvasId)_vstSig._activeCanvas='';}
 // ===== Manifold remote override approval (manifold_pending_overrides) =====
 // Additive write, same shape as _pushManifoldLiveRows above - fires alongside it at commit
 // time, never blocks the commit itself. Only rows actually stamped PENDING (by the
@@ -3530,6 +3621,7 @@ function _finishLogin(u,b){
   syncFlush();
   _manifoldLiveFlush();
   _manifoldPendingFlush();
+  _vstFlush();
   _fetchManifoldPendingOverrides();
   _closeDayFlushQueue();
   _updateCloseDayPendingBadge();
