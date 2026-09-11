@@ -1150,8 +1150,8 @@ function _manifoldLiveFlush(){
 // machinery, just an insert + two append-only Sheet pushes. A push failure queues to
 // localStorage and retries at login, same convention _manifoldLiveFlush already uses.
 function _pushVerifiedTake(payload){
-  // payload = {branch, date, mode, count:[...], manifold:[...],
-  //            auditorName, auditorSig, operatorName, operatorSig}  (operator* null for solo)
+  // payload = {branch, date, mode, count:[...], manifold:[...], auditorName, auditorSig,
+  //            operatorName, operatorSig, _operatorId}  (operator*/_operatorId null for solo)
   // takeId is the CLIENT-generated key (client_row_id column) - `id` itself is a
   // server-generated uuid and is deliberately never set here. takeId is what identifies
   // this take for idempotent-retry detection (the unique partial index on client_row_id)
@@ -1191,11 +1191,24 @@ function _vstFlush(){
   if(!q.length)return;
   localStorage.setItem('gs_vst_queue','[]');
   q.forEach(function(row){
+    // Reconstructs the _vstSheetPush payload shape from the queued DB row - needed on
+    // BOTH the clean-success and the "already landed" (23505) branches below, mirroring
+    // Branch Transfers' _transferFlush fix for the identical gap: without this, a take
+    // whose original insert response was lost (but which DID land server-side) would
+    // stay permanently correct in verified_stock_takes while its Sheet mirror silently
+    // never got written - no error surfaced anywhere.
+    function mirror(){
+      _vstSheetPush({branch:row.branch,date:row.date,mode:row.mode,count:row.count,manifold:row.manifold,
+        auditorName:row.auditor_name_snapshot,operatorName:row.operator_name_snapshot},row.client_row_id);
+    }
     sb.from('verified_stock_takes').insert(row).then(function(res){
       if(res.error){
         var m=String(res.error.message||'');
-        if(res.error.code!=='23505'&&m.indexOf('duplicate key')===-1)_vstQueue(row); // 23505 = already landed
+        if(res.error.code==='23505'||m.indexOf('duplicate key')>-1){mirror();return;} // already landed - still mirror it
+        _vstQueue(row); // any other error - retry next login
+        return;
       }
+      mirror();
     },function(){_vstQueue(row);});
   });
 }
