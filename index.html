@@ -323,6 +323,7 @@
       <button class="tile t1" data-key="users" id="tileUsers" onclick="openUsers()" style="display:none"><div class="ic">&#128100;</div><h3>Manage Users</h3><p>Owner: users, levels &amp; branches</p></button>
       <button class="tile t5" data-key="audit" id="tileAudit" onclick="openAudit()" style="display:none"><div class="ic">&#128220;</div><h3>Audit Log</h3><p>Owner only — who did what, when</p></button>
       <button class="tile t2" data-key="admin" id="tileAdmin" onclick="openAdmin()" style="display:none"><div class="ic">&#9881;</div><h3>Admin</h3><p>Seal register &amp; suppliers</p></button>
+      <button class="tile t1" data-key="verifiedTake" id="tileVerifiedTake" onclick="openVerifiedTake()" style="display:none"><div class="ic">&#9745;</div><h3>Verified Stock Take</h3><p>Auditor: independent physical count</p></button>
     </div>
     <div class="cFooter" id="homeEditBar" style="display:none">
       <button type="button" class="cbGhost" onclick="resetHomeLayout()">Reset layout</button>
@@ -3763,6 +3764,8 @@ function _finishLogin(u,b){
   var _ta=document.getElementById('tileAdmin');if(_ta)_ta.style.display=(perm('seal_admin')||perm('faultyCapture')||perm('faultyRegister')||perm('manageSuppliers'))?'flex':'none';
   var _trg=document.getElementById('tileResidual');if(_trg)_trg.style.display=perm('residualGas')?'flex':'none';
   var _tpo=document.getElementById('tilePendingOverrides');if(_tpo)_tpo.style.display=(role==='Manager'||role==='Owner')?'flex':'none';
+  // rollout gate — flip to perm('verifiedCount') once verified live, so real Auditor accounts can see it.
+  var _tvt=document.getElementById('tileVerifiedTake');if(_tvt)_tvt.style.display=(role==='Owner')?'flex':'none';
   auditLog('Login','Signed in to '+b);
   editUnlocked=false;
   loadWorkingStore();
