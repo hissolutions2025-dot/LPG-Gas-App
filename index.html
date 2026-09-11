@@ -5345,6 +5345,171 @@ function _fetchCaptureLiveRows(kind,storeKey,br,date){
     store[storeKey]=others.concat(liveRows).concat(localPending);
   },function(e){console.error('_fetchCaptureLiveRows('+kind+') rejected for '+br+'/'+date+':',e&&e.message);});
 }
+// ===== Date-Range Stock Balance (Phase 3) - read-only aggregation over data Phases 1/2
+// and the existing daily flow already write. No day-by-day loop: Opening/Closing are
+// each one point query (same query the single-day report already makes, at different
+// dates); every "summed across the range" figure is ONE ranged Supabase query
+// (.gte('date',start).lte('date',end)), summed in JS over that one result set - the
+// same shape the single-day report already sums one day's rows, just a wider window.
+// Cost is flat regardless of range length (~8 queries whether the range is a week or a
+// year), not proportional to the number of days picked.
+
+// Opening: the Operator's own Opening count on the range's FIRST day. Point query,
+// mirrors _refreshSharedCounts's shape. Raw stock_counts columns (state/size/qty) are
+// used as-is here - count_type is filtered server-side, and the aggregator below only
+// ever reads state/size/qty off these raw rows (see _stockCountFromSharedRow for the
+// full raw->local field mapping, confirmed against the real table at line ~5235).
+function _fetchRangeOpeningCounts(br,startDate){
+  return sb.from('stock_counts').select('*').eq('branch',br).eq('date',startDate).eq('count_type','Opening').then(function(res){
+    if(res.error||!res.data)return [];
+    return res.data;
+  },function(){return [];});
+}
+// Closing: the Operator's own Closing count on the range's LAST day.
+function _fetchRangeClosingCounts(br,endDate){
+  return sb.from('stock_counts').select('*').eq('branch',br).eq('date',endDate).eq('count_type','Closing').then(function(res){
+    if(res.error||!res.data)return [];
+    return res.data;
+  },function(){return [];});
+}
+// Received/Refill/Private summed across the whole range - ONE query per kind, not one
+// per day. capture_live_rows.row is the same local-store-shaped object
+// _fetchCaptureLiveRows already unwraps for a single day; this does the same unwrap
+// for every row in the range at once (select('row') only, same column as the single-
+// day fetch - date isn't needed since the range is already the query filter).
+function _fetchRangeCaptureLiveRows(kind,br,startDate,endDate){
+  return sb.from('capture_live_rows').select('row').eq('kind',kind).eq('branch',br).gte('date',startDate).lte('date',endDate).then(function(res){
+    if(res.error){console.error('_fetchRangeCaptureLiveRows('+kind+') failed:',res.error.message);return [];}
+    return (res.data||[]).map(function(r){return r.row||{};});
+  },function(){return [];});
+}
+// Manifold: latest reading per slot WITHIN each stage, at range start (Opening) and
+// range end (Closing) - same latest-per-slot logic the single-day report's own
+// Manifold Opening-vs-Closing table already uses (see _manStageRows), just pointed at
+// two different dates instead of one.
+function _fetchRangeManifold(br,startDate,endDate){
+  return Promise.all([
+    sb.from('manifold_live_rows').select('row').eq('branch',br).eq('date',startDate).then(function(res){return (res.data||[]).map(function(r){return r.row||{};});},function(){return [];}),
+    sb.from('manifold_live_rows').select('row').eq('branch',br).eq('date',endDate).then(function(res){return (res.data||[]).map(function(r){return r.row||{};});},function(){return [];})
+  ]).then(function(results){
+    function latestPerSlot(rows,stage){
+      var bySlot={};
+      rows.filter(function(m){return (m.stage||'Opening')===stage;}).forEach(function(m){
+        var cur=bySlot[m.cyl];
+        if(!cur||(m._time||'')>(cur._time||''))bySlot[m.cyl]=m;
+      });
+      return Object.keys(bySlot).sort().map(function(k){return bySlot[k];});
+    }
+    return {opening:latestPerSlot(results[0],'Opening'), closing:latestPerSlot(results[1],'Closing')};
+  });
+}
+// Transfers touching this branch, approved, dispatched within the range. Split
+// in/out by which side of the transfer this branch was on. Uses dispatch_at (when
+// the stock physically moved), not approved_at (when the paperwork caught up).
+function _fetchRangeTransfers(br,startDate,endDate){
+  return sb.from('stock_transfers').select('from_branch,to_branch,items,dispatch_at')
+    .or('from_branch.eq.'+br+',to_branch.eq.'+br)
+    .eq('status','approved')
+    .gte('dispatch_at',startDate+'T00:00:00').lte('dispatch_at',endDate+'T23:59:59')
+    .then(function(res){
+      if(res.error){console.error('_fetchRangeTransfers failed:',res.error.message);return {inBySize:{},outBySize:{}};}
+      var inBySize={},outBySize={};
+      (res.data||[]).forEach(function(t){
+        var target=(t.to_branch===br)?inBySize:(t.from_branch===br?outBySize:null);
+        if(!target)return;
+        (t.items||[]).forEach(function(it){
+          var qty=(it.qtyReceived!=null)?it.qtyReceived:it.qtyDispatched; // prefer confirmed-received qty when known
+          target[it.size]=(target[it.size]||0)+num(qty);
+        });
+      });
+      return {inBySize:inBySize,outBySize:outBySize};
+    },function(){return {inBySize:{},outBySize:{}};});
+}
+// Faulty: needs the v17 Apps Script action faultyListRange (Task 1), since Faulty has
+// no live Supabase mirror at all (Sheet-only). Row shape confirmed against the real
+// apps-script/gas-sales-v17.gs _handleFaultyListRange handler: {timestamp, Branch,
+// Brand, Size, Qty, State, GasRemaining, Nominal, GasLoss, Status, dateClosed} -
+// GasRemaining there is a genuine stored column (scale-tare at fault-logging time),
+// not a derived value. Returns {loggedInRangeCount, gasLossBookedInRange,
+// heldAsOfEndCount, heldAsOfEndGasRemaining} - the two figures the balance formula
+// and the "on hand at range end" figure respectively need.
+function _fetchRangeFaulty(br,startDate,endDate){
+  return apiPost('faultyListRange',{branch:br,startDate:startDate,endDate:endDate}).then(function(res){
+    if(!res||!res.ok)return {loggedInRangeCount:0,gasLossBookedInRange:0,heldAsOfEndCount:0,heldAsOfEndGasRemaining:0};
+    var loggedInRangeCount=0,gasLossBookedInRange=0,heldAsOfEndCount=0,heldAsOfEndGasRemaining=0;
+    (res.rows||[]).forEach(function(r){
+      if(r.timestamp>=startDate&&r.timestamp<=endDate)loggedInRangeCount+=num(r.Qty)||1;
+      if(r.Status==='Not Replaced'&&r.dateClosed&&r.dateClosed>=startDate&&r.dateClosed<=endDate)gasLossBookedInRange+=num(r.GasLoss);
+      if(r.Status==='Faulty-Held'){heldAsOfEndCount+=num(r.Qty)||1;heldAsOfEndGasRemaining+=num(r.GasRemaining);}
+    });
+    return {loggedInRangeCount:loggedInRangeCount,gasLossBookedInRange:gasLossBookedInRange,heldAsOfEndCount:heldAsOfEndCount,heldAsOfEndGasRemaining:heldAsOfEndGasRemaining};
+  },function(){return {loggedInRangeCount:0,gasLossBookedInRange:0,heldAsOfEndCount:0,heldAsOfEndGasRemaining:0};});
+}
+// Runs every fetch above in parallel and reduces to the range balance shape the
+// report (Task 3) renders. sumBySize(rows,'fullIn') etc. mirror the exact reduction
+// _receivedFromStore/the single-day report already do per-day, just over the wider
+// row set this range query returned in one shot.
+function sumBySize(rows,field){
+  var out={};
+  rows.forEach(function(r){ if(r.size)out[r.size]=(out[r.size]||0)+num(r[field]); });
+  return out;
+}
+function totalOfSizeMap(m){return Object.keys(m).reduce(function(s,k){return s+m[k];},0);}
+function fetchRangeStockBalance(br,startDate,endDate){
+  return Promise.all([
+    _fetchRangeOpeningCounts(br,startDate),
+    _fetchRangeClosingCounts(br,endDate),
+    _fetchRangeCaptureLiveRows('received',br,startDate,endDate),
+    _fetchRangeCaptureLiveRows('refill',br,startDate,endDate),
+    _fetchRangeCaptureLiveRows('private',br,startDate,endDate),
+    _fetchRangeManifold(br,startDate,endDate),
+    _fetchRangeTransfers(br,startDate,endDate),
+    _fetchRangeFaulty(br,startDate,endDate)
+  ]).then(function(r){
+    var openingRows=r[0], closingRows=r[1], receivedRows=r[2], refillRows=r[3], privateRows=r[4],
+        manifold=r[5], transfers=r[6], faulty=r[7];
+
+    var openingFullBySize={}, openingEmptyBySize={}, closingFullBySize={}, closingEmptyBySize={};
+    openingRows.forEach(function(c){var t=(c.state==='Empty')?openingEmptyBySize:openingFullBySize; t[c.size]=(t[c.size]||0)+num(c.qty);});
+    closingRows.forEach(function(c){var t=(c.state==='Empty')?closingEmptyBySize:closingFullBySize; t[c.size]=(t[c.size]||0)+num(c.qty);});
+
+    var receivedFullIn=sumBySize(receivedRows,'fullIn');
+    var receivedEmptyOut=sumBySize(receivedRows,'emptyOut');
+    var refilledCount=refillRows.length, refilledKg=refillRows.reduce(function(s,r){return s+num(r.pumped);},0);
+    var privateKg=privateRows.reduce(function(s,r){return s+num(r.pumped);},0);
+    var privateUsKg=privateRows.filter(function(r){return r.filledBy!=='Supplier';}).reduce(function(s,r){return s+num(r.pumped);},0);
+
+    var manOpeningKg=manifold.opening.reduce(function(s,m){return s+num(m.gasLeft);},0);
+    var manClosingKg=manifold.closing.reduce(function(s,m){return s+num(m.gasLeft);},0);
+
+    // Estimated Sold, per the spec's formula: Opening + Received + Refilled + Transfers In
+    // - Transfers Out - Faulty(logged in range) = ... vs Closing. Computed per-size then
+    // summed, same shape the single-day report's "Estimated Stock Sales" section uses.
+    var allSizes=ALLSIZES;
+    var estSoldBySize={}, estSoldTotal=0;
+    allSizes.forEach(function(sz){
+      var openF=openingFullBySize[sz]||0, closeF=closingFullBySize[sz]||0;
+      var recvIn=receivedFullIn[sz]||0, tIn=transfers.inBySize[sz]||0, tOut=transfers.outBySize[sz]||0;
+      var sold=openF+recvIn+tIn-tOut-closeF; // faulty is a total-only figure (no size breakdown from the Sheet), applied below
+      estSoldBySize[sz]=sold; estSoldTotal+=sold;
+    });
+    estSoldTotal-=faulty.loggedInRangeCount;
+
+    return {
+      branch:br, startDate:startDate, endDate:endDate,
+      opening:{full:openingFullBySize,empty:openingEmptyBySize,fullTotal:totalOfSizeMap(openingFullBySize),emptyTotal:totalOfSizeMap(openingEmptyBySize),hasData:openingRows.length>0},
+      closing:{full:closingFullBySize,empty:closingEmptyBySize,fullTotal:totalOfSizeMap(closingFullBySize),emptyTotal:totalOfSizeMap(closingEmptyBySize),hasData:closingRows.length>0},
+      received:{fullIn:receivedFullIn,emptyOut:receivedEmptyOut,fullInTotal:totalOfSizeMap(receivedFullIn),emptyOutTotal:totalOfSizeMap(receivedEmptyOut)},
+      refilled:{count:refilledCount,kg:refilledKg},
+      private:{kg:privateKg,usKg:privateUsKg},
+      transfers:{inBySize:transfers.inBySize,outBySize:transfers.outBySize,inTotal:totalOfSizeMap(transfers.inBySize),outTotal:totalOfSizeMap(transfers.outBySize)},
+      manifold:{openingKg:manOpeningKg,closingKg:manClosingKg,diffKg:manOpeningKg-manClosingKg,hasOpening:manifold.opening.length>0,hasClosing:manifold.closing.length>0},
+      faulty:faulty,
+      estSold:{bySize:estSoldBySize,total:estSoldTotal}
+    };
+  });
+}
+// ===== End Date-Range Stock Balance data layer =====
 function _cCommitReal(){
   // Build this commit's fresh rows from cData, and remember exactly which lines (branch +
   // countType + size + state + brand) they cover.
