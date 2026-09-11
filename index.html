@@ -100,7 +100,8 @@
   body[data-view="residualView"] #residualView,
   body[data-view="transferView"] #transferView,
   body[data-view="pendingOverridesView"] #pendingOverridesView,
-  body[data-view="verifiedTakeView"] #verifiedTakeView{display:block !important;}
+  body[data-view="verifiedTakeView"] #verifiedTakeView,
+  body[data-view="rangeBalanceView"] #rangeBalanceView{display:block !important;}
   #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(calc(100% + 40px));background:var(--ok);color:#fff;padding:14px 22px;border-radius:12px;font-weight:700;font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.25);transition:transform .3s;z-index:70;max-width:90%;text-align:center;}
   /* Dismiss slides by the toast's OWN height (+ margin), not a fixed 80px - a fixed offset
      hid a short one-line toast fine but left a tall, wrapped multi-line message (e.g. the
@@ -254,6 +255,13 @@
   .histTabs{display:flex;gap:8px;margin-bottom:14px;}
   .htab{flex:1 1 110px;padding:10px 6px;border:1.5px solid var(--navy);border-radius:10px;background:#fff;color:var(--navy);font-size:12.5px;font-weight:800;cursor:pointer;}
   .htab.on{background:var(--navy);color:#fff;}
+  /* Live-screen "highlighted stat" box for rangeBalanceView's report — the .callout class
+     already used in the generated stock-count PDF/print document (search countSection())
+     lives in that document's own embedded <style>, a separate document context, so it isn't
+     available here; this mirrors that same visual language (accent-bordered info line) for
+     the in-app report using this file's shared CSS vars instead of hardcoded hex. */
+  .callout{font-size:12.5px;color:var(--navy);margin:8px 0;padding:9px 12px;background:#EEF3F8;border-left:3px solid var(--steel);border-radius:0 8px 8px 0;}
+  .callout b{font-weight:800;}
   .calCard{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:14px;}
   .calNav{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}
   .calNav button{background:var(--navy);color:#fff;border:none;border-radius:8px;width:34px;height:34px;font-size:18px;font-weight:800;cursor:pointer;}
@@ -403,6 +411,25 @@
     </div>
 
     <button onclick="vstCommit()">Commit Verified Stock Take</button>
+  </div>
+</div>
+
+<!-- DATE-RANGE STOCK BALANCE -->
+<div id="rangeBalanceView" class="view">
+  <div class="wrap">
+    <label>Branch</label>
+    <select id="rbBranch" onchange="rbLoad()"><option>Helderberg</option><option>Kleinmond</option></select>
+    <div class="histTabs">
+      <button class="htab" id="rbtab-week" onclick="rbSetPreset('week')">This Week</button>
+      <button class="htab" id="rbtab-month" onclick="rbSetPreset('month')">This Month</button>
+      <button class="htab" id="rbtab-quarter" onclick="rbSetPreset('quarter')">This Quarter</button>
+      <button class="htab" id="rbtab-year" onclick="rbSetPreset('year')">This Year</button>
+    </div>
+    <label>From</label>
+    <input id="rbStart" type="date" onchange="rbLoad()">
+    <label>To</label>
+    <input id="rbEnd" type="date" onchange="rbLoad()">
+    <div id="rbReport"></div>
   </div>
 </div>
 
@@ -5526,6 +5553,59 @@ function fetchRangeStockBalance(br,startDate,endDate){
   });
 }
 // ===== End Date-Range Stock Balance data layer =====
+// ===== Date-Range Stock Balance screen controller =====
+function rbSetPreset(kind){
+  var end=new Date(); var start=new Date();
+  if(kind==='week'){ start.setDate(end.getDate()-((end.getDay()+6)%7)); } // Monday this week
+  else if(kind==='month'){ start=new Date(end.getFullYear(),end.getMonth(),1); }
+  else if(kind==='quarter'){ start=new Date(end.getFullYear(),Math.floor(end.getMonth()/3)*3,1); }
+  else if(kind==='year'){ start=new Date(end.getFullYear(),0,1); }
+  function iso(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+  document.getElementById('rbStart').value=iso(start);
+  document.getElementById('rbEnd').value=iso(end);
+  ['week','month','quarter','year'].forEach(function(k){document.getElementById('rbtab-'+k).classList.toggle('on',k===kind);});
+  rbLoad();
+}
+function openRangeBalance(){
+  if(role!=='Owner'){toast('Owner only',true);return;} // rollout gate - flip to Manager+Owner once verified live
+  show('rangeBalanceView');
+  document.getElementById('backBtn').style.display='block';
+  document.getElementById('hTitle').textContent='Stock Balance';
+  document.getElementById('hSub').textContent='Any date range';
+  document.getElementById('rbBranch').value=(branch||'Helderberg');
+  rbSetPreset('month'); // also calls rbLoad()
+}
+var _rbLoadToken=0;
+function rbLoad(){
+  var br=document.getElementById('rbBranch').value;
+  var start=document.getElementById('rbStart').value, end=document.getElementById('rbEnd').value;
+  if(!start||!end){return;}
+  if(start>end){toast('From date must be before To date',true);return;}
+  var myToken=++_rbLoadToken; // last-request-wins guard against a slow earlier fetch clobbering a newer one
+  document.getElementById('rbReport').innerHTML='Loading…';
+  fetchRangeStockBalance(br,start,end).then(function(bal){
+    if(myToken!==_rbLoadToken)return; // a newer rbLoad() call already superseded this one
+    document.getElementById('rbReport').innerHTML=rbRenderReport(bal);
+  });
+}
+function rbRenderReport(bal){
+  function kg(n){return (n||0).toFixed(2)+' kg';}
+  var html='';
+  html+='<div class="callout">Opening ('+bal.startDate+'): <b>'+bal.opening.fullTotal+'</b> full, <b>'+bal.opening.emptyTotal+'</b> empty'+(bal.opening.hasData?'':' <span style="color:#B9761F">— no Opening count found for this date</span>')+'</div>';
+  html+='<div class="callout">Closing ('+bal.endDate+'): <b>'+bal.closing.fullTotal+'</b> full, <b>'+bal.closing.emptyTotal+'</b> empty'+(bal.closing.hasData?'':' <span style="color:#B9761F">— no Closing count found for this date</span>')+'</div>';
+  html+='<div class="callout">Received: <b>'+bal.received.fullInTotal+'</b> full in, <b>'+bal.received.emptyOutTotal+'</b> empty out</div>';
+  html+='<div class="callout">Refilled: <b>'+bal.refilled.count+'</b> cylinder(s), '+kg(bal.refilled.kg)+'</div>';
+  html+='<div class="callout">Private Refill: '+kg(bal.private.kg)+' ('+kg(bal.private.usKg)+' by us)</div>';
+  html+='<div class="callout">Transfers: <b>'+bal.transfers.inTotal+'</b> in, <b>'+bal.transfers.outTotal+'</b> out</div>';
+  html+='<div class="callout">Faulty: <b>'+bal.faulty.loggedInRangeCount+'</b> logged this range, '+kg(bal.faulty.gasLossBookedInRange)+' booked loss, <b>'+bal.faulty.heldAsOfEndCount+'</b> still held as of '+bal.endDate+'</div>';
+  html+='<h3 style="margin:16px 0 6px">Manifold</h3><table class="htable"><tr><th></th><th>kg</th></tr>'+
+    '<tr><td>Opening ('+bal.startDate+')</td><td class="n">'+(bal.manifold.hasOpening?kg(bal.manifold.openingKg):'—')+'</td></tr>'+
+    '<tr><td>Closing ('+bal.endDate+')</td><td class="n">'+(bal.manifold.hasClosing?kg(bal.manifold.closingKg):'—')+'</td></tr>'+
+    '<tr><td><b>Diff</b></td><td class="n"><b>'+((bal.manifold.hasOpening&&bal.manifold.hasClosing)?kg(bal.manifold.diffKg):'—')+'</b></td></tr></table>';
+  html+='<div class="callout" style="font-weight:800">Estimated sold this range: '+bal.estSold.total+' cylinder(s)</div>';
+  return html;
+}
+// ===== End Date-Range Stock Balance screen controller =====
 function _cCommitReal(){
   // Build this commit's fresh rows from cData, and remember exactly which lines (branch +
   // countType + size + state + brand) they cover.
