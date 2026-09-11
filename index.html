@@ -98,7 +98,8 @@
   body[data-view="auditView"] #auditView,
   body[data-view="adminView"] #adminView,
   body[data-view="residualView"] #residualView,
-  body[data-view="pendingOverridesView"] #pendingOverridesView{display:block !important;}
+  body[data-view="pendingOverridesView"] #pendingOverridesView,
+  body[data-view="verifiedTakeView"] #verifiedTakeView{display:block !important;}
   #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(calc(100% + 40px));background:var(--ok);color:#fff;padding:14px 22px;border-radius:12px;font-weight:700;font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.25);transition:transform .3s;z-index:70;max-width:90%;text-align:center;}
   /* Dismiss slides by the toast's OWN height (+ margin), not a fixed 80px - a fixed offset
      hid a short one-line toast fine but left a tall, wrapped multi-line message (e.g. the
@@ -334,6 +335,40 @@
 <div id="pendingOverridesView" class="view"><div class="wrap">
   <div id="pendingOverridesBody"></div>
 </div></div>
+
+<!-- VERIFIED STOCK TAKE (Phase 1) -->
+<div id="verifiedTakeView" class="view">
+  <div class="wrap">
+    <label>Branch</label>
+    <select id="vstBranch"><option>Helderberg</option><option>Kleinmond</option></select>
+    <label>Date</label>
+    <input id="vstDate" type="date">
+    <label>Mode</label>
+    <select id="vstMode" onchange="vstModeChanged()">
+      <option value="joint">Joint — Auditor + Operator count together</option>
+      <option value="solo">Solo — Auditor counts independently</option>
+    </select>
+
+    <h3 style="margin:16px 0 6px">Cylinder count</h3>
+    <div id="vstCountGrid"></div>
+
+    <h3 style="margin:16px 0 6px">Manifold</h3>
+    <div id="vstManifoldGrid"></div>
+
+    <label>Auditor signature</label>
+    <canvas id="vstAuditorSig" width="600" height="150" style="border:1.5px solid var(--steel);border-radius:8px;width:100%;touch-action:none"></canvas>
+    <button class="sigClear" onclick="_vstSigClear('vstAuditorSig','auditor')">Clear signature</button>
+
+    <div id="vstOperatorSigWrap">
+      <label>Operator signature (joint mode)</label>
+      <input id="vstOperatorName" placeholder="Operator name" style="width:100%">
+      <canvas id="vstOperatorSig" width="600" height="150" style="border:1.5px solid var(--steel);border-radius:8px;width:100%;touch-action:none"></canvas>
+      <button class="sigClear" onclick="_vstSigClear('vstOperatorSig','operator')">Clear signature</button>
+    </div>
+
+    <button onclick="vstCommit()">Commit Verified Stock Take</button>
+  </div>
+</div>
 
 <!-- RESIDUAL GAS (main section) -->
 <div id="residualView" class="view"><div class="wrap">
@@ -1248,6 +1283,103 @@ function _initVstSigCanvas(canvasId,sigKey){
   cv.addEventListener('touchstart',start,{passive:false});cv.addEventListener('touchmove',move,{passive:false});cv.addEventListener('touchend',end);
 }
 function _vstSigClear(canvasId,sigKey){var cv=document.getElementById(canvasId);if(cv)cv.getContext('2d').clearRect(0,0,cv.width,cv.height);_vstSig[sigKey]='';if(_vstSig._activeCanvas===canvasId)_vstSig._activeCanvas='';}
+// ===== Verified Stock Take capture screen (Task 5) =====
+var VST_STATES=['Full','Empty'];
+var VST_MANIFOLD_SLOTS=['Cyl 1','Cyl 2','Cyl 3','Cyl 4']; // matches SECTION_ITEMS.manifold
+function vstRenderCountGrid(){
+  var g=document.getElementById('vstCountGrid');
+  g.innerHTML='<div style="font-size:11px;color:var(--muted);margin-bottom:6px">One row per size. Enter the count for each brand present; leave a size at 0 if none.</div>'+
+    ALLSIZES.map(function(sz){
+      return '<div style="border:1px solid var(--steel);border-radius:8px;padding:6px;margin-bottom:6px">'+
+        '<b style="font-size:12px">'+sz+'</b>'+
+        VST_STATES.map(function(st){
+          return '<div style="display:flex;gap:6px;align-items:center;margin-top:4px">'+
+            '<span style="width:44px;font-size:11px">'+st+'</span>'+
+            '<select id="vstb-'+sz+'-'+st+'" style="flex:1">'+BRANDS.map(function(b){return '<option>'+b+'</option>';}).join('')+'</select>'+
+            '<input id="vstq-'+sz+'-'+st+'" type="number" min="0" step="1" value="0" style="width:70px">'+
+            '</div>';
+        }).join('')+
+        '</div>';
+    }).join('');
+}
+function vstRenderManifoldGrid(){
+  var g=document.getElementById('vstManifoldGrid');
+  g.innerHTML=VST_MANIFOLD_SLOTS.map(function(cyl){
+    return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">'+
+      '<span style="width:52px;font-size:12px">'+cyl+'</span>'+
+      '<input id="vstms-'+cyl+'" type="number" step="0.01" placeholder="scale" style="width:80px" oninput="vstManGasLeft(\''+cyl+'\')">'+
+      '<input id="vstmt-'+cyl+'" type="number" step="0.01" placeholder="tare" style="width:80px" oninput="vstManGasLeft(\''+cyl+'\')">'+
+      '<span style="font-size:12px">= <b id="vstmg-'+cyl+'">0.00</b> kg left</span>'+
+      '</div>';
+  }).join('');
+}
+function vstManGasLeft(cyl){
+  var s=num(document.getElementById('vstms-'+cyl).value), t=num(document.getElementById('vstmt-'+cyl).value);
+  document.getElementById('vstmg-'+cyl).textContent=Math.max(0,s-t).toFixed(2);
+}
+function vstModeChanged(){
+  var joint=(document.getElementById('vstMode').value==='joint');
+  document.getElementById('vstOperatorSigWrap').style.display=joint?'block':'none';
+}
+function openVerifiedTake(){
+  if(role!=='Owner'){toast('Owner only',true);return;} // rollout gate - flip to perm('verifiedCount') once verified live
+  show('verifiedTakeView');
+  document.getElementById('backBtn').style.display='block';
+  document.getElementById('hTitle').textContent='Verified Stock Take';
+  document.getElementById('hSub').textContent='Auditor — independent count';
+  _vstSig.auditor='';_vstSig.operator='';_vstSig._activeCanvas='';
+  document.getElementById('vstDate').value=today;
+  document.getElementById('vstBranch').value=(branch||'Helderberg');
+  document.getElementById('vstMode').value='joint';
+  vstModeChanged();
+  vstRenderCountGrid();
+  vstRenderManifoldGrid();
+  setTimeout(function(){_initVstSigCanvas('vstAuditorSig','auditor');_initVstSigCanvas('vstOperatorSig','operator');},50);
+}
+var _vstCommitBusy=false;
+function vstCommit(){
+  if(_vstCommitBusy)return;
+  var mode=document.getElementById('vstMode').value;
+  var br=document.getElementById('vstBranch').value;
+  var date=document.getElementById('vstDate').value;
+  if(!date){toast('Pick a date',true);return;}
+  if(!_vstSig.auditor){toast('Auditor must sign',true);return;}
+  var operatorName='';
+  if(mode==='joint'){
+    operatorName=(document.getElementById('vstOperatorName').value||'').trim();
+    if(!operatorName){toast('Enter the Operator name for a joint count',true);return;}
+    if(!_vstSig.operator){toast('Operator must sign for a joint count',true);return;}
+  }
+  var count=[];
+  ALLSIZES.forEach(function(sz){
+    VST_STATES.forEach(function(st){
+      var q=Math.round(num(document.getElementById('vstq-'+sz+'-'+st).value));
+      if(q>0)count.push({size:sz,brand:document.getElementById('vstb-'+sz+'-'+st).value,state:st,qty:q,note:''});
+    });
+  });
+  if(!count.length){toast('Enter at least one cylinder count',true);return;}
+  var manifold=VST_MANIFOLD_SLOTS.map(function(cyl){
+    var s=num(document.getElementById('vstms-'+cyl).value), t=num(document.getElementById('vstmt-'+cyl).value);
+    return {cyl:cyl,brand:'',gasType:'',scale:s,tare:t,gasLeft:Math.max(0,s-t),cylState:'',notes:''};
+  }).filter(function(m){return m.scale>0||m.tare>0;});
+  _vstCommitBusy=true;
+  _pushVerifiedTake({branch:br,date:date,mode:mode,count:count,manifold:manifold,
+    auditorName:operator,auditorSig:_vstSig.auditor,
+    operatorName:(mode==='joint'?operatorName:null),operatorSig:(mode==='joint'?_vstSig.operator:null)
+  }).then(function(res){
+    _vstCommitBusy=false;
+    if(!res){toast('Could not reach the server — queued, will retry at next login',true);return;}
+    auditLog('Verified Stock Take committed',mode+' — '+br+' '+date+' — '+count.length+' count line(s)');
+    toast('Verified Stock Take saved. Checking against the day’s Closing count…');
+    _fetchVerifiedTakeComparison(br,date,count).then(function(cmp){
+      if(!cmp.hasClosing){toast('No Operator Closing count for '+br+' on '+date+' yet — nothing to compare against.',true);goHome();return;}
+      if(!cmp.lines.length){toast('✅ Verified count matches the day’s Closing count on every size.');goHome();return;}
+      var msg=cmp.lines.slice(0,6).map(function(l){return l.size+': you '+l.verified+' vs Closing '+l.closing+' ('+(l.diff>0?'+':'')+l.diff+')';}).join('  ·  ');
+      toast('⚠ Verified count differs from Closing on '+cmp.lines.length+' size(s): '+msg,true);
+      goHome();
+    });
+  });
+}
 // ===== Manifold remote override approval (manifold_pending_overrides) =====
 // Additive write, same shape as _pushManifoldLiveRows above - fires alongside it at commit
 // time, never blocks the commit itself. Only rows actually stamped PENDING (by the
