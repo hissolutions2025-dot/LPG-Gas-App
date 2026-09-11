@@ -564,6 +564,16 @@ function _handleFaulty(type, body){
 
 // ===================== v17 NEW: FAULTY CYLINDERS - DATE-RANGE READ =====================
 // body: {branch, startDate, endDate}  (dates 'YYYY-MM-DD')
+// Returns every Faulty row relevant to the window under any of THREE conditions
+// (code-review catch: the first two alone silently drop a row logged before the range
+// but closed inside it - e.g. logged in August, marked 'Not Replaced'/GasLoss booked in
+// September, queried for September - which would undercount a range's booked gas loss):
+//   - loggedInRange: Timestamp falls inside [start,end] (logged during the window)
+//   - heldAsOfEnd: still Status='Faulty-Held' with Timestamp<=end (open as of range end,
+//     regardless of when originally logged)
+//   - closedInRange: DateClosed falls inside [start,end] (closed - Replaced or Not
+//     Replaced - during the window, regardless of when originally logged) - this is the
+//     one that makes Nominal/GasLoss-in-range figures correct.
 function _handleFaultyListRange(body){
   var sh=_faultySheet();
   var last=sh.getLastRow();
@@ -577,7 +587,10 @@ function _handleFaultyListRange(body){
     var loggedInRange=(ts>=start && ts<=end);
     var status=row[16];
     var heldAsOfEnd=(status==='Faulty-Held' && ts<=end);
-    return loggedInRange||heldAsOfEnd;
+    var dateClosedRaw=row[19];
+    var dateClosed=dateClosedRaw instanceof Date ? Utilities.formatDate(dateClosedRaw,tz,'yyyy-MM-dd') : (dateClosedRaw?String(dateClosedRaw).slice(0,10):'');
+    var closedInRange=(dateClosed && dateClosed>=start && dateClosed<=end);
+    return loggedInRange||heldAsOfEnd||closedInRange;
   }).map(function(row){
     var dateClosed=row[19];
     return {
