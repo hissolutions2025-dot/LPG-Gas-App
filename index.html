@@ -5552,6 +5552,18 @@ function fetchRangeStockBalance(br,startDate,endDate){
     };
   });
 }
+// Task 4: Verified checkpoints inline. A lightweight sibling fetch to fetchRangeStockBalance
+// above - just the raw verified_stock_takes rows inside the picked range, in date order, so
+// rbLoad (Task 3) can show each Auditor take as a marker alongside the aggregated balance.
+// Deliberately NOT part of fetchRangeStockBalance itself: these rows aren't reduced into the
+// balance shape at all, just listed, and a failure here shouldn't be conflated with a failure
+// fetching the balance.
+function _fetchVerifiedTakesInRange(br,startDate,endDate){
+  return sb.from('verified_stock_takes').select('*').eq('branch',br).gte('date',startDate).lte('date',endDate).order('date').then(function(res){
+    if(res.error)return [];
+    return res.data||[];
+  },function(){return [];});
+}
 // ===== End Date-Range Stock Balance data layer =====
 // ===== Date-Range Stock Balance screen controller =====
 function rbSetPreset(kind){
@@ -5583,9 +5595,24 @@ function rbLoad(){
   if(start>end){toast('From date must be before To date',true);return;}
   var myToken=++_rbLoadToken; // last-request-wins guard against a slow earlier fetch clobbering a newer one
   document.getElementById('rbReport').innerHTML='Loading…';
-  fetchRangeStockBalance(br,start,end).then(function(bal){
+  Promise.all([
+    fetchRangeStockBalance(br,start,end),
+    // Checkpoints are an additive, secondary section of this report - a take fetch or a
+    // comparison lookup failing here must never take down the main balance report with it,
+    // so this whole chain is given its own .catch() that degrades to "no checkpoints shown"
+    // instead of propagating into the outer .catch() below (which is reserved for the main
+    // report actually failing to load). Each take's comparison reuses the real, already-live
+    // _fetchVerifiedTakeComparison(br,date,verifiedCount) from the Verified Stock Takes
+    // feature (Phase 1) - verifiedCount is that take's own `count` jsonb array, not a number.
+    _fetchVerifiedTakesInRange(br,start,end).then(function(takes){
+      return Promise.all(takes.map(function(t){return _fetchVerifiedTakeComparison(br,t.date,t.count);})).then(function(comparisons){
+        return {takes:takes,comparisons:comparisons};
+      });
+    }).catch(function(){return {takes:[],comparisons:[]};})
+  ]).then(function(results){
     if(myToken!==_rbLoadToken)return; // a newer rbLoad() call already superseded this one
-    document.getElementById('rbReport').innerHTML=rbRenderReport(bal);
+    var bal=results[0], ck=results[1];
+    document.getElementById('rbReport').innerHTML=rbRenderReport(bal)+rbRenderCheckpoints(ck.takes,ck.comparisons);
   }).catch(function(){
     if(myToken!==_rbLoadToken)return;
     document.getElementById('rbReport').innerHTML='<div class="histEmpty">Could not load this report — check your connection.</div>';
@@ -5606,6 +5633,23 @@ function rbRenderReport(bal){
     '<tr><td>Closing ('+bal.endDate+')</td><td class="n">'+(bal.manifold.hasClosing?kg(bal.manifold.closingKg):'—')+'</td></tr>'+
     '<tr><td><b>Diff</b></td><td class="n"><b>'+((bal.manifold.hasOpening&&bal.manifold.hasClosing)?kg(bal.manifold.diffKg):'—')+'</b></td></tr></table>';
   html+='<div class="callout" style="font-weight:800">Estimated sold this range: '+bal.estSold.total+' cylinder(s)</div>';
+  return html;
+}
+// Task 4: one marker per Auditor take found inside the picked range. comparisons[i]
+// corresponds to takes[i] (built that way by rbLoad's Promise.all above). The summary line
+// leans on _fetchVerifiedTakeComparison's real shape ({hasClosing, lines: [...] filtered to
+// only the sizes that actually differed - empty means every size matched Closing exactly).
+function rbRenderCheckpoints(takes,comparisons){
+  if(!takes.length)return '';
+  var html='<h2>Verified checkpoints in this range</h2>';
+  takes.forEach(function(t,i){
+    var cmp=comparisons[i];
+    var summary=!cmp||!cmp.hasClosing ? 'no Closing count that day to compare against'
+      : (!cmp.lines.length ? 'matched Closing exactly' : cmp.lines.length+' size(s) differed from Closing');
+    html+='<div class="histSection" style="border:1.5px solid var(--steel);border-radius:10px;padding:8px;margin-bottom:8px">'+
+      '<b>'+t.date+'</b> — '+t.mode+' take by '+t.auditor_name_snapshot+(t.operator_name_snapshot?(' + '+t.operator_name_snapshot):'')+
+      '<div style="font-size:12px;color:#777">'+summary+'</div></div>';
+  });
   return html;
 }
 // ===== End Date-Range Stock Balance screen controller =====
