@@ -358,17 +358,15 @@
     </div>
 
     <div id="xferTabNew">
-      <label>From branch</label>
-      <select id="xferFromBranch" onchange="xferRenderItems()"><option>Helderberg</option><option>Kleinmond</option></select>
-      <label>To branch</label>
-      <select id="xferToBranch"><option>Kleinmond</option><option>Helderberg</option></select>
+      <div class="cgRow"><label style="width:auto;flex:none">From branch</label><select class="mField" id="xferFromBranch" style="flex:1;margin:0" onchange="xferRenderItems()"><option>Helderberg</option><option>Kleinmond</option></select></div>
+      <div class="cgRow"><label style="width:auto;flex:none">To branch</label><select class="mField" id="xferToBranch" style="flex:1;margin:0"><option>Kleinmond</option><option>Helderberg</option></select></div>
       <div id="xferItemsGrid"></div>
-      <label>Note (optional)</label>
-      <textarea id="xferNote" rows="2" style="width:100%"></textarea>
-      <label>Dispatch operator signature</label>
+      <label class="mLabel">Note (optional)</label>
+      <textarea class="mField" id="xferNote" rows="2" style="width:100%"></textarea>
+      <label class="mLabel">Dispatch operator signature</label>
       <canvas id="xferDispatchSig" width="600" height="150" style="border:1.5px solid var(--steel);border-radius:8px;width:100%;touch-action:none"></canvas>
       <button class="sigClear" onclick="_xferSigClear('xferDispatchSig','dispatch')">Clear signature</button>
-      <button onclick="xferCommitDispatch()">Dispatch Transfer</button>
+      <button class="saveBtn" onclick="xferCommitDispatch()">Dispatch Transfer</button>
     </div>
 
     <div id="xferTabReceipt" style="display:none">
@@ -384,15 +382,12 @@
 <!-- VERIFIED STOCK TAKE (Phase 1) -->
 <div id="verifiedTakeView" class="view">
   <div class="wrap">
-    <label>Branch</label>
-    <select id="vstBranch"><option>Helderberg</option><option>Kleinmond</option></select>
-    <label>Date</label>
-    <input id="vstDate" type="date">
-    <label>Mode</label>
-    <select id="vstMode" onchange="vstModeChanged()">
+    <div class="cgRow"><label>Branch</label><select class="mField" id="vstBranch" style="flex:1;margin:0"><option>Helderberg</option><option>Kleinmond</option></select></div>
+    <div class="cgRow"><label>Date</label><input class="mField" id="vstDate" type="date" style="flex:1;margin:0"></div>
+    <div class="cgRow"><label style="width:auto;flex:none">Mode</label><select class="mField" id="vstMode" style="flex:1;margin:0" onchange="vstModeChanged()">
       <option value="joint">Joint — Auditor + Operator count together</option>
       <option value="solo">Solo — Auditor counts independently</option>
-    </select>
+    </select></div>
 
     <h3 style="margin:16px 0 6px">Cylinder count</h3>
     <div id="vstCountGrid"></div>
@@ -400,18 +395,18 @@
     <h3 style="margin:16px 0 6px">Manifold</h3>
     <div id="vstManifoldGrid"></div>
 
-    <label>Auditor signature</label>
+    <label class="mLabel">Auditor signature</label>
     <canvas id="vstAuditorSig" width="600" height="150" style="border:1.5px solid var(--steel);border-radius:8px;width:100%;touch-action:none"></canvas>
     <button class="sigClear" onclick="_vstSigClear('vstAuditorSig','auditor')">Clear signature</button>
 
     <div id="vstOperatorSigWrap">
-      <label>Operator signature (joint mode)</label>
-      <input id="vstOperatorName" placeholder="Operator name" style="width:100%">
+      <label class="mLabel">Operator signature (joint mode)</label>
+      <input class="mField" id="vstOperatorName" placeholder="Operator name" style="width:100%">
       <canvas id="vstOperatorSig" width="600" height="150" style="border:1.5px solid var(--steel);border-radius:8px;width:100%;touch-action:none"></canvas>
       <button class="sigClear" onclick="_vstSigClear('vstOperatorSig','operator')">Clear signature</button>
     </div>
 
-    <button onclick="vstCommit()">Commit Verified Stock Take</button>
+    <button class="saveBtn" onclick="vstCommit()">Commit Verified Stock Take</button>
   </div>
 </div>
 
@@ -1354,13 +1349,12 @@ function vstRenderCountGrid(){
   var g=document.getElementById('vstCountGrid');
   g.innerHTML='<div style="font-size:11px;color:var(--muted);margin-bottom:6px">One row per size. Enter the count for each brand present; leave a size at 0 if none.</div>'+
     ALLSIZES.map(function(sz){
-      return '<div style="border:1px solid var(--steel);border-radius:8px;padding:6px;margin-bottom:6px">'+
-        '<b style="font-size:12px">'+sz+'</b>'+
+      return '<div class="brandCard"><b style="font-size:12px">'+sz+'</b>'+
         VST_STATES.map(function(st){
-          return '<div style="display:flex;gap:6px;align-items:center;margin-top:4px">'+
-            '<span style="width:44px;font-size:11px">'+st+'</span>'+
-            '<select id="vstb-'+sz+'-'+st+'" style="flex:1">'+BRANDS.map(function(b){return '<option>'+b+'</option>';}).join('')+'</select>'+
-            '<input id="vstq-'+sz+'-'+st+'" type="number" min="0" step="1" value="0" style="width:70px">'+
+          return '<div class="bLine" style="margin-top:6px">'+
+            '<span style="font-size:11px;font-weight:800;color:var(--navy);text-transform:uppercase;letter-spacing:.4px;width:44px;flex:none">'+st+'</span>'+
+            '<select id="vstb-'+sz+'-'+st+'">'+BRANDS.map(function(b){return '<option>'+b+'</option>';}).join('')+'</select>'+
+            '<input id="vstq-'+sz+'-'+st+'" type="number" min="0" step="1" value="0">'+
             '</div>';
         }).join('')+
         '</div>';
@@ -1369,12 +1363,12 @@ function vstRenderCountGrid(){
 function vstRenderManifoldGrid(){
   var g=document.getElementById('vstManifoldGrid');
   g.innerHTML=VST_MANIFOLD_SLOTS.map(function(cyl){
-    return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">'+
-      '<span style="width:52px;font-size:12px">'+cyl+'</span>'+
-      '<input id="vstms-'+cyl+'" type="number" step="0.01" placeholder="scale" style="width:80px" oninput="vstManGasLeft(\''+cyl+'\')">'+
-      '<input id="vstmt-'+cyl+'" type="number" step="0.01" placeholder="tare" style="width:80px" oninput="vstManGasLeft(\''+cyl+'\')">'+
-      '<span style="font-size:12px">= <b id="vstmg-'+cyl+'">0.00</b> kg left</span>'+
-      '</div>';
+    return '<div class="brandCard"><div class="bLine">'+
+      '<span style="font-size:12px;font-weight:800;color:var(--navy);width:52px;flex:none">'+cyl+'</span>'+
+      '<input id="vstms-'+cyl+'" type="number" step="0.01" placeholder="scale" oninput="vstManGasLeft(\''+cyl+'\')">'+
+      '<input id="vstmt-'+cyl+'" type="number" step="0.01" placeholder="tare" oninput="vstManGasLeft(\''+cyl+'\')">'+
+      '<span style="font-size:12px;flex:none">= <b id="vstmg-'+cyl+'">0.00</b> kg left</span>'+
+      '</div></div>';
   }).join('');
 }
 function vstManGasLeft(cyl){
@@ -1641,12 +1635,11 @@ var _xferCommitBusy=false;
 function xferRenderItems(){
   var g=document.getElementById('xferItemsGrid');
   g.innerHTML=ALLSIZES.map(function(sz){
-    return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">'+
-      '<span style="width:90px;font-size:12px">'+sz+'</span>'+
-      '<select id="xfb-'+sz+'" style="flex:1">'+BRANDS.map(function(b){return '<option>'+b+'</option>';}).join('')+'</select>'+
-      '<select id="xfs-'+sz+'" style="width:80px">'+XFER_STATES.map(function(s){return '<option>'+s+'</option>';}).join('')+'</select>'+
-      '<input id="xfq-'+sz+'" type="number" min="0" step="1" value="0" style="width:70px">'+
-      '</div>';
+    return '<div class="brandCard"><b style="font-size:12px">'+sz+'</b><div class="bLine" style="margin-top:6px">'+
+      '<select id="xfb-'+sz+'">'+BRANDS.map(function(b){return '<option>'+b+'</option>';}).join('')+'</select>'+
+      '<select id="xfs-'+sz+'" style="max-width:110px">'+XFER_STATES.map(function(s){return '<option>'+s+'</option>';}).join('')+'</select>'+
+      '<input id="xfq-'+sz+'" type="number" min="0" step="1" value="0">'+
+      '</div></div>';
   }).join('');
 }
 function xferShowTab(name){
@@ -1703,22 +1696,22 @@ function xferLoadReceiptList(){
     if(!rows.length){el.innerHTML='<p style="color:#999">Nothing awaiting receipt for '+branch+'.</p>';return;}
     el.innerHTML=rows.map(function(t){
       var itemsHtml=t.items.map(function(it,i){
-        return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">'+
-          '<span style="width:140px;font-size:12px">'+it.size+' · '+it.brand+' · '+it.state+'</span>'+
-          '<span style="width:90px;font-size:12px">Dispatched: '+it.qtyDispatched+'</span>'+
-          '<input id="xfr-'+t.id+'-'+i+'" type="number" min="0" step="1" value="'+it.qtyDispatched+'" style="width:70px"> received'+
+        return '<div class="bLine" style="margin-bottom:6px">'+
+          '<span style="font-size:12px;flex:1">'+it.size+' · '+it.brand+' · '+it.state+' — dispatched '+it.qtyDispatched+'</span>'+
+          '<input id="xfr-'+t.id+'-'+i+'" type="number" min="0" step="1" value="'+it.qtyDispatched+'">'+
+          '<span style="font-size:11px;color:var(--muted);flex:none">received</span>'+
           '</div>';
       }).join('');
       return '<div class="histSection" style="border:1.5px solid var(--steel);border-radius:10px;padding:10px;margin-bottom:10px">'+
         '<b>From '+t.from_branch+'</b> — dispatched by '+(t.dispatch_operator_name_snapshot||'?')+' ('+_tsHM(t.dispatch_at)+')'+
         (t.note?('<div style="font-size:12px;color:#777">'+t.note+'</div>'):'')+
         '<div style="margin:8px 0">'+itemsHtml+'</div>'+
-        '<label>Shortfall reason (required if any quantity above differs from dispatched)</label>'+
-        '<input id="xfr-'+t.id+'-reason" style="width:100%">'+
-        '<label>Receiving operator signature</label>'+
+        '<label class="mLabel">Shortfall reason (required if any quantity above differs from dispatched)</label>'+
+        '<input class="mField" id="xfr-'+t.id+'-reason" style="width:100%">'+
+        '<label class="mLabel">Receiving operator signature</label>'+
         '<canvas id="xfrSig-'+t.id+'" width="600" height="150" style="border:1.5px solid var(--steel);border-radius:8px;width:100%;touch-action:none"></canvas>'+
         '<button class="sigClear" onclick="_xferSigClear(\'xfrSig-'+t.id+'\',\'receive\')">Clear signature</button>'+
-        '<button onclick="xferCommitReceipt(\''+t.id+'\')">Confirm Receipt</button>'+
+        '<button class="saveBtn" style="margin-top:10px" onclick="xferCommitReceipt(\''+t.id+'\')">Confirm Receipt</button>'+
         '</div>';
     }).join('');
     rows.forEach(function(t){setTimeout(function(){_initXferSigCanvas('xfrSig-'+t.id,'receive');},50);});
@@ -1774,10 +1767,10 @@ function xferLoadApprovalList(){
         '<b>'+t.from_branch+' → '+t.to_branch+'</b><br>'+
         'Dispatched by '+(t.dispatch_operator_name_snapshot||'?')+', received by '+(t.receive_operator_name_snapshot||'?')+
         '<div style="margin:8px 0">'+itemsHtml+'</div>'+
-        '<label>Manager/Owner signature</label>'+
+        '<label class="mLabel">Manager/Owner signature</label>'+
         '<canvas id="xfaSig-'+t.id+'" width="600" height="150" style="border:1.5px solid var(--steel);border-radius:8px;width:100%;touch-action:none"></canvas>'+
         '<button class="sigClear" onclick="_xferSigClear(\'xfaSig-'+t.id+'\',\'approve\')">Clear signature</button>'+
-        '<button onclick="xferCommitApproval(\''+t.id+'\',\''+(t.row_id||'')+'\')">Approve Transfer</button>'+
+        '<button class="saveBtn" style="margin-top:10px" onclick="xferCommitApproval(\''+t.id+'\',\''+(t.row_id||'')+'\')">Approve Transfer</button>'+
         '</div>';
     }).join('');
     rows.forEach(function(t){setTimeout(function(){_initXferSigCanvas('xfaSig-'+t.id,'approve');},50);});
