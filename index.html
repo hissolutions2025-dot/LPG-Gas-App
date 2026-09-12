@@ -9025,12 +9025,23 @@ function _renderSignedLocked(id,imageDataUrl,signerName){
     var ctx=cv.getContext('2d');
     var img=new Image();
     img.onload=function(){ctx.clearRect(0,0,cv.width,cv.height);ctx.drawImage(img,0,0,cv.width,cv.height);};
+    // signature_png can now arrive from a REMOTE row (day_close_signatures, Task 1/2) as well
+    // as a local sigData restore - a malformed/corrupt value should be logged, not silently
+    // leave the canvas blank with no trace of why (code-review catch).
+    img.onerror=function(){console.error('_renderSignedLocked: signature image failed to load for '+id);};
     img.src=imageDataUrl;
   }
   var lockEl=document.getElementById(id+'-lock');
   if(lockEl){
     var boxLabel=(id==='sigOp')?'Operator':'Manager';
-    lockEl.innerHTML='<div style="font-size:11px;color:var(--ok);font-weight:700">✓ Signed by '+signerName+'</div>'+
+    // signerName can now come from day_close_signatures, writable by any authenticated
+    // session (Task 1's RLS - same broad-access convention as every other table in this
+    // app, enforced client-side not at the DB layer) - escape before interpolating into
+    // innerHTML, same escaping this file already uses elsewhere (see esc() in auditPDF()),
+    // so a crafted signer_name can never inject markup into another device's DOM
+    // (code-review catch).
+    var safeName=String(signerName||'').replace(/</g,'&lt;');
+    lockEl.innerHTML='<div style="font-size:11px;color:var(--ok);font-weight:700">✓ Signed by '+safeName+'</div>'+
       '<button class="sigClear" style="width:100%;background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel);margin-top:4px" onclick="unlockSig(\''+id+'\')">🔒 Unlock '+boxLabel+' box to re-sign</button>';
   }
 }
@@ -9048,8 +9059,16 @@ function _fetchDayCloseSignatures(br,date){
 // Fetches and applies both boxes' remote status. Only overwrites a box this device hasn't
 // itself unlocked THIS session (!sigUnlocked[id]) - never clobber someone's in-progress local
 // signing with a fetch that started before they finished drawing.
+// _rbLoadToken-style staleness guard (code-review catch): this fires from two call sites on
+// every single openHistory() (its own call + the one inside setHistTab('today') it triggers)
+// plus every Today-tab re-entry, so overlapping in-flight fetches are the normal case, not an
+// edge case, on a flaky field connection. Without this, an OLDER response resolving AFTER a
+// NEWER one could silently overwrite a just-applied fresher signature with stale data.
+var _dayCloseSigRefreshToken=0;
 function _refreshDayCloseSignatures(){
+  var myToken=++_dayCloseSigRefreshToken;
   return _fetchDayCloseSignatures(branch,today).then(function(rows){
+    if(myToken!==_dayCloseSigRefreshToken)return rows; // a newer refresh already superseded this one
     ['sigOp','sigMgr'].forEach(function(id){
       var role=(id==='sigOp')?'Operator':'Manager';
       var row=rows[role];
