@@ -4163,6 +4163,7 @@ function _finishLogin(u,b){
   _manifoldPendingFlush();
   _transferFlush();
   _vstFlush();
+  _dayCloseSigFlush();
   _fetchManifoldPendingOverrides();
   _closeDayFlushQueue();
   _updateCloseDayPendingBadge();
@@ -8949,6 +8950,10 @@ function unlockSig(id){
     var signer=(u.level==='Owner'&&wantLevel!=='Owner')?(u.name+' (Owner override)'):u.name;
     sigUnlocked[id]=true;sigSignedBy[id]=signer;
     sigAuthUser[id]=u;
+    // Defensive: a re-unlock (re-signing an already-signed box) must not let a pending push
+    // scheduled under the PREVIOUS signer still fire against this new signer's sigAuthUser -
+    // cancel it now rather than rely on the next stroke's own end() to do so.
+    if(_sigPushTimers[id]){clearTimeout(_sigPushTimers[id]);_sigPushTimers[id]=null;}
     __unlockSigApply(id,signer);
     saveWorkingStore(); // persist sigSignedBy immediately - see saveWorkingStore()'s own comment
   });
@@ -8972,15 +8977,41 @@ function _pushDayCloseSignature(id){
   var u=sigAuthUser[id];
   if(!u||!sigData[id])return;
   var signer=(u.level==='Owner'&&role!==u.level)?(u.name+' (Owner override)'):u.name;
-  sb.from('day_close_signatures').upsert(
-    {branch:branch,date:today,role:role,signer_name:signer,signer_level:u.level,signature_png:sigData[id]},
-    {onConflict:'branch,date,role'}
-  ).then(function(res){
-    if(res.error)console.error('day_close_signatures upsert failed ('+role+'):',res.error.message);
+  var payload={branch:branch,date:today,role:role,signer_name:signer,signer_level:u.level,signature_png:sigData[id]};
+  sb.from('day_close_signatures').upsert(payload,{onConflict:'branch,date,role'}).then(function(res){
+    if(res.error){
+      console.error('day_close_signatures upsert failed ('+role+'):',res.error.message);
+      _dayCloseSigQueue(payload);
+      toast(role+' signature saved on this device — will sync once you\'re back online',true);
+    }
   },function(err){
-    console.error('day_close_signatures upsert failed ('+role+'):',err);
+    console.error('day_close_signatures upsert failed ('+role+'):',err&&err.message);
+    _dayCloseSigQueue(payload);
+    toast(role+' signature saved on this device — will sync once you\'re back online',true);
   });
 }
+// Retry queue for a failed push above - same convention as _manifoldLiveQueue/_manifoldLiveFlush
+// (localStorage-backed, flushed at login and on 'online'). Unlike that queue this pushes via
+// upsert (not insert), so a retry safely replaces rather than duplicates if it eventually lands
+// alongside a newer signature from the same device.
+function _dayCloseSigQueue(payload){
+  try{
+    var q=JSON.parse(localStorage.getItem('gs_daycloseSig_queue')||'[]');
+    q.push(payload);
+    localStorage.setItem('gs_daycloseSig_queue',JSON.stringify(q.slice(-50)));
+  }catch(e){}
+}
+function _dayCloseSigFlush(){
+  var q;try{q=JSON.parse(localStorage.getItem('gs_daycloseSig_queue')||'[]');}catch(e){return;}
+  if(!q.length)return;
+  localStorage.setItem('gs_daycloseSig_queue','[]');
+  q.forEach(function(payload){
+    sb.from('day_close_signatures').upsert(payload,{onConflict:'branch,date,role'}).then(function(res){
+      if(res.error)_dayCloseSigQueue(payload);
+    },function(){_dayCloseSigQueue(payload);});
+  });
+}
+window.addEventListener('online',_dayCloseSigFlush);
 function initSigPad(id){
   var cv=document.getElementById(id);if(!cv||cv._init)return;cv._init=true;
   var ctx=cv.getContext('2d');ctx.lineWidth=2.2;ctx.lineCap='round';ctx.strokeStyle='#16202B';
