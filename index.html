@@ -8936,6 +8936,7 @@ function openHistory(mismatchOverlayRows,_skipManifoldLiveFetch){
 var sigData={sigOp:'',sigMgr:''};
 var sigUnlocked={sigOp:false,sigMgr:false};
 var sigSignedBy={sigOp:'',sigMgr:''};
+var sigAuthUser={sigOp:null,sigMgr:null}; // the full {name,level} of whoever authenticated this box - needed at stroke-end time to push signer_level to Supabase (unlockSig's own `u` isn't in scope there)
 function unlockSig(id){
   var boxLabel=(id==='sigOp')?'Operator':'Manager';
   var wantLevel=(id==='sigOp')?'Operator':'Manager';
@@ -8947,6 +8948,7 @@ function unlockSig(id){
     if(!u){toast('Wrong password for '+boxLabel+' box',true);return;}
     var signer=(u.level==='Owner'&&wantLevel!=='Owner')?(u.name+' (Owner override)'):u.name;
     sigUnlocked[id]=true;sigSignedBy[id]=signer;
+    sigAuthUser[id]=u;
     __unlockSigApply(id,signer);
     saveWorkingStore(); // persist sigSignedBy immediately - see saveWorkingStore()'s own comment
   });
@@ -8957,6 +8959,27 @@ function __unlockSigApply(id,signer){
   document.getElementById(id+'-clear').style.display='block';
   auditLog('Signature unlocked',boxLabel+' signature box unlocked by '+signer);
   toast(boxLabel+' box unlocked — sign now');
+}
+var _sigPushTimers={};
+// Pushes the just-drawn signature to day_close_signatures - debounced (one signature is many
+// strokes; pushing on every stroke-end would be one network write per stroke). 600ms is short
+// enough that leaving the screen immediately after the last stroke is the only way to lose an
+// unflushed signature, and saveWorkingStore() (called synchronously in end(), unchanged) has
+// already preserved it locally by then regardless - a later reload/re-open re-triggers this
+// same push path once the box is unlocked again.
+function _pushDayCloseSignature(id){
+  var role=(id==='sigOp')?'Operator':'Manager';
+  var u=sigAuthUser[id];
+  if(!u||!sigData[id])return;
+  var signer=(u.level==='Owner'&&role!==u.level)?(u.name+' (Owner override)'):u.name;
+  sb.from('day_close_signatures').upsert(
+    {branch:branch,date:today,role:role,signer_name:signer,signer_level:u.level,signature_png:sigData[id]},
+    {onConflict:'branch,date,role'}
+  ).then(function(res){
+    if(res.error)console.error('day_close_signatures upsert failed ('+role+'):',res.error.message);
+  },function(err){
+    console.error('day_close_signatures upsert failed ('+role+'):',err);
+  });
 }
 function initSigPad(id){
   var cv=document.getElementById(id);if(!cv||cv._init)return;cv._init=true;
@@ -8984,7 +9007,11 @@ function initSigPad(id){
   function pos(e){var r=cv.getBoundingClientRect();var t=e.touches?e.touches[0]:e;return {x:(t.clientX-r.left)*(cv.width/r.width),y:(t.clientY-r.top)*(cv.height/r.height)};}
   function start(e){if(!sigUnlocked[id]){toast('Unlock this box with a password first',true);return;}drawing=true;last=pos(e);e.preventDefault();}
   function move(e){if(!drawing)return;var p=pos(e);ctx.beginPath();ctx.moveTo(last.x,last.y);ctx.lineTo(p.x,p.y);ctx.stroke();last=p;sigData[id]=cv.toDataURL('image/png');e.preventDefault();}
-  function end(){if(!drawing)return;drawing=false;saveWorkingStore();} // once per stroke, not per pixel
+  function end(){
+    if(!drawing)return;drawing=false;saveWorkingStore(); // once per stroke, not per pixel
+    if(_sigPushTimers[id])clearTimeout(_sigPushTimers[id]);
+    _sigPushTimers[id]=setTimeout(function(){_pushDayCloseSignature(id);},600);
+  }
   cv.addEventListener('mousedown',start);cv.addEventListener('mousemove',move);cv.addEventListener('mouseup',end);cv.addEventListener('mouseleave',end);
   cv.addEventListener('touchstart',start,{passive:false});cv.addEventListener('touchmove',move,{passive:false});cv.addEventListener('touchend',end);
 }
