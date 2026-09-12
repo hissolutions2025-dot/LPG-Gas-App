@@ -321,12 +321,12 @@
     <div class="greet">Every entry uses today's date, your name and branch.</div>
     <div class="greet" id="homeEditHint" style="display:none">Drag the middle of a tile to reorder. Drag its edge or corner to resize.</div>
     <div class="grid" id="homeGrid">
-      <button class="tile t1" data-key="count" onclick="openCount()"><div class="ic">&#9638;</div><h3>Stock Count</h3><p>Opening / closing, full &amp; empty</p><span class="badge" id="b-count" style="display:none">0</span></button>
-      <button class="tile t2" data-key="manifold" onclick="openCap('manifold')"><div class="ic">&#9878;</div><h3>Manifold</h3><p>Weigh DV donor cylinders</p><span class="badge" id="b-manifold" style="display:none">0</span></button>
-      <button class="tile t3" data-key="refill" onclick="openCap('refill')"><div class="ic">&#9981;</div><h3>Refill</h3><p>Cylinders filled for stock</p><span class="badge" id="b-refill" style="display:none">0</span></button>
-      <button class="tile t4" data-key="private" onclick="openCap('private')"><div class="ic">&#9684;</div><h3>Private Refill</h3><p>Customer's own cylinder</p><span class="badge" id="b-private" style="display:none">0</span></button>
-      <button class="tile t5" data-key="received" onclick="openReceived()"><div class="ic">&#8681;</div><h3>Stock Received</h3><p>Deliveries &amp; returns</p><span class="badge" id="b-received" style="display:none">0</span></button>
-      <button class="tile t6" data-key="history" onclick="openHistory()"><div class="ic">&#9776;</div><h3>Count History</h3><p>Review today's captures</p></button>
+      <button class="tile t1" data-key="count" id="tileCount" onclick="openCount()"><div class="ic">&#9638;</div><h3>Stock Count</h3><p>Opening / closing, full &amp; empty</p><span class="badge" id="b-count" style="display:none">0</span></button>
+      <button class="tile t2" data-key="manifold" id="tileManifold" onclick="openCap('manifold')"><div class="ic">&#9878;</div><h3>Manifold</h3><p>Weigh DV donor cylinders</p><span class="badge" id="b-manifold" style="display:none">0</span></button>
+      <button class="tile t3" data-key="refill" id="tileRefill" onclick="openCap('refill')"><div class="ic">&#9981;</div><h3>Refill</h3><p>Cylinders filled for stock</p><span class="badge" id="b-refill" style="display:none">0</span></button>
+      <button class="tile t4" data-key="private" id="tilePrivate" onclick="openCap('private')"><div class="ic">&#9684;</div><h3>Private Refill</h3><p>Customer's own cylinder</p><span class="badge" id="b-private" style="display:none">0</span></button>
+      <button class="tile t5" data-key="received" id="tileReceived" onclick="openReceived()"><div class="ic">&#8681;</div><h3>Stock Received</h3><p>Deliveries &amp; returns</p><span class="badge" id="b-received" style="display:none">0</span></button>
+      <button class="tile t6" data-key="history" id="tileHistory" onclick="openHistory()"><div class="ic">&#9776;</div><h3>Count History</h3><p>Review today's captures</p></button>
       <button class="tile t4" data-key="residual" id="tileResidual" onclick="openResidual()" style="display:none"><div class="ic">&#127766;</div><h3>Residual Gas</h3><p>Gas left in received cylinders</p></button>
       <button class="tile t3" data-key="pendingOverrides" id="tilePendingOverrides" onclick="openPendingOverrides()" style="display:none"><div class="ic">&#9888;</div><h3>Pending Overrides</h3><p>Manager/Owner: approve or reject remote submissions</p><span class="badge" id="b-pendingOverrides" style="display:none">0</span></button>
       <button class="tile t1" data-key="users" id="tileUsers" onclick="openUsers()" style="display:none"><div class="ic">&#128100;</div><h3>Manage Users</h3><p>Owner: users, levels &amp; branches</p></button>
@@ -1386,7 +1386,7 @@ function vstModeChanged(){
   document.getElementById('vstOperatorSigWrap').style.display=joint?'block':'none';
 }
 function openVerifiedTake(){
-  if(role!=='Owner'){toast('Owner only',true);return;} // rollout gate - flip to perm('verifiedCount') once verified live
+  if(!perm('verifiedCount')&&role!=='Owner'){toast('Not available for this role',true);return;} // opened to real Auditor role + Owner (belt-and-braces) per the spec's real intended audience
   show('verifiedTakeView');
   document.getElementById('backBtn').style.display='block';
   document.getElementById('hTitle').textContent='Verified Stock Take';
@@ -1658,7 +1658,7 @@ function xferShowTab(name){
   if(name==='approval'&&typeof xferLoadApprovalList==='function')xferLoadApprovalList();
 }
 function openTransfers(){
-  if(role!=='Owner'){toast('Owner only',true);return;}
+  if(role==='Auditor'){toast('Not available for this role',true);return;} // opened to Operator/Manager/Owner per the spec's real intended audience - dispatching/receiving Operators, approval already separately gated by perm('closeday') in xferCommitApproval
   show('transferView');
   document.getElementById('hTitle').textContent='Stock Transfer';
   document.getElementById('hSub').textContent='Move cylinders between branches';
@@ -4133,17 +4133,28 @@ function _finishLogin(u,b){
   document.getElementById('dateVal').textContent=today+(getDateOffset()?'  (TEST +'+getDateOffset()+'d)':'  (today only)');
   document.getElementById('who').style.display='block';
   renderLandingHeader();
+  // The 6 baseline operational tiles have no gate of their own - always visible to every
+  // logged-in role, historically. Real Auditor accounts (Phase 1) break that assumption:
+  // per the spec, an Auditor "lands directly on Verified Stock Take (only tile available)" -
+  // hide these 6 for Auditor specifically. Their own open*() functions already separately
+  // block actual use via requireEdit()/canUseSection() (Auditor's perm preset has no
+  // edit/capture), so this was previously a cosmetic gap only, not a security one - but it
+  // contradicted the spec once Auditor became a real, usable role.
+  ['tileCount','tileManifold','tileRefill','tilePrivate','tileReceived','tileHistory'].forEach(function(id){
+    var el=document.getElementById(id);if(el)el.style.display=(role==='Auditor')?'none':'flex';
+  });
   // owner sees Manage Users tile
   document.getElementById('tileUsers').style.display=perm('users')?'flex':'none';
   document.getElementById('tileAudit').style.display=perm('audit')?'flex':'none';
   var _ta=document.getElementById('tileAdmin');if(_ta)_ta.style.display=(perm('seal_admin')||perm('faultyCapture')||perm('faultyRegister')||perm('manageSuppliers'))?'flex':'none';
   var _trg=document.getElementById('tileResidual');if(_trg)_trg.style.display=perm('residualGas')?'flex':'none';
   var _tpo=document.getElementById('tilePendingOverrides');if(_tpo)_tpo.style.display=(role==='Manager'||role==='Owner')?'flex':'none';
-  var _ttr=document.getElementById('tileTransfer');if(_ttr)_ttr.style.display=(role==='Owner')?'flex':'none';
-  // rollout gate — flip to perm('verifiedCount') once verified live, so real Auditor accounts can see it.
-  var _tvt=document.getElementById('tileVerifiedTake');if(_tvt)_tvt.style.display=(role==='Owner')?'flex':'none';
-  // rollout gate — flip to (role==='Manager'||role==='Owner') once verified live, per the spec's real intended audience.
-  var _trb=document.getElementById('tileRangeBalance');if(_trb)_trb.style.display=(role==='Owner')?'flex':'none';
+  // opened to Operator/Manager/Owner per the spec's real intended audience - dispatching/receiving Operators, approval already separately gated by perm('closeday') in xferCommitApproval.
+  var _ttr=document.getElementById('tileTransfer');if(_ttr)_ttr.style.display=(role!=='Auditor')?'flex':'none';
+  // opened to real Auditor role + Owner (belt-and-braces) per the spec's real intended audience.
+  var _tvt=document.getElementById('tileVerifiedTake');if(_tvt)_tvt.style.display=(perm('verifiedCount')||role==='Owner')?'flex':'none';
+  // opened to Manager+Owner per the spec's real intended audience.
+  var _trb=document.getElementById('tileRangeBalance');if(_trb)_trb.style.display=(role==='Manager'||role==='Owner')?'flex':'none';
   auditLog('Login','Signed in to '+b);
   editUnlocked=false;
   loadWorkingStore();
@@ -5582,7 +5593,7 @@ function rbSetPreset(kind){
   rbLoad();
 }
 function openRangeBalance(){
-  if(role!=='Owner'){toast('Owner only',true);return;} // rollout gate - flip to Manager+Owner once verified live
+  if(role!=='Manager'&&role!=='Owner'){toast('Not available for this role',true);return;} // opened to Manager+Owner per the spec's real intended audience
   show('rangeBalanceView');
   document.getElementById('backBtn').style.display='block';
   document.getElementById('hTitle').textContent='Stock Balance';
