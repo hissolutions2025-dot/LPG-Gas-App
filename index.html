@@ -334,6 +334,7 @@
       <button class="tile t2" data-key="admin" id="tileAdmin" onclick="openAdmin()" style="display:none"><div class="ic">&#9881;</div><h3>Admin</h3><p>Seal register &amp; suppliers</p></button>
       <button class="tile t6" data-key="transfer" id="tileTransfer" onclick="openTransfers()" style="display:none"><div class="ic">&#8646;</div><h3>Stock Transfer</h3><p>Owner: move cylinders between branches</p><span class="badge" id="b-transfer" style="display:none">0</span></button>
       <button class="tile t1" data-key="verifiedTake" id="tileVerifiedTake" onclick="openVerifiedTake()" style="display:none"><div class="ic">&#9745;</div><h3>Verified Stock Take</h3><p>Auditor: independent physical count</p></button>
+      <button class="tile t2" data-key="rangeBalance" id="tileRangeBalance" onclick="openRangeBalance()" style="display:none"><div class="ic">&#128202;</div><h3>Stock Balance</h3><p>Owner: balance stock over any date range</p></button>
     </div>
     <div class="cFooter" id="homeEditBar" style="display:none">
       <button type="button" class="cbGhost" onclick="resetHomeLayout()">Reset layout</button>
@@ -4141,6 +4142,8 @@ function _finishLogin(u,b){
   var _ttr=document.getElementById('tileTransfer');if(_ttr)_ttr.style.display=(role==='Owner')?'flex':'none';
   // rollout gate — flip to perm('verifiedCount') once verified live, so real Auditor accounts can see it.
   var _tvt=document.getElementById('tileVerifiedTake');if(_tvt)_tvt.style.display=(role==='Owner')?'flex':'none';
+  // rollout gate — flip to (role==='Manager'||role==='Owner') once verified live, per the spec's real intended audience.
+  var _trb=document.getElementById('tileRangeBalance');if(_trb)_trb.style.display=(role==='Owner')?'flex':'none';
   auditLog('Login','Signed in to '+b);
   editUnlocked=false;
   loadWorkingStore();
