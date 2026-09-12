@@ -8761,6 +8761,7 @@ function cBackFromMismatches(){document.getElementById('hTitle').textContent='St
 function openHistory(mismatchOverlayRows,_skipManifoldLiveFetch){
   _updateCloseDayPendingBadge();
   _updateCountPendingBadge();
+  _refreshDayCloseSignatures(); // fire-and-forget, like the badge updates above - don't block render
   if(!histBranch||(role==='Operator'))histBranch=branch||'Helderberg';
   // Every live mirror (Manifold + Received/Refill/Private/Residual, via capture_live_rows)
   // only ever holds a day that isn't closed yet (see design docs) - only worth fetching when
@@ -9012,6 +9013,57 @@ function _dayCloseSigFlush(){
   });
 }
 window.addEventListener('online',_dayCloseSigFlush);
+// ===== remote signature status (Task 3: fetch + display both boxes' live sign-off state) =====
+// Renders a signed-but-locked pad from either a local sigData restore (page load) or a
+// remote day_close_signatures row (this device didn't sign it) - same UI either way: the
+// drawn image is shown, and re-signing requires unlocking again, exactly like today's
+// same-device re-sign flow. Shared by initSigPad's own restore branch below and by
+// _refreshDayCloseSignatures() so both call sites render identically.
+function _renderSignedLocked(id,imageDataUrl,signerName){
+  var cv=document.getElementById(id);
+  if(cv){
+    var ctx=cv.getContext('2d');
+    var img=new Image();
+    img.onload=function(){ctx.clearRect(0,0,cv.width,cv.height);ctx.drawImage(img,0,0,cv.width,cv.height);};
+    img.src=imageDataUrl;
+  }
+  var lockEl=document.getElementById(id+'-lock');
+  if(lockEl){
+    var boxLabel=(id==='sigOp')?'Operator':'Manager';
+    lockEl.innerHTML='<div style="font-size:11px;color:var(--ok);font-weight:700">✓ Signed by '+signerName+'</div>'+
+      '<button class="sigClear" style="width:100%;background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel);margin-top:4px" onclick="unlockSig(\''+id+'\')">🔒 Unlock '+boxLabel+' box to re-sign</button>';
+  }
+}
+// Returns {Operator:rowOrNull, Manager:rowOrNull} for today's branch. Poll-on-open, not a
+// live subscription - matches every other cross-device table in this app (manifold_live_rows,
+// manifold_pending_overrides, capture_live_rows all refetch on screen open, none use realtime).
+function _fetchDayCloseSignatures(br,date){
+  return sb.from('day_close_signatures').select('*').eq('branch',br).eq('date',date).then(function(res){
+    if(res.error){console.error('_fetchDayCloseSignatures failed:',res.error.message);return {Operator:null,Manager:null};}
+    var out={Operator:null,Manager:null};
+    (res.data||[]).forEach(function(r){out[r.role]=r;});
+    return out;
+  },function(){return {Operator:null,Manager:null};});
+}
+// Fetches and applies both boxes' remote status. Only overwrites a box this device hasn't
+// itself unlocked THIS session (!sigUnlocked[id]) - never clobber someone's in-progress local
+// signing with a fetch that started before they finished drawing.
+function _refreshDayCloseSignatures(){
+  return _fetchDayCloseSignatures(branch,today).then(function(rows){
+    ['sigOp','sigMgr'].forEach(function(id){
+      var role=(id==='sigOp')?'Operator':'Manager';
+      var row=rows[role];
+      if(row && !sigUnlocked[id]){
+        sigData[id]=row.signature_png;sigSignedBy[id]=row.signer_name;
+        _renderSignedLocked(id,row.signature_png,row.signer_name);
+      }
+      // else: no remote row, or this device has this box unlocked/in-progress - leave
+      // whatever's already rendered (default "unlock to sign" prompt, or the local in-progress
+      // signing) untouched.
+    });
+    return rows;
+  });
+}
 function initSigPad(id){
   var cv=document.getElementById(id);if(!cv||cv._init)return;cv._init=true;
   var ctx=cv.getContext('2d');ctx.lineWidth=2.2;ctx.lineCap='round';ctx.strokeStyle='#16202B';
@@ -9023,16 +9075,18 @@ function initSigPad(id){
   // saveWorkingStore()'s comment), so this only restores what's already SHOWN, not the
   // ability to add to it without a password.
   if(sigData[id]){
-    var img=new Image();
-    img.onload=function(){ctx.drawImage(img,0,0,cv.width,cv.height);};
-    img.src=sigData[id];
     if(!sigUnlocked[id]&&sigSignedBy[id]){
-      var lockEl=document.getElementById(id+'-lock');
-      if(lockEl){
-        var boxLabel=(id==='sigOp')?'Operator':'Manager';
-        lockEl.innerHTML='<div style="font-size:11px;color:var(--ok);font-weight:700">✓ Previously signed by '+sigSignedBy[id]+'</div>'+
-          '<button class="sigClear" style="width:100%;background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel);margin-top:4px" onclick="unlockSig(\''+id+'\')">🔒 Unlock '+boxLabel+' box to re-sign</button>';
-      }
+      // Shared with the remote-fetch path (_refreshDayCloseSignatures) - same "signed,
+      // locked, offer to re-sign" UI whether the signature came from this device's own
+      // earlier session or from another device via Supabase.
+      _renderSignedLocked(id,sigData[id],sigSignedBy[id]);
+    }else{
+      // sigData without a signedBy (shouldn't normally happen - the two are always set
+      // together by unlockSig/_pushDayCloseSignature - but restore whatever's drawn
+      // regardless, matching this branch's pre-existing behavior).
+      var img=new Image();
+      img.onload=function(){ctx.drawImage(img,0,0,cv.width,cv.height);};
+      img.src=sigData[id];
     }
   }
   function pos(e){var r=cv.getBoundingClientRect();var t=e.touches?e.touches[0]:e;return {x:(t.clientX-r.left)*(cv.width/r.width),y:(t.clientY-r.top)*(cv.height/r.height)};}
@@ -10605,6 +10659,10 @@ function setHistTab(which){
   document.getElementById('histTodayPane').style.display=(which==='today')?'block':'none';
   document.getElementById('histPastPane').style.display=(which==='past')?'block':'none';
   var _sb=document.getElementById('shareTodayBtn');if(_sb)_sb.style.display=FEATURES.share?'block':'none';
+  // Re-check remote sign-off status on switching back to Today - openHistory() only fires this
+  // once per open/reopen, but a user can flip to the History (past) tab and back to Today
+  // without a fresh openHistory() call, so this is the only re-entry point for that path.
+  if(which==='today')_refreshDayCloseSignatures();
   if(which==='past'){var d=new Date();if(calYear===undefined){calYear=d.getFullYear();calMonth2=d.getMonth();}refreshSharedSavedDates().then(renderCalendar);}
 }
 var _sharedSavedDates={};
