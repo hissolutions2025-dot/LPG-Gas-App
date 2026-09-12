@@ -5605,7 +5605,14 @@ function rbLoad(){
     // _fetchVerifiedTakeComparison(br,date,verifiedCount) from the Verified Stock Takes
     // feature (Phase 1) - verifiedCount is that take's own `count` jsonb array, not a number.
     _fetchVerifiedTakesInRange(br,start,end).then(function(takes){
-      return Promise.all(takes.map(function(t){return _fetchVerifiedTakeComparison(br,t.date,t.count);})).then(function(comparisons){
+      // Per-item .catch() (code review catch): a rejection inside one _fetchVerifiedTakeComparison
+      // call is already absorbed by its own second .then() argument, but a SYNCHRONOUS throw in
+      // its fulfillment handler (e.g. malformed `count` data on one take) is not - that would
+      // propagate past Promise.all and wipe every checkpoint, not just the bad one. This local
+      // .catch() per mapped item keeps one malformed take from taking the rest down with it.
+      return Promise.all(takes.map(function(t){
+        return _fetchVerifiedTakeComparison(br,t.date,t.count).catch(function(){return {hasClosing:false,lines:[]};});
+      })).then(function(comparisons){
         return {takes:takes,comparisons:comparisons};
       });
     }).catch(function(){return {takes:[],comparisons:[]};})
