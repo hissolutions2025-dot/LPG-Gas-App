@@ -5586,6 +5586,9 @@ function rbLoad(){
   fetchRangeStockBalance(br,start,end).then(function(bal){
     if(myToken!==_rbLoadToken)return; // a newer rbLoad() call already superseded this one
     document.getElementById('rbReport').innerHTML=rbRenderReport(bal);
+  }).catch(function(){
+    if(myToken!==_rbLoadToken)return;
+    document.getElementById('rbReport').innerHTML='<div class="histEmpty">Could not load this report — check your connection.</div>';
   });
 }
 function rbRenderReport(bal){
