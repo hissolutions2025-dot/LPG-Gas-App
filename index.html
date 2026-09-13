@@ -2472,7 +2472,7 @@ function _adminTabShow(t){
   var _tf=document.getElementById('atab-faulty');if(_tf)_tf.classList.toggle('on',t==='faulty');
   var _tsm=document.getElementById('atab-suppliersmgmt');if(_tsm)_tsm.classList.toggle('on',t==='suppliersmgmt');
   var _tct=document.getElementById('atab-counttimes');if(_tct)_tct.classList.toggle('on',t==='counttimes');
-  if(t==='bsetup'){renderBsetup();_fetchAppConfig('branch_setup',bcfgSave).then(renderBsetup);}
+  if(t==='bsetup'){renderBsetup();Promise.all([_fetchAppConfig('branch_setup',bcfgSave),_fetchAppConfig('stock_thresholds',thresholdsSave)]).then(renderBsetup);}
   if(t==='manifold')renderManifoldSlots();
   if(t==='clear'){var d=document.getElementById('clrDate');if(d&&!d.value)d.value=today;}
   if(t==='seals'){fillBrandPicker();renderRolls();_fetchSealLive(adminBranch).then(function(){renderRolls();renderUsedSeals();});}
@@ -2662,6 +2662,19 @@ function renderBsetup(){
         html+='<label style="display:inline-block;width:48%;font-size:12px;margin-bottom:3px"><input type="checkbox" '+(ion?'checked':'')+' onchange="toggleItem(\''+br+'\',\''+sec+'\',\''+it+'\',this.checked)" style="margin-right:5px"> '+it+'</label>';
       });
       html+='</div>';
+      if(sec==='count'){
+        html+='<div style="margin-top:10px;padding-left:8px;border-top:1px solid #EEE;padding-top:8px">';
+        html+='<div style="font-size:12px;font-weight:700;color:var(--navy);margin-bottom:4px">Stock Thresholds (per size)</div>';
+        items.forEach(function(it){
+          var th=thresholdFor(br,it);
+          html+='<div style="display:flex;align-items:center;gap:8px;font-size:11px;margin-bottom:4px">'+
+            '<span style="width:80px">'+it+'</span>'+
+            '<label style="display:flex;align-items:center;gap:3px">Min Full Hold <input type="number" min="0" value="'+th.minFullHold+'" style="width:55px" onchange="setThreshold(\''+br+'\',\''+it+'\',\'minFullHold\',this.value)"></label>'+
+            '<label style="display:flex;align-items:center;gap:3px">Extra Alloc. Threshold <input type="number" value="'+th.extraAllocThreshold+'" style="width:55px" onchange="setThreshold(\''+br+'\',\''+it+'\',\'extraAllocThreshold\',this.value)"></label>'+
+            '</div>';
+        });
+        html+='</div>';
+      }
     } else {
       html+='<div style="font-size:11px;color:var(--muted);margin-top:4px;padding-left:8px">(no individual items)</div>';
     }
@@ -2757,6 +2770,21 @@ function toggleSection(br,sec,val){
 function toggleItem(br,sec,item,val){
   if(!(role==='Owner'||perm('branch_setup'))){toast('No Branch Setup rights',true);return;}
   bcfgSet(br,sec,item,val);toast((val?'Activated ':'Deactivated ')+item);
+}
+function thresholdsSet(br,sz,field,val){
+  var t=thresholdsLoad();
+  t[br]=t[br]||{};
+  t[br][sz]=t[br][sz]||{minFullHold:0,extraAllocThreshold:0};
+  t[br][sz][field]=val;
+  thresholdsSave(t);
+  _pushAppConfig('stock_thresholds',t);
+}
+function setThreshold(br,sz,field,val){
+  if(!(role==='Owner'||perm('branch_setup'))){toast('No Branch Setup rights',true);return;}
+  var n=num(val);
+  if(field==='minFullHold'&&n<0)n=0; // a stock count can't be negative; extraAllocThreshold is a negative tolerance, left as-is
+  thresholdsSet(br,sz,field,n);
+  toast(sz+' threshold updated');
 }
 function doClearStockTake(){
   if(!perm('seal_edit_used') && role!=='Owner'){toast('Owner rights required',true);return;}
@@ -3417,6 +3445,15 @@ var REFILL_ITEMS=['5kg','9kg','12kg','14kg','19kg','14kg-FLT','19kg-FLT','8kg-Pr
 var SECTION_ITEMS={count:COUNT_ITEMS,refill:REFILL_ITEMS,received:COUNT_ITEMS,private:[],manifold:['Cyl 1','Cyl 2','Cyl 3','Cyl 4']};
 function bcfgLoad(){try{return JSON.parse(localStorage.getItem('gs_bcfg')||'{}');}catch(e){return {};}}
 function bcfgSave(c){localStorage.setItem('gs_bcfg',JSON.stringify(c));}
+// Stock Thresholds - live cross-device config (app_config key 'stock_thresholds'), same
+// mechanism as bcfg/count_cutoff. {branch:{size:{minFullHold, extraAllocThreshold}}}.
+// Manager-adjustable (perm('branch_setup')) - seasonally, since demand isn't constant.
+function thresholdsLoad(){try{return JSON.parse(localStorage.getItem('gs_stock_thresholds')||'{}');}catch(e){return {};}}
+function thresholdsSave(c){localStorage.setItem('gs_stock_thresholds',JSON.stringify(c));}
+function thresholdFor(br,sz){
+  var t=thresholdsLoad();
+  return (t[br]&&t[br][sz])||{minFullHold:0,extraAllocThreshold:0};
+}
 // Live cross-device config: app_config holds one row per key ('branch_setup','count_cutoff').
 // Fetched into the same local blobs bcfgLoad()/loadCountCutoffCfg() already read (so every
 // existing read call site needs zero changes), written straight through on save - these are
