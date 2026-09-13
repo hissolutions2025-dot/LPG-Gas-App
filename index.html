@@ -9013,6 +9013,52 @@ function _dayCloseSigFlush(){
   });
 }
 window.addEventListener('online',_dayCloseSigFlush);
+// ===== Close Day queue-gate (follow-up hardening) =====
+// A push queued here can sit for a while (retried only at login/'online'), during which
+// sigUnlocked[id] stays true and _refreshDayCloseSignatures() deliberately never touches
+// sigData[id] for a box this device unlocked itself (see that function's own comment) - so a
+// signature that ONLY exists in this queue, never confirmed to have landed remotely, would
+// otherwise still read as "signed" to anyone on this same device. closeDay() calls
+// _dayCloseSigPendingRoles()/_dayCloseSigFlushOne() (below) right after its normal remote
+// refresh, specifically to catch this before treating sigData as trustworthy.
+// Returns which of 'Operator'/'Manager' currently have a payload queued for TODAY's branch.
+function _dayCloseSigPendingRoles(){
+  var q;try{q=JSON.parse(localStorage.getItem('gs_daycloseSig_queue')||'[]');}catch(e){return [];}
+  var roles={};
+  q.forEach(function(p){if(p&&p.branch===branch&&p.date===today&&(p.role==='Operator'||p.role==='Manager'))roles[p.role]=true;});
+  return Object.keys(roles);
+}
+// Attempts ONE fresh upsert for just today's branch's queued signature(s) in `roles`, and
+// (unlike _dayCloseSigFlush's normal fire-and-forget use) reports back which roles are STILL
+// pending after the attempt, so closeDay() can decide to proceed or block. On success, also
+// updates sigData/sigSignedBy directly (no need to wait for another remote refetch) and
+// removes only the flushed entries from the queue - anything unrelated to this branch/date
+// stays queued untouched.
+function _dayCloseSigFlushOne(roles){
+  var q;try{q=JSON.parse(localStorage.getItem('gs_daycloseSig_queue')||'[]');}catch(e){return Promise.resolve(roles.slice());}
+  var toFlush=q.filter(function(p){return p&&p.branch===branch&&p.date===today&&roles.indexOf(p.role)>-1;});
+  var rest=q.filter(function(p){return toFlush.indexOf(p)===-1;});
+  if(!toFlush.length)return Promise.resolve([]);
+  return Promise.all(toFlush.map(function(payload){
+    return sb.from('day_close_signatures').upsert(payload,{onConflict:'branch,date,role'}).then(function(res){
+      return {payload:payload,ok:!res.error};
+    },function(){
+      return {payload:payload,ok:false};
+    });
+  })).then(function(results){
+    var stillQueued=rest.slice(),stillPendingRoles=[];
+    results.forEach(function(r){
+      var id=(r.payload.role==='Operator')?'sigOp':'sigMgr';
+      if(r.ok){
+        sigData[id]=r.payload.signature_png;sigSignedBy[id]=r.payload.signer_name;
+      }else{
+        stillQueued.push(r.payload);stillPendingRoles.push(r.payload.role);
+      }
+    });
+    localStorage.setItem('gs_daycloseSig_queue',JSON.stringify(stillQueued));
+    return stillPendingRoles;
+  });
+}
 // ===== remote signature status (Task 3: fetch + display both boxes' live sign-off state) =====
 // Renders a signed-but-locked pad from either a local sigData restore (page load) or a
 // remote day_close_signatures row (this device didn't sign it) - same UI either way: the
@@ -9278,7 +9324,23 @@ function closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,_unapprovedTr
   // submitted seconds ago. Same one-shot-recursion-guard shape as the Pending Overrides/
   // Transfers refetches below.
   if(!_skipSigRefresh){
-    _refreshDayCloseSignatures().then(function(){closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,_unapprovedTransfers,true);});
+    _refreshDayCloseSignatures().then(function(){
+      // QUEUE GATE (follow-up hardening): a box this device unlocked itself is never
+      // overwritten by the refresh above (see _refreshDayCloseSignatures's own comment) - so a
+      // signature that failed to push and is only sitting in _dayCloseSigQueue's retry queue,
+      // never actually confirmed remotely, would otherwise still read as "signed" here. Try
+      // one fresh flush before deciding; block if it still can't land rather than silently
+      // trusting a local value nothing has confirmed.
+      var pending=_dayCloseSigPendingRoles();
+      if(!pending.length){closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,_unapprovedTransfers,true);return;}
+      _dayCloseSigFlushOne(pending).then(function(stillPending){
+        if(stillPending.length){
+          toast('Cannot close: '+stillPending.join(' and ')+' signature still syncing — check your connection and try again.',true);
+          return;
+        }
+        closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,_unapprovedTransfers,true);
+      });
+    });
     return;
   }
   if(!sigData.sigOp){toast('Operator signature box must be signed first',true);return;}
