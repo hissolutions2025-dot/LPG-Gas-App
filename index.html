@@ -101,7 +101,8 @@
   body[data-view="transferView"] #transferView,
   body[data-view="pendingOverridesView"] #pendingOverridesView,
   body[data-view="verifiedTakeView"] #verifiedTakeView,
-  body[data-view="rangeBalanceView"] #rangeBalanceView{display:block !important;}
+  body[data-view="rangeBalanceView"] #rangeBalanceView,
+  body[data-view="dailySalesView"] #dailySalesView{display:block !important;}
   #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(calc(100% + 40px));background:var(--ok);color:#fff;padding:14px 22px;border-radius:12px;font-weight:700;font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.25);transition:transform .3s;z-index:70;max-width:90%;text-align:center;}
   /* Dismiss slides by the toast's OWN height (+ margin), not a fixed 80px - a fixed offset
      hid a short one-line toast fine but left a tall, wrapped multi-line message (e.g. the
@@ -335,6 +336,7 @@
       <button class="tile t6" data-key="transfer" id="tileTransfer" onclick="openTransfers()" style="display:none"><div class="ic">&#8646;</div><h3>Stock Transfer</h3><p>Owner: move cylinders between branches</p><span class="badge" id="b-transfer" style="display:none">0</span></button>
       <button class="tile t1" data-key="verifiedTake" id="tileVerifiedTake" onclick="openVerifiedTake()" style="display:none"><div class="ic">&#9745;</div><h3>Verified Stock Take</h3><p>Auditor: independent physical count</p></button>
       <button class="tile t3" data-key="rangeBalance" id="tileRangeBalance" onclick="openRangeBalance()" style="display:none"><div class="ic">&#128202;</div><h3>Stock Balance</h3><p>Owner: balance stock over any date range</p></button>
+      <button class="tile t4" data-key="dailySales" id="tileDailySales" onclick="openDailySales()" style="display:none"><div class="ic">&#128176;</div><h3>Daily Sales</h3><p>Manager/Owner: sold + returned cylinders today</p></button>
     </div>
     <div class="cFooter" id="homeEditBar" style="display:none">
       <button type="button" class="cbGhost" onclick="resetHomeLayout()">Reset layout</button>
@@ -438,6 +440,17 @@
       <input id="rbEnd" type="date" onchange="rbLoad()">
       <div id="rbReport"></div>
     </div>
+  </div>
+</div>
+
+<!-- DAILY SALES / RETURNS (Manager + Owner) -->
+<div id="dailySalesView" class="view">
+  <div class="wrap">
+    <div class="cgRow"><label>Branch</label><select class="mField" id="dsBranch" style="flex:1;margin:0" onchange="dsLoad()"><option>Helderberg</option><option>Kleinmond</option></select></div>
+    <div id="dsGrid"></div>
+    <div class="callout" id="dsPrivateKg" style="margin-top:10px"></div>
+    <div class="callout" id="dsNetExchange" style="font-weight:800"></div>
+    <button class="saveBtn" onclick="dsCommit()" style="margin-top:14px">Commit Daily Sales</button>
   </div>
 </div>
 
@@ -1493,6 +1506,77 @@ function _manifoldPendingFlush(){
     },function(e){_manifoldPendingQueue(payload);});
   });
 }
+// ===== Daily Sales / Returns (daily_sales) - closes the "no point-of-sale record" gap =====
+var _dsRows={}; // size -> {sold, returned}
+function openDailySales(){
+  if(role!=='Manager'&&role!=='Owner'){toast('Not available for this role',true);return;}
+  show('dailySalesView');
+  document.getElementById('backBtn').style.display='block';
+  document.getElementById('hTitle').textContent='Daily Sales';
+  document.getElementById('hSub').textContent='Sold + returned cylinders today';
+  document.getElementById('dsBranch').value=(branch||'Helderberg');
+  dsLoad();
+}
+function dsRenderGrid(){
+  var g=document.getElementById('dsGrid');
+  g.innerHTML=ALLSIZES.map(function(sz){
+    var r=_dsRows[sz]||{sold:0,returned:0};
+    var diff=num(r.sold)-num(r.returned);
+    return '<div class="brandCard"><b style="font-size:12px">'+sz+'</b><div class="bLine" style="margin-top:6px">'+
+      '<span style="font-size:11px;font-weight:800;color:var(--navy);text-transform:uppercase;letter-spacing:.4px;width:56px;flex:none">Sold</span>'+
+      '<input type="number" min="0" step="1" value="'+num(r.sold)+'" oninput="dsSetLine(\''+sz+'\',\'sold\',this.value)">'+
+      '</div><div class="bLine" style="margin-top:4px">'+
+      '<span style="font-size:11px;font-weight:800;color:var(--navy);text-transform:uppercase;letter-spacing:.4px;width:56px;flex:none">Back</span>'+
+      '<input type="number" min="0" step="1" value="'+num(r.returned)+'" oninput="dsSetLine(\''+sz+'\',\'returned\',this.value)">'+
+      '<span style="font-size:11px;color:var(--muted);flex:none">Diff '+(diff>0?'+':'')+diff+'</span>'+
+      '</div></div>';
+  }).join('');
+  dsRenderNetExchange();
+}
+function dsSetLine(sz,field,val){
+  if(!_dsRows[sz])_dsRows[sz]={sold:0,returned:0};
+  _dsRows[sz][field]=Math.max(0,Math.round(num(val)));
+  dsRenderGrid(); // re-render for the updated Diff readout - cheap, ALLSIZES is small
+}
+function dsRenderNetExchange(){
+  var soldTotal=0,returnedTotal=0;
+  ALLSIZES.forEach(function(sz){var r=_dsRows[sz];if(r){soldTotal+=num(r.sold);returnedTotal+=num(r.returned);}});
+  var net=soldTotal-returnedTotal;
+  document.getElementById('dsNetExchange').textContent='Net Cylinder Exchange: '+(net>0?'+':'')+net+' shells ('+soldTotal+' sold − '+returnedTotal+' back)';
+}
+function dsLoad(){
+  var br=document.getElementById('dsBranch').value;
+  _dsRows={};
+  // Existing today's entry, if the Manager already committed once and is correcting it.
+  sb.from('daily_sales').select('lines').eq('branch',br).eq('date',today).maybeSingle().then(function(res){
+    if(res.data&&res.data.lines){
+      res.data.lines.forEach(function(l){_dsRows[l.size]={sold:num(l.sold),returned:num(l.returned)};});
+    }
+    dsRenderGrid();
+  },function(){dsRenderGrid();});
+  // In-house (filledBy 'Us') Private Refill kg for today, read-only display - already-
+  // balanced-against-Manifold data (see manifoldBalance's own privKg filter), not re-entered.
+  sb.from('capture_live_rows').select('row').eq('kind','private').eq('branch',br).eq('date',today).then(function(res){
+    var kg=((res.data||[]).map(function(r){return r.row||{};}).filter(function(r){return r.filledBy!=='Supplier';})
+      .reduce(function(s,r){return s+num(r.pumped);},0));
+    document.getElementById('dsPrivateKg').textContent='Private Refill (in-house): '+kg.toFixed(2)+' kg';
+  },function(){document.getElementById('dsPrivateKg').textContent='Private Refill (in-house): —';});
+}
+var _dsCommitBusy=false;
+function dsCommit(){
+  if(_dsCommitBusy)return;
+  var br=document.getElementById('dsBranch').value;
+  var lines=ALLSIZES.map(function(sz){var r=_dsRows[sz]||{sold:0,returned:0};return {size:sz,sold:num(r.sold),returned:num(r.returned)};})
+    .filter(function(l){return l.sold||l.returned;});
+  if(!lines.length){toast('Nothing entered',true);return;}
+  _dsCommitBusy=true;
+  sb.from('daily_sales').upsert({branch:br,date:today,lines:lines,entered_by:currentProfile&&currentProfile.id,entered_by_name_snapshot:operator},{onConflict:'branch,date'}).then(function(res){
+    _dsCommitBusy=false;
+    if(res.error){toast('Could not save - try again',true);return;}
+    auditLog('Daily Sales committed',br+' - '+lines.length+' size(s)');
+    toast('Daily Sales saved');
+  },function(){_dsCommitBusy=false;toast('Could not save - try again',true);});
+}
 // ===== Branch Transfers (stock_transfers) - Phase 2 of the Stock Balance Management
 // spec (docs/superpowers/specs/2026-09-09-stock-balance-management-design.md).
 // Dispatch = insert. Receipt/Approval = .update() on the same row (Supabase supports
@@ -2104,21 +2188,22 @@ function _fetchManifoldLiveRows(br,date){
 // while in flight/offline/no prior close - never blocks capture).
 var _manifoldPrevClose={};
 function _fetchManifoldPrevClose(br){
-  var yDate;
-  try{yDate=_dayBefore(today);}catch(e){return;}
-  sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
-    if(res.error){console.error('_fetchManifoldPrevClose failed for '+br+':',res.error.message);return;}
-    if(!res.data){delete _manifoldPrevClose[br];return;} // no prior close - tier 3 has nothing, tier 4 (no baseline) applies
-    var exp={};
-    ((res.data.store_snapshot&&res.data.store_snapshot.manifold)||[]).filter(function(r){return r.stage==='Closing';}).forEach(function(r){
-      // scale/gasLeft added for the Opening-discipline live check (see popCalc()) - the
-      // Removed-step baseline chain that originally built this cache only ever needed
-      // brand/gasType/tare, gasLeft is derived defensively (r.gasLeft may be absent on an
-      // older row that predates the field) rather than assumed present.
-      exp[r.cyl]={brand:r.brand,gasType:r.gasType,tare:num(r.tare),scale:num(r.scale),gasLeft:(r.gasLeft!==undefined?num(r.gasLeft):(num(r.scale)-num(r.tare)))};
-    });
-    _manifoldPrevClose[br]=exp;
-  },function(e){console.error('_fetchManifoldPrevClose rejected for '+br+':',e&&e.message);});
+  _lastCloseDate(br,today).then(function(yDate){
+    if(!yDate){delete _manifoldPrevClose[br];return;} // no prior close - tier 3 has nothing, tier 4 (no baseline) applies
+    return sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
+      if(res.error){console.error('_fetchManifoldPrevClose failed for '+br+':',res.error.message);return;}
+      if(!res.data){delete _manifoldPrevClose[br];return;} // no prior close - tier 3 has nothing, tier 4 (no baseline) applies
+      var exp={};
+      ((res.data.store_snapshot&&res.data.store_snapshot.manifold)||[]).filter(function(r){return r.stage==='Closing';}).forEach(function(r){
+        // scale/gasLeft added for the Opening-discipline live check (see popCalc()) - the
+        // Removed-step baseline chain that originally built this cache only ever needed
+        // brand/gasType/tare, gasLeft is derived defensively (r.gasLeft may be absent on an
+        // older row that predates the field) rather than assumed present.
+        exp[r.cyl]={brand:r.brand,gasType:r.gasType,tare:num(r.tare),scale:num(r.scale),gasLeft:(r.gasLeft!==undefined?num(r.gasLeft):(num(r.scale)-num(r.tare)))};
+      });
+      _manifoldPrevClose[br]=exp;
+    },function(e){console.error('_fetchManifoldPrevClose rejected for '+br+':',e&&e.message);});
+  });
 }
 function _getManifoldPrevClose(br,item){return (_manifoldPrevClose[br]||{})[item]||null;}
 const SIZEKG={'5kg':5,'9kg':9,'12kg':12,'14kg':14,'19kg':19,'14kg-FLT':14,'19kg-FLT':19,'8kg-Prop':8,'18kg-Prop':18};
@@ -4160,6 +4245,7 @@ function _finishLogin(u,b){
   var _tvt=document.getElementById('tileVerifiedTake');if(_tvt)_tvt.style.display=(perm('verifiedCount')||role==='Owner')?'flex':'none';
   // opened to Manager+Owner per the spec's real intended audience.
   var _trb=document.getElementById('tileRangeBalance');if(_trb)_trb.style.display=(role==='Manager'||role==='Owner')?'flex':'none';
+  var _tds=document.getElementById('tileDailySales');if(_tds)_tds.style.display=(role==='Manager'||role==='Owner')?'flex':'none';
   auditLog('Login','Signed in to '+b);
   editUnlocked=false;
   loadWorkingStore();
@@ -4821,20 +4907,25 @@ var _liveExpectedOpening={};
 // NOT affected by this (real enforcement was never bypassed) - this only fixes the visual grid
 // overlay's own staleness on first open.
 function _fetchLiveExpectedOpening(br){
-  var yDate;
-  try{yDate=_dayBefore(today);}catch(e){return Promise.resolve(false);}
-  return sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
-    if(res.error){console.error('_fetchLiveExpectedOpening failed for '+br+':',res.error.message);return false;}
-    if(!res.data){delete _liveExpectedOpening[br];return false;} // no prior close - local carry-forward fallback applies
-    var exp={};
-    ((res.data.store_snapshot&&res.data.store_snapshot.count)||[]).filter(function(r){return r.countType==='Closing';}).forEach(function(r){
-      var st=(r.state==='Empty')?'Empty':'Full';
-      if(!exp[r.size])exp[r.size]={Full:{},Empty:{}};
-      exp[r.size][st][r.brand]=(exp[r.size][st][r.brand]||0)+num(r.qty);
-    });
-    _liveExpectedOpening[br]={exp:exp};
-    return true;
-  },function(e){console.error('_fetchLiveExpectedOpening rejected for '+br+':',e&&e.message);return false;});
+  // Merge of two independent fixes: _lastCloseDate (reaches the last ACTUAL close, skipping
+  // non-working days like Sunday, instead of literally "yesterday") + returning a Promise
+  // resolving true/false (so openCount()/cSetBranch() can re-render once this lands, instead
+  // of the fetch firing with nothing ever repainting once it arrived).
+  return _lastCloseDate(br,today).then(function(yDate){
+    if(!yDate){delete _liveExpectedOpening[br];return false;} // no prior close - local carry-forward fallback applies
+    return sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
+      if(res.error){console.error('_fetchLiveExpectedOpening failed for '+br+':',res.error.message);return false;}
+      if(!res.data){delete _liveExpectedOpening[br];return false;} // no prior close - local carry-forward fallback applies
+      var exp={};
+      ((res.data.store_snapshot&&res.data.store_snapshot.count)||[]).filter(function(r){return r.countType==='Closing';}).forEach(function(r){
+        var st=(r.state==='Empty')?'Empty':'Full';
+        if(!exp[r.size])exp[r.size]={Full:{},Empty:{}};
+        exp[r.size][st][r.brand]=(exp[r.size][st][r.brand]||0)+num(r.qty);
+      });
+      _liveExpectedOpening[br]={exp:exp};
+      return true;
+    },function(e){console.error('_fetchLiveExpectedOpening rejected for '+br+':',e&&e.message);return false;});
+  });
 }
 function _getLiveExpectedOpening(br){return _liveExpectedOpening[br]||loadExpectedOpening(br);}
 function cExpectedFor(br,st,sz,brand){
@@ -5523,6 +5614,26 @@ function sumBySize(rows,field){
   return out;
 }
 function totalOfSizeMap(m){return Object.keys(m).reduce(function(s,k){return s+m[k];},0);}
+// Real captured Sales for every day in the range that has one - {date: {sold:{}, returned:{}}}
+// per size, summed across the range. Days with no daily_sales row simply contribute nothing
+// here (the aggregator below falls back to the existing inference for the whole range if
+// this comes back empty - a range can't be "partially captured, partially inferred" per size,
+// that would double-count or under-count depending which days had real data).
+function _fetchRangeDailySales(br,startDate,endDate){
+  return sb.from('daily_sales').select('lines').eq('branch',br).gte('date',startDate).lte('date',endDate).then(function(res){
+    if(res.error){console.error('_fetchRangeDailySales failed:',res.error.message);return null;}
+    var rows=res.data||[];
+    if(!rows.length)return null; // nothing captured anywhere in this range - caller falls back to inference
+    var soldBySize={},returnedBySize={};
+    rows.forEach(function(r){
+      (r.lines||[]).forEach(function(l){
+        soldBySize[l.size]=(soldBySize[l.size]||0)+num(l.sold);
+        returnedBySize[l.size]=(returnedBySize[l.size]||0)+num(l.returned);
+      });
+    });
+    return {soldBySize:soldBySize,returnedBySize:returnedBySize,daysCaptured:rows.length};
+  },function(){return null;});
+}
 function fetchRangeStockBalance(br,startDate,endDate){
   return Promise.all([
     _fetchRangeOpeningCounts(br,startDate),
@@ -5532,7 +5643,8 @@ function fetchRangeStockBalance(br,startDate,endDate){
     _fetchRangeCaptureLiveRows('private',br,startDate,endDate),
     _fetchRangeManifold(br,startDate,endDate),
     _fetchRangeTransfers(br,startDate,endDate),
-    _fetchRangeFaulty(br,startDate,endDate)
+    _fetchRangeFaulty(br,startDate,endDate),
+    _fetchRangeDailySales(br,startDate,endDate)
   ]).then(function(r){
     var openingRows=r[0], closingRows=r[1], receivedRows=r[2], refillRows=r[3], privateRows=r[4],
         manifold=r[5], transfers=r[6], faulty=r[7];
@@ -5568,6 +5680,16 @@ function fetchRangeStockBalance(br,startDate,endDate){
     });
     estSoldTotal-=faulty.loggedInRangeCount;
 
+    var realSales=r[8]; // _fetchRangeDailySales result, or null if nothing captured this range
+    var salesIsReal=!!realSales;
+    if(salesIsReal){
+      estSoldBySize={}; estSoldTotal=0;
+      allSizes.forEach(function(sz){
+        var v=(realSales.soldBySize[sz]||0);
+        estSoldBySize[sz]=v; estSoldTotal+=v;
+      });
+    }
+
     return {
       branch:br, startDate:startDate, endDate:endDate,
       opening:{full:openingFullBySize,empty:openingEmptyBySize,fullTotal:totalOfSizeMap(openingFullBySize),emptyTotal:totalOfSizeMap(openingEmptyBySize),hasData:openingRows.length>0},
@@ -5578,7 +5700,7 @@ function fetchRangeStockBalance(br,startDate,endDate){
       transfers:{inBySize:transfers.inBySize,outBySize:transfers.outBySize,inTotal:totalOfSizeMap(transfers.inBySize),outTotal:totalOfSizeMap(transfers.outBySize)},
       manifold:{openingKg:manOpeningKg,closingKg:manClosingKg,diffKg:manOpeningKg-manClosingKg,hasOpening:manifold.opening.length>0,hasClosing:manifold.closing.length>0},
       faulty:faulty,
-      estSold:{bySize:estSoldBySize,total:estSoldTotal}
+      estSold:{bySize:estSoldBySize,total:estSoldTotal,isReal:salesIsReal,daysCaptured:realSales?realSales.daysCaptured:0}
     };
   });
 }
@@ -5683,7 +5805,7 @@ function rbRenderReport(bal){
     '<tr><td>Opening ('+bal.startDate+')</td><td class="n">'+(bal.manifold.hasOpening?kg(bal.manifold.openingKg):'—')+'</td></tr>'+
     '<tr><td>Closing ('+bal.endDate+')</td><td class="n">'+(bal.manifold.hasClosing?kg(bal.manifold.closingKg):'—')+'</td></tr>'+
     '<tr><td><b>Diff</b></td><td class="n"><b>'+((bal.manifold.hasOpening&&bal.manifold.hasClosing)?kg(bal.manifold.diffKg):'—')+'</b></td></tr></table>';
-  html+='<div class="callout" style="font-weight:800">Estimated sold this range: '+bal.estSold.total+' cylinder(s)</div>';
+  html+='<div class="callout" style="font-weight:800">'+(bal.estSold.isReal?'Sales (captured, '+bal.estSold.daysCaptured+' day(s))':'Estimated sold this range')+': '+bal.estSold.total+' cylinder(s)</div>';
   return html;
 }
 // Task 4: one marker per Auditor take found inside the picked range. comparisons[i]
@@ -5993,6 +6115,19 @@ function _dayBefore(dateStr){
   d.setUTCDate(d.getUTCDate()-1);
   return d.toISOString().slice(0,10);
 }
+// Returns the most recent date (strictly before `beforeDate`) that `br` actually closed, or
+// null if none exists. Replaces the naive "always literally yesterday" pattern every
+// prev-close comparison in this file used to follow (_dayBefore(x) + an exact-date lookup) -
+// on a day following a non-working day (Sunday, a holiday - no Close Day happened), that
+// naive pattern silently found nothing and every blind-mismatch/baseline/report comparison
+// just didn't fire, instead of correctly reaching back to the last real close (e.g. Saturday).
+function _lastCloseDate(br,beforeDate){
+  return sb.from('day_closes').select('date').eq('branch',br).lt('date',beforeDate)
+    .order('date',{ascending:false}).limit(1).then(function(res){
+      if(res.error||!res.data||!res.data.length)return null;
+      return res.data[0].date;
+    },function(){return null;});
+}
 // Reads yesterday's Closing figures live from the shared day_closes snapshot (never
 // stored separately - see the design doc's rejection of a redundant expected_opening
 // table), diffs them against today's committed Opening stock_counts rows for this
@@ -6021,28 +6156,34 @@ function _refreshCountMismatches(br, localOverlayRows){
   // session has logged in must keep querying/writing under the date it was originally
   // issued for, never silently drift onto the new session's date.
   var myToday=today;
+  // Resolved (below) to the actual last-close date this run's baseline comparison used
+  // (see _lastCloseDate) - stashed here, and onto each mismatch object pushed into
+  // store._openMismatch further down, so the mismatch-resolution hand-off
+  // (adjustMismatch's accepted-branch block, ~10660) can reuse the EXACT date this run
+  // compared against instead of risking an independently-recomputed date disagreeing.
+  var myCloseDate=null;
   var prior=_refreshCountMismatchesChains[br]||Promise.resolve();
   var chained=prior.then(function(){
-    var yDate;
-    try{
-      yDate=_dayBefore(myToday);
-    }catch(e){
-      console.error('_refreshCountMismatches: could not compute yesterday\'s date:',e.message);
-      return;
-    }
-    var dcPromise=sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle();
-    // op is read live from the shared stock_counts table (the Phase 2b pilot's table),
-    // never from local store.count - a device that hasn't itself committed or synced
-    // anything today must never be treated as "nothing counted anywhere," since another
-    // device may genuinely have real, unresolved mismatches this device simply doesn't
-    // know about locally. Reading both baselines live is the whole point of this design
-    // (see the spec's rejection of a redundant expected_opening table) - op deserved the
-    // exact same treatment exp already got, and originally didn't.
-    var opPromise=sb.from('stock_counts').select('*').eq('branch',br).eq('date',myToday).eq('count_type','Opening');
-    return Promise.all([dcPromise,opPromise]).then(function(results){
-      var dcRes=results[0], opRes=results[1];
-      if(dcRes.error)throw new Error('day_closes fetch failed: '+dcRes.error.message);
-      if(opRes.error)throw new Error('stock_counts fetch failed: '+opRes.error.message);
+    return _lastCloseDate(br,myToday).then(function(yDate){
+      myCloseDate=yDate;
+      // No prior close at all (yDate null) - skip the day_closes fetch entirely and use the
+      // same "nothing found" shape maybeSingle() itself returns for a miss, so every check
+      // below (dcRes.error, dcRes.data) behaves exactly as it already did for that outcome.
+      var dcPromise=yDate
+        ? sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle()
+        : Promise.resolve({data:null,error:null});
+      // op is read live from the shared stock_counts table (the Phase 2b pilot's table),
+      // never from local store.count - a device that hasn't itself committed or synced
+      // anything today must never be treated as "nothing counted anywhere," since another
+      // device may genuinely have real, unresolved mismatches this device simply doesn't
+      // know about locally. Reading both baselines live is the whole point of this design
+      // (see the spec's rejection of a redundant expected_opening table) - op deserved the
+      // exact same treatment exp already got, and originally didn't.
+      var opPromise=sb.from('stock_counts').select('*').eq('branch',br).eq('date',myToday).eq('count_type','Opening');
+      return Promise.all([dcPromise,opPromise]).then(function(results){
+        var dcRes=results[0], opRes=results[1];
+        if(dcRes.error)throw new Error('day_closes fetch failed: '+dcRes.error.message);
+        if(opRes.error)throw new Error('stock_counts fetch failed: '+opRes.error.message);
 
       // hasBaseline mirrors computeOpeningMismatches()'s own "no prior close to compare
       // against" skip (~3893: !expWrap||!expWrap.exp) - there, no localStorage entry for
@@ -6199,16 +6340,20 @@ function _refreshCountMismatches(br, localOverlayRows){
           })
         : Promise.resolve();
 
-      return reconcileAndUpsertPromise;
-    }).then(function(){
-      return sb.from('count_mismatches').select('*').eq('branch',br).eq('date',myToday);
-    }).then(function(res){
-      if(res.error)throw new Error('count_mismatches fetch failed: '+res.error.message);
-      if(_sessionGen!==myGen)return; // a different session has started since this call began - discard, matching the offline-safe "never write stale data" contract
-      var rows=res.data||[];
-      store._openMismatch=(store._openMismatch||[]).filter(function(m){return m.branch!==br||m.kind==='manifold';});
-      rows.forEach(function(d){store._openMismatch.push(_countMismatchFromShared(d));});
+        return reconcileAndUpsertPromise;
+      });
     });
+  }).then(function(){
+    return sb.from('count_mismatches').select('*').eq('branch',br).eq('date',myToday);
+  }).then(function(res){
+    if(res.error)throw new Error('count_mismatches fetch failed: '+res.error.message);
+    if(_sessionGen!==myGen)return; // a different session has started since this call began - discard, matching the offline-safe "never write stale data" contract
+    var rows=res.data||[];
+    store._openMismatch=(store._openMismatch||[]).filter(function(m){return m.branch!==br||m.kind==='manifold';});
+    // closeDate stashed here (not just kept in this function's closure) so
+    // adjustMismatch()'s accepted-branch hand-off (~10660) can read it straight off `m`
+    // and reuse the exact date this refresh compared against - see myCloseDate above.
+    rows.forEach(function(d){var mm=_countMismatchFromShared(d);mm.closeDate=myCloseDate;store._openMismatch.push(mm);});
   }).catch(function(e){
     console.error('_refreshCountMismatches failed for '+br+':',e&&e.message);
   });
@@ -10692,20 +10837,32 @@ function adjustMismatch(i){
           // Manager working a different branch's mismatch is told to switch branches first
           // rather than risking opening the wrong branch's saved day.
           if(accepted){
-            var yDate;
-            try{yDate=_dayBefore(myMismatchDate);}catch(e){console.error('Could not compute the previous day for the Closing hand-off:',e.message);}
-            if(yDate){
-              if(bc!==branch){
-                toast('To correct '+yDate+'\'s Closing for '+itemLabel+', switch to '+bc+' branch, then use Count History → Past.',true);
-              } else {
-                // No toast here - the resolved line's own "✓ accepted as correct" is already
-                // visible in the (dimmed, still-showing-behind-the-modal) Mismatches list
-                // itself, and the auth modal's own title below names the date. A toast tried
-                // here before, but its 1800ms fade outlives the short pause before the modal
-                // opens, so it visibly clipped/overlapped the modal instead of finishing first.
-                setTimeout(function(){viewSavedDay(yDate,'Open the closing count for '+yDate+'?');},500);
+            // m.closeDate (when present) is the EXACT date _refreshCountMismatches actually
+            // compared this mismatch against (stashed there for this reason - see its own
+            // comment). Reusing it here, rather than independently recomputing, guarantees
+            // this hand-off always lands on the same date the mismatch itself was raised
+            // against, even in a hypothetical case where day_closes gains an earlier row
+            // between then and now. m.closeDate!==undefined (not just truthy) is the right
+            // check: a stashed `null` means _refreshCountMismatches itself found no prior
+            // close and must be honoured as-is, not treated as "not stashed, go recompute".
+            // Only a genuinely never-stashed entry (e.g. a local-only computeOpeningMismatches
+            // entry not yet overwritten by _refreshCountMismatches's async refresh) falls
+            // back to resolving it fresh here.
+            var closeDatePromise=(m.closeDate!==undefined)?Promise.resolve(m.closeDate):_lastCloseDate(bc,myMismatchDate);
+            closeDatePromise.then(function(yDate){
+              if(yDate){
+                if(bc!==branch){
+                  toast('To correct '+yDate+'\'s Closing for '+itemLabel+', switch to '+bc+' branch, then use Count History → Past.',true);
+                } else {
+                  // No toast here - the resolved line's own "✓ accepted as correct" is already
+                  // visible in the (dimmed, still-showing-behind-the-modal) Mismatches list
+                  // itself, and the auth modal's own title below names the date. A toast tried
+                  // here before, but its 1800ms fade outlives the short pause before the modal
+                  // opens, so it visibly clipped/overlapped the modal instead of finishing first.
+                  setTimeout(function(){viewSavedDay(yDate,'Open the closing count for '+yDate+'?');},500);
+                }
               }
-            }
+            });
           }
       });
     }
@@ -11190,18 +11347,19 @@ function _fetchFaultyHeld(br){
 // baseline", not "expected zero of everything", so an empty result here means the Opening
 // table renders with no comparison column rather than a misleading all-zero one.
 function _fetchPrevCloseExpected(br,date){
-  var yDate;
-  try{yDate=_dayBefore(date);}catch(e){return Promise.resolve({});}
-  return sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
-    if(res.error||!res.data)return {};
-    var exp={};
-    ((res.data.store_snapshot&&res.data.store_snapshot.count)||[]).filter(function(r){return r.countType==='Closing';}).forEach(function(r){
-      var st=(r.state==='Empty')?'Empty':'Full';
-      if(!exp[r.size])exp[r.size]={Full:{},Empty:{}};
-      exp[r.size][st][r.brand]=(exp[r.size][st][r.brand]||0)+num(r.qty);
-    });
-    return Object.keys(exp).length?exp:{};
-  },function(){return {};});
+  return _lastCloseDate(br,date).then(function(yDate){
+    if(!yDate)return {};
+    return sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
+      if(res.error||!res.data)return {};
+      var exp={};
+      ((res.data.store_snapshot&&res.data.store_snapshot.count)||[]).filter(function(r){return r.countType==='Closing';}).forEach(function(r){
+        var st=(r.state==='Empty')?'Empty':'Full';
+        if(!exp[r.size])exp[r.size]={Full:{},Empty:{}};
+        exp[r.size][st][r.brand]=(exp[r.size][st][r.brand]||0)+num(r.qty);
+      });
+      return Object.keys(exp).length?exp:{};
+    },function(){return {};});
+  });
 }
 // Sum of every brand's qty for one size+state in an _fetchPrevCloseExpected() result.
 function _prevCloseTotal(exp,sz,st){
@@ -11253,9 +11411,11 @@ function buildCountDocAsync(src){
     // stock count is not reflecting in the report").
   ]):Promise.resolve();
   return _liveFetch.then(function(){
-    return Promise.all([_fetchDayActivity(_b,src.date),_fetchFaultyHeld(_b),_fetchPrevCloseExpected(_b,src.date)]);
+    return Promise.all([_fetchDayActivity(_b,src.date),_fetchFaultyHeld(_b),_fetchPrevCloseExpected(_b,src.date),
+      sb.from('daily_sales').select('lines,entered_by_name_snapshot').eq('branch',_b).eq('date',src.date).maybeSingle().then(function(res){return (res&&res.data)?res.data:null;},function(){return null;})
+    ]);
   }).then(function(fetched){
-    var activityRows=fetched[0], faultyRows=fetched[1], prevCloseExp=fetched[2];
+    var activityRows=fetched[0], faultyRows=fetched[1], prevCloseExp=fetched[2], dailySalesRow=fetched[3];
     var people=_groupActivityByPerson(activityRows);
     var excGroups=_groupExceptions(activityRows);
     var faultyTot=_faultyHeldTotals(faultyRows);
@@ -11579,32 +11739,58 @@ function buildCountDocAsync(src){
     });
     if(salesSizes.length){
       var soldRowsHtml='',soldTotal=0,soldKg=0,recvBackRowsHtml='',recvBackTotal=0;
-      salesSizes.forEach(function(sz){
-        var openF=totalOf(counts.Opening.Full[sz]),closeF=totalOf(counts.Closing.Full[sz]);
-        var recvIn=(recvAgg[sz]&&recvAgg[sz].fullIn)||0,refilled=refillCountBySize[sz]||0,faultyF=faultyFullBySize[sz]||0;
-        var sold=openF+recvIn+refilled-closeF-faultyF;
-        soldTotal+=sold;soldKg+=sold*_nominalKg(sz);
-        soldRowsHtml+='<tr><td class="sz">'+sz+'</td><td class="n">'+openF+'</td><td class="n">'+recvIn+'</td><td class="n">'+refilled+'</td><td class="n">'+closeF+'</td><td class="n">'+faultyF+'</td><td class="n"><b>'+sold+'</b></td></tr>';
-        var openE=totalOf(counts.Opening.Empty[sz]),closeE=totalOf(counts.Closing.Empty[sz]);
-        var sentOut=(recvAgg[sz]&&recvAgg[sz].emptyOut)||0,faultyE=faultyEmptyBySize[sz]||0;
-        var received=closeE-openE+sentOut+faultyE;
-        recvBackTotal+=received;
-        recvBackRowsHtml+='<tr><td class="sz">'+sz+'</td><td class="n">'+closeE+'</td><td class="n">'+openE+'</td><td class="n">'+sentOut+'</td><td class="n">'+faultyE+'</td><td class="n"><b>'+received+'</b></td></tr>';
-      });
+      var salesIsReal=!!dailySalesRow;
+      if(salesIsReal){
+        // Real captured Daily Sales exists for this branch+date - use it directly instead of
+        // the mass-balance inference below (see openDailySales/dsCommit).
+        var _dsLinesBySize={};
+        (dailySalesRow.lines||[]).forEach(function(l){_dsLinesBySize[l.size]=l;});
+        salesSizes.forEach(function(sz){
+          var l=_dsLinesBySize[sz]||{sold:0,returned:0};
+          var sold=num(l.sold),received=num(l.returned);
+          soldTotal+=sold;soldKg+=sold*_nominalKg(sz);
+          soldRowsHtml+='<tr><td class="sz">'+sz+'</td><td class="n"><b>'+sold+'</b></td></tr>';
+          recvBackTotal+=received;
+          recvBackRowsHtml+='<tr><td class="sz">'+sz+'</td><td class="n"><b>'+received+'</b></td></tr>';
+        });
+      } else {
+        salesSizes.forEach(function(sz){
+          var openF=totalOf(counts.Opening.Full[sz]),closeF=totalOf(counts.Closing.Full[sz]);
+          var recvIn=(recvAgg[sz]&&recvAgg[sz].fullIn)||0,refilled=refillCountBySize[sz]||0,faultyF=faultyFullBySize[sz]||0;
+          var sold=openF+recvIn+refilled-closeF-faultyF;
+          soldTotal+=sold;soldKg+=sold*_nominalKg(sz);
+          soldRowsHtml+='<tr><td class="sz">'+sz+'</td><td class="n">'+openF+'</td><td class="n">'+recvIn+'</td><td class="n">'+refilled+'</td><td class="n">'+closeF+'</td><td class="n">'+faultyF+'</td><td class="n"><b>'+sold+'</b></td></tr>';
+          var openE=totalOf(counts.Opening.Empty[sz]),closeE=totalOf(counts.Closing.Empty[sz]);
+          var sentOut=(recvAgg[sz]&&recvAgg[sz].emptyOut)||0,faultyE=faultyEmptyBySize[sz]||0;
+          var received=closeE-openE+sentOut+faultyE;
+          recvBackTotal+=received;
+          recvBackRowsHtml+='<tr><td class="sz">'+sz+'</td><td class="n">'+closeE+'</td><td class="n">'+openE+'</td><td class="n">'+sentOut+'</td><td class="n">'+faultyE+'</td><td class="n"><b>'+received+'</b></td></tr>';
+        });
+      }
       var pvAllTot=pv.reduce(function(a,r){return a+num(r.pumped);},0); // both Us AND Supplier-filled - both are real sales, unlike the Manifold balance's Us-only filter
+      var pvUsTot=pv.filter(function(r){return r.filledBy!=='Supplier';}).reduce(function(a,r){return a+num(r.pumped);},0);
       var estSoldKgTotal=soldKg+pvAllTot;
       var netExchange=soldTotal-recvBackTotal;
+      var soldTableHtml=salesIsReal?
+        ('<table><tr><th>Size</th><th>Sold</th></tr>'+soldRowsHtml+'<tr><td><b>Total units sold</b></td><td class="n"><b>'+soldTotal+'</b></td></tr></table>'):
+        ('<table><tr><th>Size</th><th>Opening</th><th>+ Received in</th><th>+ Refilled</th><th>\u2212 Closing</th><th>\u2212 Faulty (Full)</th><th>= Est. sold</th></tr>'+soldRowsHtml+
+        '<tr><td colspan="6"><b>Total units sold</b></td><td class="n"><b>'+soldTotal+'</b></td></tr></table>');
+      var recvTableHtml=salesIsReal?
+        ('<table><tr><th>Size</th><th>Returned</th></tr>'+recvBackRowsHtml+'<tr><td><b>Total units received</b></td><td class="n"><b>'+recvBackTotal+'</b></td></tr></table>'):
+        ('<table><tr><th>Size</th><th>Closing</th><th>\u2212 Opening</th><th>+ Sent to supplier</th><th>+ Faulty (Empty)</th><th>= Est. received</th></tr>'+recvBackRowsHtml+
+        '<tr><td colspan="5"><b>Total units received</b></td><td class="n"><b>'+recvBackTotal+'</b></td></tr></table>');
       rows+='<h2>Estimated Stock Sales &amp; Cylinder Exchange</h2>'+
-        '<p style="font-size:11px;color:#777">Inferred, not observed - the app has no point-of-sale record. Whatever left stock and wasn\'t received, refilled, or logged faulty is assumed sold; the same logic run in reverse on empties estimates what customers brought back.</p>'+
-        '<h3 style="font-size:13px;color:#1F3A5F;margin:10px 0 4px">Full cylinders sold (estimate)</h3>'+
-        '<table><tr><th>Size</th><th>Opening</th><th>+ Received in</th><th>+ Refilled</th><th>\u2212 Closing</th><th>\u2212 Faulty (Full)</th><th>= Est. sold</th></tr>'+soldRowsHtml+
-        '<tr><td colspan="6"><b>Total units sold</b></td><td class="n"><b>'+soldTotal+'</b></td></tr></table>'+
-        '<h3 style="font-size:13px;color:#1F3A5F;margin:14px 0 4px">Empty cylinders received back (estimate)</h3>'+
-        '<table><tr><th>Size</th><th>Closing</th><th>\u2212 Opening</th><th>+ Sent to supplier</th><th>+ Faulty (Empty)</th><th>= Est. received</th></tr>'+recvBackRowsHtml+
-        '<tr><td colspan="5"><b>Total units received</b></td><td class="n"><b>'+recvBackTotal+'</b></td></tr></table>'+
+        (salesIsReal?
+          ('<p style="font-size:11px;color:#777">Captured directly by '+(dailySalesRow.entered_by_name_snapshot||'a manager')+' \u2014 not inferred.</p>'):
+          ('<p style="font-size:11px;color:#777">Inferred, not observed - the app has no point-of-sale record. Whatever left stock and wasn\'t received, refilled, or logged faulty is assumed sold; the same logic run in reverse on empties estimates what customers brought back.</p>'))+
+        '<h3 style="font-size:13px;color:#1F3A5F;margin:10px 0 4px">Full cylinders sold'+(salesIsReal?'':' (estimate)')+'</h3>'+
+        soldTableHtml+
+        '<h3 style="font-size:13px;color:#1F3A5F;margin:14px 0 4px">Empty cylinders received back'+(salesIsReal?'':' (estimate)')+'</h3>'+
+        recvTableHtml+
         '<table style="margin-top:8px">'+
         '<tr><td>Estimated gas sold today</td><td class="n"><b>'+estSoldKgTotal.toFixed(2)+' kg</b></td></tr>'+
         '<tr><td style="font-size:11px;color:#777">'+soldKg.toFixed(2)+'kg from '+soldTotal+' cylinders (\u2248 estimate) + '+pvAllTot.toFixed(2)+'kg Private Refill (exact, Us + Supplier-filled)</td><td></td></tr>'+
+        '<tr><td>Private Refill (in-house, part of Sales)</td><td class="n">'+pvUsTot.toFixed(2)+' kg</td></tr>'+
         '<tr><td>Net cylinder exchange</td><td class="n"><b>'+(netExchange>0?'+':'')+netExchange+' shells</b></td></tr>'+
         '<tr><td style="font-size:11px;color:#777">'+soldTotal+' sold \u2212 '+recvBackTotal+' received back \u2014 positive means more shells left than came back today</td><td></td></tr></table>'+
         '<p style="font-size:11px;color:#777">Refill\'s own pumped-kg isn\'t added again here - a refilled cylinder becomes one Full unit and is already counted through the mass-balance above, whether it sold today or is still sitting in Closing stock.</p>';
@@ -11753,9 +11939,11 @@ function buildCountCSVAsync(src){
     _refreshSharedCounts(_b)
   ]):Promise.resolve();
   return _liveFetch.then(function(){
-    return Promise.all([_fetchDayActivity(_b,src.date),_fetchFaultyHeld(_b),_fetchPrevCloseExpected(_b,src.date)]);
+    return Promise.all([_fetchDayActivity(_b,src.date),_fetchFaultyHeld(_b),_fetchPrevCloseExpected(_b,src.date),
+      sb.from('daily_sales').select('lines,entered_by_name_snapshot').eq('branch',_b).eq('date',src.date).maybeSingle().then(function(res){return (res&&res.data)?res.data:null;},function(){return null;})
+    ]);
   }).then(function(fetched){
-    var activityRows=fetched[0], faultyRows=fetched[1], prevCloseExp=fetched[2];
+    var activityRows=fetched[0], faultyRows=fetched[1], prevCloseExp=fetched[2], dailySalesRow=fetched[3];
     var people=_groupActivityByPerson(activityRows);
     var excGroups=_groupExceptions(activityRows);
     var faultyTot=_faultyHeldTotals(faultyRows);
@@ -11963,35 +12151,63 @@ function buildCountCSVAsync(src){
     });
     if(salesSizes.length){
       var soldTotal=0,soldKg=0,recvBackTotal=0;
+      var salesIsReal=!!dailySalesRow;
       section('Estimated Stock Sales & Cylinder Exchange');
-      row('Note','Inferred, not observed - the app has no point-of-sale record.');
+      if(salesIsReal){
+        row('Note','Captured directly by '+(dailySalesRow.entered_by_name_snapshot||'a manager')+' - not inferred.');
+      } else {
+        row('Note','Inferred, not observed - the app has no point-of-sale record.');
+      }
       blank();
-      row('Full cylinders sold (estimate)');
-      row('Size','Opening','+ Received in','+ Refilled','- Closing','- Faulty (Full)','= Est. sold');
       var recvBackRows=[];
-      salesSizes.forEach(function(sz){
-        var openF=totalOf(counts.Opening.Full[sz]),closeF=totalOf(counts.Closing.Full[sz]);
-        var recvIn=(recvAgg[sz]&&recvAgg[sz].fullIn)||0,refilled=refillCountBySize[sz]||0,faultyF=faultyFullBySize[sz]||0;
-        var sold=openF+recvIn+refilled-closeF-faultyF;
-        soldTotal+=sold;soldKg+=sold*_nominalKg(sz);
-        row(sz,openF,recvIn,refilled,closeF,faultyF,sold);
-        var openE=totalOf(counts.Opening.Empty[sz]),closeE=totalOf(counts.Closing.Empty[sz]);
-        var sentOut=(recvAgg[sz]&&recvAgg[sz].emptyOut)||0,faultyE=faultyEmptyBySize[sz]||0;
-        var received=closeE-openE+sentOut+faultyE;
-        recvBackTotal+=received;
-        recvBackRows.push([sz,closeE,openE,sentOut,faultyE,received]);
-      });
-      row('Total units sold','','','','','',soldTotal);
-      blank();
-      row('Empty cylinders received back (estimate)');
-      row('Size','Closing','- Opening','+ Sent to supplier','+ Faulty (Empty)','= Est. received');
-      recvBackRows.forEach(function(r){row.apply(null,r);});
-      row('Total units received','','','','',recvBackTotal);
+      if(salesIsReal){
+        var _dsLinesBySize={};
+        (dailySalesRow.lines||[]).forEach(function(l){_dsLinesBySize[l.size]=l;});
+        row('Full cylinders sold');
+        row('Size','Sold');
+        salesSizes.forEach(function(sz){
+          var l=_dsLinesBySize[sz]||{sold:0,returned:0};
+          var sold=num(l.sold),received=num(l.returned);
+          soldTotal+=sold;soldKg+=sold*_nominalKg(sz);
+          row(sz,sold);
+          recvBackTotal+=received;
+          recvBackRows.push([sz,received]);
+        });
+        row('Total units sold','',soldTotal);
+        blank();
+        row('Empty cylinders received back');
+        row('Size','Returned');
+        recvBackRows.forEach(function(r){row.apply(null,r);});
+        row('Total units received','',recvBackTotal);
+      } else {
+        row('Full cylinders sold (estimate)');
+        row('Size','Opening','+ Received in','+ Refilled','- Closing','- Faulty (Full)','= Est. sold');
+        salesSizes.forEach(function(sz){
+          var openF=totalOf(counts.Opening.Full[sz]),closeF=totalOf(counts.Closing.Full[sz]);
+          var recvIn=(recvAgg[sz]&&recvAgg[sz].fullIn)||0,refilled=refillCountBySize[sz]||0,faultyF=faultyFullBySize[sz]||0;
+          var sold=openF+recvIn+refilled-closeF-faultyF;
+          soldTotal+=sold;soldKg+=sold*_nominalKg(sz);
+          row(sz,openF,recvIn,refilled,closeF,faultyF,sold);
+          var openE=totalOf(counts.Opening.Empty[sz]),closeE=totalOf(counts.Closing.Empty[sz]);
+          var sentOut=(recvAgg[sz]&&recvAgg[sz].emptyOut)||0,faultyE=faultyEmptyBySize[sz]||0;
+          var received=closeE-openE+sentOut+faultyE;
+          recvBackTotal+=received;
+          recvBackRows.push([sz,closeE,openE,sentOut,faultyE,received]);
+        });
+        row('Total units sold','','','','','',soldTotal);
+        blank();
+        row('Empty cylinders received back (estimate)');
+        row('Size','Closing','- Opening','+ Sent to supplier','+ Faulty (Empty)','= Est. received');
+        recvBackRows.forEach(function(r){row.apply(null,r);});
+        row('Total units received','','','','',recvBackTotal);
+      }
       var pvAllTot=pv.reduce(function(a,r){return a+num(r.pumped);},0);
+      var pvUsTot=pv.filter(function(r){return r.filledBy!=='Supplier';}).reduce(function(a,r){return a+num(r.pumped);},0);
       var estSoldKgTotal=soldKg+pvAllTot;
       var netExchange=soldTotal-recvBackTotal;
       blank();
       row('Estimated gas sold today (kg)',estSoldKgTotal.toFixed(2),soldKg.toFixed(2)+'kg from '+soldTotal+' cylinders (estimate) + '+pvAllTot.toFixed(2)+'kg Private Refill (exact)');
+      row('Private Refill (in-house, part of Sales) (kg)',pvUsTot.toFixed(2));
       row('Net cylinder exchange',(netExchange>0?'+':'')+netExchange+' shells',soldTotal+' sold - '+recvBackTotal+' received back');
     }
 
