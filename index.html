@@ -101,7 +101,8 @@
   body[data-view="transferView"] #transferView,
   body[data-view="pendingOverridesView"] #pendingOverridesView,
   body[data-view="verifiedTakeView"] #verifiedTakeView,
-  body[data-view="rangeBalanceView"] #rangeBalanceView{display:block !important;}
+  body[data-view="rangeBalanceView"] #rangeBalanceView,
+  body[data-view="dailySalesView"] #dailySalesView{display:block !important;}
   #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(calc(100% + 40px));background:var(--ok);color:#fff;padding:14px 22px;border-radius:12px;font-weight:700;font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.25);transition:transform .3s;z-index:70;max-width:90%;text-align:center;}
   /* Dismiss slides by the toast's OWN height (+ margin), not a fixed 80px - a fixed offset
      hid a short one-line toast fine but left a tall, wrapped multi-line message (e.g. the
@@ -335,6 +336,7 @@
       <button class="tile t6" data-key="transfer" id="tileTransfer" onclick="openTransfers()" style="display:none"><div class="ic">&#8646;</div><h3>Stock Transfer</h3><p>Owner: move cylinders between branches</p><span class="badge" id="b-transfer" style="display:none">0</span></button>
       <button class="tile t1" data-key="verifiedTake" id="tileVerifiedTake" onclick="openVerifiedTake()" style="display:none"><div class="ic">&#9745;</div><h3>Verified Stock Take</h3><p>Auditor: independent physical count</p></button>
       <button class="tile t3" data-key="rangeBalance" id="tileRangeBalance" onclick="openRangeBalance()" style="display:none"><div class="ic">&#128202;</div><h3>Stock Balance</h3><p>Owner: balance stock over any date range</p></button>
+      <button class="tile t4" data-key="dailySales" id="tileDailySales" onclick="openDailySales()" style="display:none"><div class="ic">&#128176;</div><h3>Daily Sales</h3><p>Manager/Owner: sold + returned cylinders today</p></button>
     </div>
     <div class="cFooter" id="homeEditBar" style="display:none">
       <button type="button" class="cbGhost" onclick="resetHomeLayout()">Reset layout</button>
@@ -426,6 +428,17 @@
     <label>To</label>
     <input id="rbEnd" type="date" onchange="rbLoad()">
     <div id="rbReport"></div>
+  </div>
+</div>
+
+<!-- DAILY SALES / RETURNS (Manager + Owner) -->
+<div id="dailySalesView" class="view">
+  <div class="wrap">
+    <div class="cgRow"><label>Branch</label><select class="mField" id="dsBranch" style="flex:1;margin:0" onchange="dsLoad()"><option>Helderberg</option><option>Kleinmond</option></select></div>
+    <div id="dsGrid"></div>
+    <div class="callout" id="dsPrivateKg" style="margin-top:10px"></div>
+    <div class="callout" id="dsNetExchange" style="font-weight:800"></div>
+    <button class="saveBtn" onclick="dsCommit()" style="margin-top:14px">Commit Daily Sales</button>
   </div>
 </div>
 
@@ -1480,6 +1493,77 @@ function _manifoldPendingFlush(){
       if(res.error)_manifoldPendingQueue(payload);
     },function(e){_manifoldPendingQueue(payload);});
   });
+}
+// ===== Daily Sales / Returns (daily_sales) - closes the "no point-of-sale record" gap =====
+var _dsRows={}; // size -> {sold, returned}
+function openDailySales(){
+  if(role!=='Manager'&&role!=='Owner'){toast('Not available for this role',true);return;}
+  show('dailySalesView');
+  document.getElementById('backBtn').style.display='block';
+  document.getElementById('hTitle').textContent='Daily Sales';
+  document.getElementById('hSub').textContent='Sold + returned cylinders today';
+  document.getElementById('dsBranch').value=(branch||'Helderberg');
+  dsLoad();
+}
+function dsRenderGrid(){
+  var g=document.getElementById('dsGrid');
+  g.innerHTML=ALLSIZES.map(function(sz){
+    var r=_dsRows[sz]||{sold:0,returned:0};
+    var diff=num(r.sold)-num(r.returned);
+    return '<div class="brandCard"><b style="font-size:12px">'+sz+'</b><div class="bLine" style="margin-top:6px">'+
+      '<span style="font-size:11px;font-weight:800;color:var(--navy);text-transform:uppercase;letter-spacing:.4px;width:56px;flex:none">Sold</span>'+
+      '<input type="number" min="0" step="1" value="'+num(r.sold)+'" oninput="dsSetLine(\''+sz+'\',\'sold\',this.value)">'+
+      '</div><div class="bLine" style="margin-top:4px">'+
+      '<span style="font-size:11px;font-weight:800;color:var(--navy);text-transform:uppercase;letter-spacing:.4px;width:56px;flex:none">Back</span>'+
+      '<input type="number" min="0" step="1" value="'+num(r.returned)+'" oninput="dsSetLine(\''+sz+'\',\'returned\',this.value)">'+
+      '<span style="font-size:11px;color:var(--muted);flex:none">Diff '+(diff>0?'+':'')+diff+'</span>'+
+      '</div></div>';
+  }).join('');
+  dsRenderNetExchange();
+}
+function dsSetLine(sz,field,val){
+  if(!_dsRows[sz])_dsRows[sz]={sold:0,returned:0};
+  _dsRows[sz][field]=Math.max(0,Math.round(num(val)));
+  dsRenderGrid(); // re-render for the updated Diff readout - cheap, ALLSIZES is small
+}
+function dsRenderNetExchange(){
+  var soldTotal=0,returnedTotal=0;
+  ALLSIZES.forEach(function(sz){var r=_dsRows[sz];if(r){soldTotal+=num(r.sold);returnedTotal+=num(r.returned);}});
+  var net=soldTotal-returnedTotal;
+  document.getElementById('dsNetExchange').textContent='Net Cylinder Exchange: '+(net>0?'+':'')+net+' shells ('+soldTotal+' sold − '+returnedTotal+' back)';
+}
+function dsLoad(){
+  var br=document.getElementById('dsBranch').value;
+  _dsRows={};
+  // Existing today's entry, if the Manager already committed once and is correcting it.
+  sb.from('daily_sales').select('lines').eq('branch',br).eq('date',today).maybeSingle().then(function(res){
+    if(res.data&&res.data.lines){
+      res.data.lines.forEach(function(l){_dsRows[l.size]={sold:num(l.sold),returned:num(l.returned)};});
+    }
+    dsRenderGrid();
+  },function(){dsRenderGrid();});
+  // In-house (filledBy 'Us') Private Refill kg for today, read-only display - already-
+  // balanced-against-Manifold data (see manifoldBalance's own privKg filter), not re-entered.
+  sb.from('capture_live_rows').select('row').eq('kind','private').eq('branch',br).eq('date',today).then(function(res){
+    var kg=((res.data||[]).map(function(r){return r.row||{};}).filter(function(r){return r.filledBy!=='Supplier';})
+      .reduce(function(s,r){return s+num(r.pumped);},0));
+    document.getElementById('dsPrivateKg').textContent='Private Refill (in-house): '+kg.toFixed(2)+' kg';
+  },function(){document.getElementById('dsPrivateKg').textContent='Private Refill (in-house): —';});
+}
+var _dsCommitBusy=false;
+function dsCommit(){
+  if(_dsCommitBusy)return;
+  var br=document.getElementById('dsBranch').value;
+  var lines=ALLSIZES.map(function(sz){var r=_dsRows[sz]||{sold:0,returned:0};return {size:sz,sold:num(r.sold),returned:num(r.returned)};})
+    .filter(function(l){return l.sold||l.returned;});
+  if(!lines.length){toast('Nothing entered',true);return;}
+  _dsCommitBusy=true;
+  sb.from('daily_sales').upsert({branch:br,date:today,lines:lines,entered_by:currentProfile&&currentProfile.id,entered_by_name_snapshot:operator},{onConflict:'branch,date'}).then(function(res){
+    _dsCommitBusy=false;
+    if(res.error){toast('Could not save - try again',true);return;}
+    auditLog('Daily Sales committed',br+' - '+lines.length+' size(s)');
+    toast('Daily Sales saved');
+  },function(){_dsCommitBusy=false;toast('Could not save - try again',true);});
 }
 // ===== Branch Transfers (stock_transfers) - Phase 2 of the Stock Balance Management
 // spec (docs/superpowers/specs/2026-09-09-stock-balance-management-design.md).
@@ -4149,6 +4233,7 @@ function _finishLogin(u,b){
   var _tvt=document.getElementById('tileVerifiedTake');if(_tvt)_tvt.style.display=(perm('verifiedCount')||role==='Owner')?'flex':'none';
   // opened to Manager+Owner per the spec's real intended audience.
   var _trb=document.getElementById('tileRangeBalance');if(_trb)_trb.style.display=(role==='Manager'||role==='Owner')?'flex':'none';
+  var _tds=document.getElementById('tileDailySales');if(_tds)_tds.style.display=(role==='Manager'||role==='Owner')?'flex':'none';
   auditLog('Login','Signed in to '+b);
   editUnlocked=false;
   loadWorkingStore();
