@@ -410,22 +410,34 @@
   </div>
 </div>
 
-<!-- DATE-RANGE STOCK BALANCE -->
+<!-- DATE-RANGE STOCK BALANCE (Manager + Owner) -->
 <div id="rangeBalanceView" class="view">
   <div class="wrap">
-    <label>Branch</label>
-    <select id="rbBranch" onchange="rbLoad()"><option>Helderberg</option><option>Kleinmond</option></select>
-    <div class="histTabs">
-      <button class="htab" id="rbtab-week" onclick="rbSetPreset('week')">This Week</button>
-      <button class="htab" id="rbtab-month" onclick="rbSetPreset('month')">This Month</button>
-      <button class="htab" id="rbtab-quarter" onclick="rbSetPreset('quarter')">This Quarter</button>
-      <button class="htab" id="rbtab-year" onclick="rbSetPreset('year')">This Year</button>
+    <!-- password gate - same pattern as Audit Log/Manage Users: role already restricts who
+         reaches this screen at all (openRangeBalance), this is the second "prove it's still
+         you" factor, re-checking the CURRENT operator's own password, not a role-widening
+         borrow. -->
+    <div id="rbGate">
+      <div class="detBanner full" style="margin-bottom:14px"><div class="big">Stock Balance</div><div class="small">Manager or Owner access only</div></div>
+      <label class="mLabel">Enter your password to open</label>
+      <div class="pwWrap"><input type="password" class="mField" id="rbPw" placeholder="Your password"><button type="button" class="pwToggle" onmousedown="_pwPeekStart(event,this)" onmouseup="_pwPeekEnd(this)" onmouseleave="_pwPeekEnd(this)" ontouchstart="_pwPeekStart(event,this)" ontouchend="_pwPeekEnd(this)" ontouchcancel="_pwPeekEnd(this)">👁</button></div>
+      <button class="saveBtn" onclick="rbUnlock()" style="margin-top:12px">Unlock Stock Balance</button>
     </div>
-    <label>From</label>
-    <input id="rbStart" type="date" onchange="rbLoad()">
-    <label>To</label>
-    <input id="rbEnd" type="date" onchange="rbLoad()">
-    <div id="rbReport"></div>
+    <div id="rbPanel" style="display:none">
+      <label>Branch</label>
+      <select id="rbBranch" onchange="rbLoad()"><option>Helderberg</option><option>Kleinmond</option></select>
+      <div class="histTabs">
+        <button class="htab" id="rbtab-week" onclick="rbSetPreset('week')">This Week</button>
+        <button class="htab" id="rbtab-month" onclick="rbSetPreset('month')">This Month</button>
+        <button class="htab" id="rbtab-quarter" onclick="rbSetPreset('quarter')">This Quarter</button>
+        <button class="htab" id="rbtab-year" onclick="rbSetPreset('year')">This Year</button>
+      </div>
+      <label>From</label>
+      <input id="rbStart" type="date" onchange="rbLoad()">
+      <label>To</label>
+      <input id="rbEnd" type="date" onchange="rbLoad()">
+      <div id="rbReport"></div>
+    </div>
   </div>
 </div>
 
@@ -5592,8 +5604,22 @@ function openRangeBalance(){
   document.getElementById('backBtn').style.display='block';
   document.getElementById('hTitle').textContent='Stock Balance';
   document.getElementById('hSub').textContent='Any date range';
-  document.getElementById('rbBranch').value=(branch||'Helderberg');
-  rbSetPreset('month'); // also calls rbLoad()
+  // reset to gate each time - same convention as openAudit()/openUsers(), so leaving the
+  // screen (or a session-restore landing back on it) never skips the password re-check.
+  document.getElementById('rbGate').style.display='block';
+  document.getElementById('rbPanel').style.display='none';
+  document.getElementById('rbPw').value='';
+}
+function rbUnlock(){
+  var pw=document.getElementById('rbPw').value;
+  _verifyPersonPassword(operator,pw,null).then(function(me){
+    if(!me){toast('Wrong password',true);return;}
+    auditLog('Stock Balance opened','Opened the Date-Range Stock Balance report');
+    document.getElementById('rbGate').style.display='none';
+    document.getElementById('rbPanel').style.display='block';
+    document.getElementById('rbBranch').value=(branch||'Helderberg');
+    rbSetPreset('month'); // also calls rbLoad()
+  });
 }
 var _rbLoadToken=0;
 function rbLoad(){
@@ -9433,7 +9459,7 @@ function closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,_unapprovedTr
     return;
   }
   if(_unapprovedTransfers&&_unapprovedTransfers.length){
-    toast('Cannot close: '+_unapprovedTransfers.length+' Stock Transfer(s) touching '+branch+' still need Owner approval. Ask an Owner to approve them on the Stock Transfer screen.',true);
+    toast('Cannot close: '+_unapprovedTransfers.length+' Stock Transfer(s) touching '+branch+' still need Manager/Owner approval. Ask a Manager or Owner to approve them on the Stock Transfer screen.',true);
     return;
   }
   // Close Day requires: an authoriser WITH close-day permission. The high-risk second
@@ -11096,7 +11122,7 @@ function _fetchDayActivity(br,date){
 // Audit Log screen itself displays).
 var DAY_ACTIVITY_NOISE=['Login','Logout','Idle lock','Idle unlock','Password change','Sync configured',
   'User management opened','Audit opened','Historical count opened','Test date changed',
-  'Additional count (no auth required)','Count started (no auth required)'];
+  'Additional count (no auth required)','Count started (no auth required)','Stock Balance opened'];
 function _groupActivityByPerson(rows){
   var byPerson={},order=[];
   rows.forEach(function(r){
