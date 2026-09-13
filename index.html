@@ -11340,9 +11340,11 @@ function buildCountDocAsync(src){
     // stock count is not reflecting in the report").
   ]):Promise.resolve();
   return _liveFetch.then(function(){
-    return Promise.all([_fetchDayActivity(_b,src.date),_fetchFaultyHeld(_b),_fetchPrevCloseExpected(_b,src.date)]);
+    return Promise.all([_fetchDayActivity(_b,src.date),_fetchFaultyHeld(_b),_fetchPrevCloseExpected(_b,src.date),
+      sb.from('daily_sales').select('lines,entered_by_name_snapshot').eq('branch',_b).eq('date',src.date).maybeSingle().then(function(res){return (res&&res.data)?res.data:null;},function(){return null;})
+    ]);
   }).then(function(fetched){
-    var activityRows=fetched[0], faultyRows=fetched[1], prevCloseExp=fetched[2];
+    var activityRows=fetched[0], faultyRows=fetched[1], prevCloseExp=fetched[2], dailySalesRow=fetched[3];
     var people=_groupActivityByPerson(activityRows);
     var excGroups=_groupExceptions(activityRows);
     var faultyTot=_faultyHeldTotals(faultyRows);
@@ -11666,32 +11668,58 @@ function buildCountDocAsync(src){
     });
     if(salesSizes.length){
       var soldRowsHtml='',soldTotal=0,soldKg=0,recvBackRowsHtml='',recvBackTotal=0;
-      salesSizes.forEach(function(sz){
-        var openF=totalOf(counts.Opening.Full[sz]),closeF=totalOf(counts.Closing.Full[sz]);
-        var recvIn=(recvAgg[sz]&&recvAgg[sz].fullIn)||0,refilled=refillCountBySize[sz]||0,faultyF=faultyFullBySize[sz]||0;
-        var sold=openF+recvIn+refilled-closeF-faultyF;
-        soldTotal+=sold;soldKg+=sold*_nominalKg(sz);
-        soldRowsHtml+='<tr><td class="sz">'+sz+'</td><td class="n">'+openF+'</td><td class="n">'+recvIn+'</td><td class="n">'+refilled+'</td><td class="n">'+closeF+'</td><td class="n">'+faultyF+'</td><td class="n"><b>'+sold+'</b></td></tr>';
-        var openE=totalOf(counts.Opening.Empty[sz]),closeE=totalOf(counts.Closing.Empty[sz]);
-        var sentOut=(recvAgg[sz]&&recvAgg[sz].emptyOut)||0,faultyE=faultyEmptyBySize[sz]||0;
-        var received=closeE-openE+sentOut+faultyE;
-        recvBackTotal+=received;
-        recvBackRowsHtml+='<tr><td class="sz">'+sz+'</td><td class="n">'+closeE+'</td><td class="n">'+openE+'</td><td class="n">'+sentOut+'</td><td class="n">'+faultyE+'</td><td class="n"><b>'+received+'</b></td></tr>';
-      });
+      var salesIsReal=!!dailySalesRow;
+      if(salesIsReal){
+        // Real captured Daily Sales exists for this branch+date - use it directly instead of
+        // the mass-balance inference below (see openDailySales/dsCommit).
+        var _dsLinesBySize={};
+        (dailySalesRow.lines||[]).forEach(function(l){_dsLinesBySize[l.size]=l;});
+        salesSizes.forEach(function(sz){
+          var l=_dsLinesBySize[sz]||{sold:0,returned:0};
+          var sold=num(l.sold),received=num(l.returned);
+          soldTotal+=sold;soldKg+=sold*_nominalKg(sz);
+          soldRowsHtml+='<tr><td class="sz">'+sz+'</td><td class="n"><b>'+sold+'</b></td></tr>';
+          recvBackTotal+=received;
+          recvBackRowsHtml+='<tr><td class="sz">'+sz+'</td><td class="n"><b>'+received+'</b></td></tr>';
+        });
+      } else {
+        salesSizes.forEach(function(sz){
+          var openF=totalOf(counts.Opening.Full[sz]),closeF=totalOf(counts.Closing.Full[sz]);
+          var recvIn=(recvAgg[sz]&&recvAgg[sz].fullIn)||0,refilled=refillCountBySize[sz]||0,faultyF=faultyFullBySize[sz]||0;
+          var sold=openF+recvIn+refilled-closeF-faultyF;
+          soldTotal+=sold;soldKg+=sold*_nominalKg(sz);
+          soldRowsHtml+='<tr><td class="sz">'+sz+'</td><td class="n">'+openF+'</td><td class="n">'+recvIn+'</td><td class="n">'+refilled+'</td><td class="n">'+closeF+'</td><td class="n">'+faultyF+'</td><td class="n"><b>'+sold+'</b></td></tr>';
+          var openE=totalOf(counts.Opening.Empty[sz]),closeE=totalOf(counts.Closing.Empty[sz]);
+          var sentOut=(recvAgg[sz]&&recvAgg[sz].emptyOut)||0,faultyE=faultyEmptyBySize[sz]||0;
+          var received=closeE-openE+sentOut+faultyE;
+          recvBackTotal+=received;
+          recvBackRowsHtml+='<tr><td class="sz">'+sz+'</td><td class="n">'+closeE+'</td><td class="n">'+openE+'</td><td class="n">'+sentOut+'</td><td class="n">'+faultyE+'</td><td class="n"><b>'+received+'</b></td></tr>';
+        });
+      }
       var pvAllTot=pv.reduce(function(a,r){return a+num(r.pumped);},0); // both Us AND Supplier-filled - both are real sales, unlike the Manifold balance's Us-only filter
+      var pvUsTot=pv.filter(function(r){return r.filledBy!=='Supplier';}).reduce(function(a,r){return a+num(r.pumped);},0);
       var estSoldKgTotal=soldKg+pvAllTot;
       var netExchange=soldTotal-recvBackTotal;
+      var soldTableHtml=salesIsReal?
+        ('<table><tr><th>Size</th><th>Sold</th></tr>'+soldRowsHtml+'<tr><td><b>Total units sold</b></td><td class="n"><b>'+soldTotal+'</b></td></tr></table>'):
+        ('<table><tr><th>Size</th><th>Opening</th><th>+ Received in</th><th>+ Refilled</th><th>\u2212 Closing</th><th>\u2212 Faulty (Full)</th><th>= Est. sold</th></tr>'+soldRowsHtml+
+        '<tr><td colspan="6"><b>Total units sold</b></td><td class="n"><b>'+soldTotal+'</b></td></tr></table>');
+      var recvTableHtml=salesIsReal?
+        ('<table><tr><th>Size</th><th>Returned</th></tr>'+recvBackRowsHtml+'<tr><td><b>Total units received</b></td><td class="n"><b>'+recvBackTotal+'</b></td></tr></table>'):
+        ('<table><tr><th>Size</th><th>Closing</th><th>\u2212 Opening</th><th>+ Sent to supplier</th><th>+ Faulty (Empty)</th><th>= Est. received</th></tr>'+recvBackRowsHtml+
+        '<tr><td colspan="5"><b>Total units received</b></td><td class="n"><b>'+recvBackTotal+'</b></td></tr></table>');
       rows+='<h2>Estimated Stock Sales &amp; Cylinder Exchange</h2>'+
-        '<p style="font-size:11px;color:#777">Inferred, not observed - the app has no point-of-sale record. Whatever left stock and wasn\'t received, refilled, or logged faulty is assumed sold; the same logic run in reverse on empties estimates what customers brought back.</p>'+
-        '<h3 style="font-size:13px;color:#1F3A5F;margin:10px 0 4px">Full cylinders sold (estimate)</h3>'+
-        '<table><tr><th>Size</th><th>Opening</th><th>+ Received in</th><th>+ Refilled</th><th>\u2212 Closing</th><th>\u2212 Faulty (Full)</th><th>= Est. sold</th></tr>'+soldRowsHtml+
-        '<tr><td colspan="6"><b>Total units sold</b></td><td class="n"><b>'+soldTotal+'</b></td></tr></table>'+
-        '<h3 style="font-size:13px;color:#1F3A5F;margin:14px 0 4px">Empty cylinders received back (estimate)</h3>'+
-        '<table><tr><th>Size</th><th>Closing</th><th>\u2212 Opening</th><th>+ Sent to supplier</th><th>+ Faulty (Empty)</th><th>= Est. received</th></tr>'+recvBackRowsHtml+
-        '<tr><td colspan="5"><b>Total units received</b></td><td class="n"><b>'+recvBackTotal+'</b></td></tr></table>'+
+        (salesIsReal?
+          ('<p style="font-size:11px;color:#777">Captured directly by '+(dailySalesRow.entered_by_name_snapshot||'a manager')+' \u2014 not inferred.</p>'):
+          ('<p style="font-size:11px;color:#777">Inferred, not observed - the app has no point-of-sale record. Whatever left stock and wasn\'t received, refilled, or logged faulty is assumed sold; the same logic run in reverse on empties estimates what customers brought back.</p>'))+
+        '<h3 style="font-size:13px;color:#1F3A5F;margin:10px 0 4px">Full cylinders sold'+(salesIsReal?'':' (estimate)')+'</h3>'+
+        soldTableHtml+
+        '<h3 style="font-size:13px;color:#1F3A5F;margin:14px 0 4px">Empty cylinders received back'+(salesIsReal?'':' (estimate)')+'</h3>'+
+        recvTableHtml+
         '<table style="margin-top:8px">'+
         '<tr><td>Estimated gas sold today</td><td class="n"><b>'+estSoldKgTotal.toFixed(2)+' kg</b></td></tr>'+
         '<tr><td style="font-size:11px;color:#777">'+soldKg.toFixed(2)+'kg from '+soldTotal+' cylinders (\u2248 estimate) + '+pvAllTot.toFixed(2)+'kg Private Refill (exact, Us + Supplier-filled)</td><td></td></tr>'+
+        '<tr><td>Private Refill (in-house, part of Sales)</td><td class="n">'+pvUsTot.toFixed(2)+' kg</td></tr>'+
         '<tr><td>Net cylinder exchange</td><td class="n"><b>'+(netExchange>0?'+':'')+netExchange+' shells</b></td></tr>'+
         '<tr><td style="font-size:11px;color:#777">'+soldTotal+' sold \u2212 '+recvBackTotal+' received back \u2014 positive means more shells left than came back today</td><td></td></tr></table>'+
         '<p style="font-size:11px;color:#777">Refill\'s own pumped-kg isn\'t added again here - a refilled cylinder becomes one Full unit and is already counted through the mass-balance above, whether it sold today or is still sitting in Closing stock.</p>';
@@ -11840,9 +11868,11 @@ function buildCountCSVAsync(src){
     _refreshSharedCounts(_b)
   ]):Promise.resolve();
   return _liveFetch.then(function(){
-    return Promise.all([_fetchDayActivity(_b,src.date),_fetchFaultyHeld(_b),_fetchPrevCloseExpected(_b,src.date)]);
+    return Promise.all([_fetchDayActivity(_b,src.date),_fetchFaultyHeld(_b),_fetchPrevCloseExpected(_b,src.date),
+      sb.from('daily_sales').select('lines,entered_by_name_snapshot').eq('branch',_b).eq('date',src.date).maybeSingle().then(function(res){return (res&&res.data)?res.data:null;},function(){return null;})
+    ]);
   }).then(function(fetched){
-    var activityRows=fetched[0], faultyRows=fetched[1], prevCloseExp=fetched[2];
+    var activityRows=fetched[0], faultyRows=fetched[1], prevCloseExp=fetched[2], dailySalesRow=fetched[3];
     var people=_groupActivityByPerson(activityRows);
     var excGroups=_groupExceptions(activityRows);
     var faultyTot=_faultyHeldTotals(faultyRows);
@@ -12050,35 +12080,63 @@ function buildCountCSVAsync(src){
     });
     if(salesSizes.length){
       var soldTotal=0,soldKg=0,recvBackTotal=0;
+      var salesIsReal=!!dailySalesRow;
       section('Estimated Stock Sales & Cylinder Exchange');
-      row('Note','Inferred, not observed - the app has no point-of-sale record.');
+      if(salesIsReal){
+        row('Note','Captured directly by '+(dailySalesRow.entered_by_name_snapshot||'a manager')+' - not inferred.');
+      } else {
+        row('Note','Inferred, not observed - the app has no point-of-sale record.');
+      }
       blank();
-      row('Full cylinders sold (estimate)');
-      row('Size','Opening','+ Received in','+ Refilled','- Closing','- Faulty (Full)','= Est. sold');
       var recvBackRows=[];
-      salesSizes.forEach(function(sz){
-        var openF=totalOf(counts.Opening.Full[sz]),closeF=totalOf(counts.Closing.Full[sz]);
-        var recvIn=(recvAgg[sz]&&recvAgg[sz].fullIn)||0,refilled=refillCountBySize[sz]||0,faultyF=faultyFullBySize[sz]||0;
-        var sold=openF+recvIn+refilled-closeF-faultyF;
-        soldTotal+=sold;soldKg+=sold*_nominalKg(sz);
-        row(sz,openF,recvIn,refilled,closeF,faultyF,sold);
-        var openE=totalOf(counts.Opening.Empty[sz]),closeE=totalOf(counts.Closing.Empty[sz]);
-        var sentOut=(recvAgg[sz]&&recvAgg[sz].emptyOut)||0,faultyE=faultyEmptyBySize[sz]||0;
-        var received=closeE-openE+sentOut+faultyE;
-        recvBackTotal+=received;
-        recvBackRows.push([sz,closeE,openE,sentOut,faultyE,received]);
-      });
-      row('Total units sold','','','','','',soldTotal);
-      blank();
-      row('Empty cylinders received back (estimate)');
-      row('Size','Closing','- Opening','+ Sent to supplier','+ Faulty (Empty)','= Est. received');
-      recvBackRows.forEach(function(r){row.apply(null,r);});
-      row('Total units received','','','','',recvBackTotal);
+      if(salesIsReal){
+        var _dsLinesBySize={};
+        (dailySalesRow.lines||[]).forEach(function(l){_dsLinesBySize[l.size]=l;});
+        row('Full cylinders sold');
+        row('Size','Sold');
+        salesSizes.forEach(function(sz){
+          var l=_dsLinesBySize[sz]||{sold:0,returned:0};
+          var sold=num(l.sold),received=num(l.returned);
+          soldTotal+=sold;soldKg+=sold*_nominalKg(sz);
+          row(sz,sold);
+          recvBackTotal+=received;
+          recvBackRows.push([sz,received]);
+        });
+        row('Total units sold','',soldTotal);
+        blank();
+        row('Empty cylinders received back');
+        row('Size','Returned');
+        recvBackRows.forEach(function(r){row.apply(null,r);});
+        row('Total units received','',recvBackTotal);
+      } else {
+        row('Full cylinders sold (estimate)');
+        row('Size','Opening','+ Received in','+ Refilled','- Closing','- Faulty (Full)','= Est. sold');
+        salesSizes.forEach(function(sz){
+          var openF=totalOf(counts.Opening.Full[sz]),closeF=totalOf(counts.Closing.Full[sz]);
+          var recvIn=(recvAgg[sz]&&recvAgg[sz].fullIn)||0,refilled=refillCountBySize[sz]||0,faultyF=faultyFullBySize[sz]||0;
+          var sold=openF+recvIn+refilled-closeF-faultyF;
+          soldTotal+=sold;soldKg+=sold*_nominalKg(sz);
+          row(sz,openF,recvIn,refilled,closeF,faultyF,sold);
+          var openE=totalOf(counts.Opening.Empty[sz]),closeE=totalOf(counts.Closing.Empty[sz]);
+          var sentOut=(recvAgg[sz]&&recvAgg[sz].emptyOut)||0,faultyE=faultyEmptyBySize[sz]||0;
+          var received=closeE-openE+sentOut+faultyE;
+          recvBackTotal+=received;
+          recvBackRows.push([sz,closeE,openE,sentOut,faultyE,received]);
+        });
+        row('Total units sold','','','','','',soldTotal);
+        blank();
+        row('Empty cylinders received back (estimate)');
+        row('Size','Closing','- Opening','+ Sent to supplier','+ Faulty (Empty)','= Est. received');
+        recvBackRows.forEach(function(r){row.apply(null,r);});
+        row('Total units received','','','','',recvBackTotal);
+      }
       var pvAllTot=pv.reduce(function(a,r){return a+num(r.pumped);},0);
+      var pvUsTot=pv.filter(function(r){return r.filledBy!=='Supplier';}).reduce(function(a,r){return a+num(r.pumped);},0);
       var estSoldKgTotal=soldKg+pvAllTot;
       var netExchange=soldTotal-recvBackTotal;
       blank();
       row('Estimated gas sold today (kg)',estSoldKgTotal.toFixed(2),soldKg.toFixed(2)+'kg from '+soldTotal+' cylinders (estimate) + '+pvAllTot.toFixed(2)+'kg Private Refill (exact)');
+      row('Private Refill (in-house, part of Sales) (kg)',pvUsTot.toFixed(2));
       row('Net cylinder exchange',(netExchange>0?'+':'')+netExchange+' shells',soldTotal+' sold - '+recvBackTotal+' received back');
     }
 
