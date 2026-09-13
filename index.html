@@ -449,7 +449,10 @@
   <div class="wrap">
     <div class="cgRow"><label>Branch</label><select class="mField" id="dsBranch" style="flex:1;margin:0" onchange="dsLoad()"><option>Helderberg</option><option>Kleinmond</option></select></div>
     <div id="dsGrid"></div>
-    <div class="callout" id="dsPrivateKg" style="margin-top:10px"></div>
+    <div class="brandCard" style="margin-top:10px"><b style="font-size:12px">Private Refill (in-house)</b><div class="bLine" style="margin-top:6px">
+      <span style="font-size:11px;font-weight:800;color:var(--navy);text-transform:uppercase;letter-spacing:.4px;width:56px;flex:none">kg</span>
+      <input type="number" min="0" step="0.01" id="dsPrivateKg">
+      </div><div style="font-size:11px;color:var(--muted);margin-top:4px" id="dsPrivateKgHint"></div></div>
     <div class="callout" id="dsNetExchange" style="font-weight:800"></div>
     <button class="saveBtn" onclick="dsCommit()" style="margin-top:14px">Commit Daily Sales</button>
   </div>
@@ -1548,20 +1551,34 @@ function dsRenderNetExchange(){
 function dsLoad(){
   var br=document.getElementById('dsBranch').value;
   _dsRows={};
-  // Existing today's entry, if the Manager already committed once and is correcting it.
-  sb.from('daily_sales').select('lines').eq('branch',br).eq('date',today).maybeSingle().then(function(res){
-    if(res.data&&res.data.lines){
-      res.data.lines.forEach(function(l){_dsRows[l.size]={sold:num(l.sold),returned:num(l.returned)};});
+  // Both fetches coordinated via Promise.all (not two independent callbacks) so whichever
+  // resolves first can never flicker-overwrite the field before the other lands - a real
+  // race the file's own review discipline this session has caught before (see
+  // _refreshDayCloseSignatures's staleness-token comment for the same class of bug).
+  Promise.all([
+    sb.from('daily_sales').select('lines,private_refill_kg').eq('branch',br).eq('date',today).maybeSingle().then(function(res){return res.data||null;},function(){return null;}),
+    sb.from('capture_live_rows').select('row').eq('kind','private').eq('branch',br).eq('date',today).then(function(res){
+      return ((res.data||[]).map(function(r){return r.row||{};}).filter(function(r){return r.filledBy!=='Supplier';})
+        .reduce(function(s,r){return s+num(r.pumped);},0));
+    },function(){return null;})
+  ]).then(function(results){
+    var saved=results[0], autoKg=results[1];
+    if(saved&&saved.lines){
+      saved.lines.forEach(function(l){_dsRows[l.size]={sold:num(l.sold),returned:num(l.returned)};});
     }
     dsRenderGrid();
-  },function(){dsRenderGrid();});
-  // In-house (filledBy 'Us') Private Refill kg for today, read-only display - already-
-  // balanced-against-Manifold data (see manifoldBalance's own privKg filter), not re-entered.
-  sb.from('capture_live_rows').select('row').eq('kind','private').eq('branch',br).eq('date',today).then(function(res){
-    var kg=((res.data||[]).map(function(r){return r.row||{};}).filter(function(r){return r.filledBy!=='Supplier';})
-      .reduce(function(s,r){return s+num(r.pumped);},0));
-    document.getElementById('dsPrivateKg').textContent='Private Refill (in-house): '+kg.toFixed(2)+' kg';
-  },function(){document.getElementById('dsPrivateKg').textContent='Private Refill (in-house): —';});
+    var kgField=document.getElementById('dsPrivateKg'), hint=document.getElementById('dsPrivateKgHint');
+    if(saved&&saved.private_refill_kg!=null){
+      kgField.value=num(saved.private_refill_kg).toFixed(2);
+      hint.textContent='Saved value — edit and re-commit to correct.';
+    }else if(autoKg!==null){
+      kgField.value=autoKg.toFixed(2);
+      hint.textContent="Auto-filled from today's captured Private Refills — edit if needed.";
+    }else{
+      kgField.value='';
+      hint.textContent='Could not auto-fill — enter manually.';
+    }
+  });
 }
 var _dsCommitBusy=false;
 function dsCommit(){
@@ -1569,12 +1586,13 @@ function dsCommit(){
   var br=document.getElementById('dsBranch').value;
   var lines=ALLSIZES.map(function(sz){var r=_dsRows[sz]||{sold:0,returned:0};return {size:sz,sold:num(r.sold),returned:num(r.returned)};})
     .filter(function(l){return l.sold||l.returned;});
-  if(!lines.length){toast('Nothing entered',true);return;}
+  var privateKg=num(document.getElementById('dsPrivateKg').value);
+  if(!lines.length&&!privateKg){toast('Nothing entered',true);return;}
   _dsCommitBusy=true;
-  sb.from('daily_sales').upsert({branch:br,date:today,lines:lines,entered_by:currentProfile&&currentProfile.id,entered_by_name_snapshot:operator},{onConflict:'branch,date'}).then(function(res){
+  sb.from('daily_sales').upsert({branch:br,date:today,lines:lines,private_refill_kg:privateKg,entered_by:currentProfile&&currentProfile.id,entered_by_name_snapshot:operator},{onConflict:'branch,date'}).then(function(res){
     _dsCommitBusy=false;
     if(res.error){toast('Could not save - try again',true);return;}
-    auditLog('Daily Sales committed',br+' - '+lines.length+' size(s)');
+    auditLog('Daily Sales committed',br+' - '+lines.length+' size(s), '+privateKg.toFixed(2)+'kg private refill');
     toast('Daily Sales saved');
   },function(){_dsCommitBusy=false;toast('Could not save - try again',true);});
 }
@@ -11507,7 +11525,7 @@ function buildCountDocAsync(src){
   ]):Promise.resolve();
   return _liveFetch.then(function(){
     return Promise.all([_fetchDayActivity(_b,src.date),_fetchFaultyHeld(_b),_fetchPrevCloseExpected(_b,src.date),
-      sb.from('daily_sales').select('lines,entered_by_name_snapshot').eq('branch',_b).eq('date',src.date).maybeSingle().then(function(res){return (res&&res.data)?res.data:null;},function(){return null;})
+      sb.from('daily_sales').select('lines,entered_by_name_snapshot,private_refill_kg').eq('branch',_b).eq('date',src.date).maybeSingle().then(function(res){return (res&&res.data)?res.data:null;},function(){return null;})
     ]);
   }).then(function(fetched){
     var activityRows=fetched[0], faultyRows=fetched[1], prevCloseExp=fetched[2], dailySalesRow=fetched[3];
@@ -11864,6 +11882,12 @@ function buildCountDocAsync(src){
       }
       var pvAllTot=pv.reduce(function(a,r){return a+num(r.pumped);},0); // both Us AND Supplier-filled - both are real sales, unlike the Manifold balance's Us-only filter
       var pvUsTot=pv.filter(function(r){return r.filledBy!=='Supplier';}).reduce(function(a,r){return a+num(r.pumped);},0);
+      // The Sales section's own displayed figure prefers whatever the Manager confirmed/
+      // corrected in Daily Sales (private_refill_kg) over the auto-computed pvUsTot - same
+      // "real captured data overrides the automatic figure" pattern as the shell sold/
+      // returned numbers above. pvAllTot/estSoldKgTotal (a different, Us+Supplier figure)
+      // are NOT overridden here - only the Us-only "part of Sales" line is correctable.
+      var pvUsDisplay=(salesIsReal&&dailySalesRow.private_refill_kg!=null)?num(dailySalesRow.private_refill_kg):pvUsTot;
       var estSoldKgTotal=soldKg+pvAllTot;
       var netExchange=soldTotal-recvBackTotal;
       var soldTableHtml=salesIsReal?
@@ -11885,7 +11909,7 @@ function buildCountDocAsync(src){
         '<table style="margin-top:8px">'+
         '<tr><td>Estimated gas sold today</td><td class="n"><b>'+estSoldKgTotal.toFixed(2)+' kg</b></td></tr>'+
         '<tr><td style="font-size:11px;color:#777">'+soldKg.toFixed(2)+'kg from '+soldTotal+' cylinders (\u2248 estimate) + '+pvAllTot.toFixed(2)+'kg Private Refill (exact, Us + Supplier-filled)</td><td></td></tr>'+
-        '<tr><td>Private Refill (in-house, part of Sales)</td><td class="n">'+pvUsTot.toFixed(2)+' kg</td></tr>'+
+        '<tr><td>Private Refill (in-house, part of Sales)</td><td class="n">'+pvUsDisplay.toFixed(2)+' kg</td></tr>'+
         '<tr><td>Net cylinder exchange</td><td class="n"><b>'+(netExchange>0?'+':'')+netExchange+' shells</b></td></tr>'+
         '<tr><td style="font-size:11px;color:#777">'+soldTotal+' sold \u2212 '+recvBackTotal+' received back \u2014 positive means more shells left than came back today</td><td></td></tr></table>'+
         '<p style="font-size:11px;color:#777">Refill\'s own pumped-kg isn\'t added again here - a refilled cylinder becomes one Full unit and is already counted through the mass-balance above, whether it sold today or is still sitting in Closing stock.</p>';
@@ -12035,7 +12059,7 @@ function buildCountCSVAsync(src){
   ]):Promise.resolve();
   return _liveFetch.then(function(){
     return Promise.all([_fetchDayActivity(_b,src.date),_fetchFaultyHeld(_b),_fetchPrevCloseExpected(_b,src.date),
-      sb.from('daily_sales').select('lines,entered_by_name_snapshot').eq('branch',_b).eq('date',src.date).maybeSingle().then(function(res){return (res&&res.data)?res.data:null;},function(){return null;})
+      sb.from('daily_sales').select('lines,entered_by_name_snapshot,private_refill_kg').eq('branch',_b).eq('date',src.date).maybeSingle().then(function(res){return (res&&res.data)?res.data:null;},function(){return null;})
     ]);
   }).then(function(fetched){
     var activityRows=fetched[0], faultyRows=fetched[1], prevCloseExp=fetched[2], dailySalesRow=fetched[3];
@@ -12298,11 +12322,12 @@ function buildCountCSVAsync(src){
       }
       var pvAllTot=pv.reduce(function(a,r){return a+num(r.pumped);},0);
       var pvUsTot=pv.filter(function(r){return r.filledBy!=='Supplier';}).reduce(function(a,r){return a+num(r.pumped);},0);
+      var pvUsDisplay=(salesIsReal&&dailySalesRow.private_refill_kg!=null)?num(dailySalesRow.private_refill_kg):pvUsTot;
       var estSoldKgTotal=soldKg+pvAllTot;
       var netExchange=soldTotal-recvBackTotal;
       blank();
       row('Estimated gas sold today (kg)',estSoldKgTotal.toFixed(2),soldKg.toFixed(2)+'kg from '+soldTotal+' cylinders (estimate) + '+pvAllTot.toFixed(2)+'kg Private Refill (exact)');
-      row('Private Refill (in-house, part of Sales) (kg)',pvUsTot.toFixed(2));
+      row('Private Refill (in-house, part of Sales) (kg)',pvUsDisplay.toFixed(2));
       row('Net cylinder exchange',(netExchange>0?'+':'')+netExchange+' shells',soldTotal+' sold - '+recvBackTotal+' received back');
     }
 
