@@ -1640,7 +1640,7 @@ function _xferSigClear(canvasId,sigKey){var cv=document.getElementById(canvasId)
 // ===== Branch Transfers - UI (Task 4: tile + New Transfer/dispatch tab). The Receipt
 // and Approval tab bodies are filled by Tasks 5/6 - xferLoadReceiptList/xferLoadApprovalList
 // do not exist yet, so the two calls below are typeof-guarded.
-var XFER_STATES=['Full','Empty'];
+var XFER_STATES=['Full','Empty','Used/Partial']; // 'Used/Partial' matches the established Manifold term for a not-fully-refilled cylinder (see cylState 'Used / partial' elsewhere) - these can legitimately move between branches for refilling, distinct from a sellable Full or a genuinely empty shell.
 var _xferReceiptCache=[];
 var _xferApprovalCache=[];
 var _xferCommitBusy=false;
@@ -4812,12 +4812,20 @@ function cIsFlagged(br,st,sz){
 // cSetBranch), same source and shape _refreshCountMismatches already reads. Falls back to the
 // local carry-forward while the fetch is in flight or offline, so nothing regresses/blocks.
 var _liveExpectedOpening={};
+// Returns a Promise (code-review-shaped fix) so openCount()/cSetBranch() can re-render the
+// grid once this actually lands, matching how _adoptRemoteCloseIfNeeded/_refreshCountMismatches/
+// _refreshSharedCounts already do. Without this, a device with no local loadExpectedOpening()
+// carry-forward (e.g. right after a data wipe, or a brand-new device) shows the grid's FIRST
+// paint with no mismatch overlay at all - the live fetch fired but nothing ever repainted once
+// it landed. cSaveDetail()'s actual commit-time lock still reads live/fresh at save time and is
+// NOT affected by this (real enforcement was never bypassed) - this only fixes the visual grid
+// overlay's own staleness on first open.
 function _fetchLiveExpectedOpening(br){
   var yDate;
-  try{yDate=_dayBefore(today);}catch(e){return;}
-  sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
-    if(res.error){console.error('_fetchLiveExpectedOpening failed for '+br+':',res.error.message);return;}
-    if(!res.data){delete _liveExpectedOpening[br];return;} // no prior close - local carry-forward fallback applies
+  try{yDate=_dayBefore(today);}catch(e){return Promise.resolve(false);}
+  return sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
+    if(res.error){console.error('_fetchLiveExpectedOpening failed for '+br+':',res.error.message);return false;}
+    if(!res.data){delete _liveExpectedOpening[br];return false;} // no prior close - local carry-forward fallback applies
     var exp={};
     ((res.data.store_snapshot&&res.data.store_snapshot.count)||[]).filter(function(r){return r.countType==='Closing';}).forEach(function(r){
       var st=(r.state==='Empty')?'Empty':'Full';
@@ -4825,7 +4833,8 @@ function _fetchLiveExpectedOpening(br){
       exp[r.size][st][r.brand]=(exp[r.size][st][r.brand]||0)+num(r.qty);
     });
     _liveExpectedOpening[br]={exp:exp};
-  },function(e){console.error('_fetchLiveExpectedOpening rejected for '+br+':',e&&e.message);});
+    return true;
+  },function(e){console.error('_fetchLiveExpectedOpening rejected for '+br+':',e&&e.message);return false;});
 }
 function _getLiveExpectedOpening(br){return _liveExpectedOpening[br]||loadExpectedOpening(br);}
 function cExpectedFor(br,st,sz,brand){
@@ -4866,7 +4875,7 @@ function openCount(){
       auditLog('Additional count (no auth required)','Second same-day count for '+branch+' - password check temporarily disabled');
     }
     cBranch=branch||'Helderberg';
-    _fetchLiveExpectedOpening(cBranch);
+    (function(br){_fetchLiveExpectedOpening(br).then(function(landed){if(landed&&cBranch===br&&document.getElementById('countGridView').classList.contains('active'))cRenderGrid();});})(cBranch);
     (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&cBranch===br&&document.getElementById('countGridView').classList.contains('active'))cRenderGrid();});})(cBranch);
     (function(br){_refreshCountMismatches(br).then(function(){if(cBranch===br&&document.getElementById('countGridView').classList.contains('active'))cRenderGrid();});})(cBranch);
     (function(br){_refreshSharedCounts(br).then(function(){if(cBranch===br&&document.getElementById('countGridView').classList.contains('active'))cRenderGrid();});})(cBranch);
@@ -4884,7 +4893,8 @@ function openCount(){
 }
 function cSetBranch(x){
   if(role==='Operator' && x!==branch){toast('Locked to '+branch,true);return;}
-  cBranch=x;_fetchLiveExpectedOpening(cBranch);
+  cBranch=x;
+  (function(br){_fetchLiveExpectedOpening(br).then(function(landed){if(landed&&cBranch===br)cRenderGrid();});})(cBranch);
   (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&cBranch===br)cRenderGrid();});})(cBranch);
   (function(br){_refreshCountMismatches(br).then(function(){if(cBranch===br&&document.getElementById('countGridView').classList.contains('active'))cRenderGrid();});})(cBranch);
   (function(br){_refreshSharedCounts(br).then(function(){if(cBranch===br&&document.getElementById('countGridView').classList.contains('active'))cRenderGrid();});})(cBranch);
