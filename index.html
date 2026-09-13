@@ -336,7 +336,7 @@
       <button class="tile t6" data-key="transfer" id="tileTransfer" onclick="openTransfers()" style="display:none"><div class="ic">&#8646;</div><h3>Stock Transfer</h3><p>Owner: move cylinders between branches</p><span class="badge" id="b-transfer" style="display:none">0</span></button>
       <button class="tile t1" data-key="verifiedTake" id="tileVerifiedTake" onclick="openVerifiedTake()" style="display:none"><div class="ic">&#9745;</div><h3>Verified Stock Take</h3><p>Auditor: independent physical count</p></button>
       <button class="tile t3" data-key="rangeBalance" id="tileRangeBalance" onclick="openRangeBalance()" style="display:none"><div class="ic">&#128202;</div><h3>Stock Balance</h3><p>Owner: balance stock over any date range</p></button>
-      <button class="tile t4" data-key="dailySales" id="tileDailySales" onclick="openDailySales()" style="display:none"><div class="ic">&#128176;</div><h3>Daily Sales</h3><p>Manager/Owner: sold + returned cylinders today</p></button>
+      <button class="tile t4" data-key="dailySales" id="tileDailySales" onclick="openDailySales()" style="display:none"><div class="ic">&#128176;</div><h3>Daily Sales</h3><p>Full Sold &amp; Empties Returned</p></button>
     </div>
     <div class="cFooter" id="homeEditBar" style="display:none">
       <button type="button" class="cbGhost" onclick="resetHomeLayout()">Reset layout</button>
@@ -1509,11 +1509,11 @@ function _manifoldPendingFlush(){
 // ===== Daily Sales / Returns (daily_sales) - closes the "no point-of-sale record" gap =====
 var _dsRows={}; // size -> {sold, returned}
 function openDailySales(){
-  if(role!=='Manager'&&role!=='Owner'){toast('Not available for this role',true);return;}
+  if(!perm('dailySales')&&role!=='Owner'){toast('Not available for this role',true);return;}
   show('dailySalesView');
   document.getElementById('backBtn').style.display='block';
   document.getElementById('hTitle').textContent='Daily Sales';
-  document.getElementById('hSub').textContent='Sold + returned cylinders today';
+  document.getElementById('hSub').textContent='Full Sold & Empties Returned';
   document.getElementById('dsBranch').value=(branch||'Helderberg');
   dsLoad();
 }
@@ -3393,13 +3393,13 @@ function suppliersMgmtRemove(name){
 // ===== USER STORE (demo, localStorage) =====
 // user = {name, level:'Owner|Manager|Operator', branches:[...], pw, perms:{...}}
 // Granular permissions. Levels are PRESETS that pre-tick these; Owner can override per user.
-var PERM_KEYS=['view','capture','edit','closeday','history','users','audit','adjust','seal_admin','seal_create','seal_void_open','seal_edit_used','seal_boundary','branch_setup','faultyCapture','faultyRegister','residualGas','manageSuppliers','verifiedCount'];
-var PERM_LABELS={view:'View counts',capture:'Capture counts',edit:'Edit / correct',closeday:'Close day',history:'Open history',users:'Manage users',audit:'View audit log',adjust:'Adjust mismatches',seal_admin:'Seal: open Admin area',seal_create:'Seal: create/edit roll (unused)',seal_void_open:'Seal: void seal (open day)',seal_edit_used:'Seal: edit used roll / void closed day',seal_boundary:'Seal: pump boundary override',branch_setup:'Branch Setup: activate/deactivate sections & items',faultyCapture:'Faulty — capture',faultyRegister:'Faulty — manage register',residualGas:'Residual Gas — capture',manageSuppliers:'Manage Suppliers (Received)',verifiedCount:'Verified Stock Take — capture'};
+var PERM_KEYS=['view','capture','edit','closeday','history','users','audit','adjust','seal_admin','seal_create','seal_void_open','seal_edit_used','seal_boundary','branch_setup','faultyCapture','faultyRegister','residualGas','manageSuppliers','verifiedCount','dailySales'];
+var PERM_LABELS={view:'View counts',capture:'Capture counts',edit:'Edit / correct',closeday:'Close day',history:'Open history',users:'Manage users',audit:'View audit log',adjust:'Adjust mismatches',seal_admin:'Seal: open Admin area',seal_create:'Seal: create/edit roll (unused)',seal_void_open:'Seal: void seal (open day)',seal_edit_used:'Seal: edit used roll / void closed day',seal_boundary:'Seal: pump boundary override',branch_setup:'Branch Setup: activate/deactivate sections & items',faultyCapture:'Faulty — capture',faultyRegister:'Faulty — manage register',residualGas:'Residual Gas — capture',manageSuppliers:'Manage Suppliers (Received)',verifiedCount:'Verified Stock Take — capture',dailySales:'Daily Sales — capture'};
 function permPreset(level){
   if(level==='Owner')   return {view:1,capture:1,edit:1,closeday:1,history:1,users:1,audit:1,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:1,seal_boundary:1,branch_setup:1,faultyCapture:1,faultyRegister:1,residualGas:1,manageSuppliers:1};
-  if(level==='Manager') return {view:1,capture:1,edit:1,closeday:1,history:1,users:0,audit:0,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:0,seal_boundary:0,branch_setup:1,faultyCapture:1,faultyRegister:1,residualGas:1,manageSuppliers:1};
+  if(level==='Manager') return {view:1,capture:1,edit:1,closeday:1,history:1,users:0,audit:0,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:0,seal_boundary:0,branch_setup:1,faultyCapture:1,faultyRegister:1,residualGas:1,manageSuppliers:1,dailySales:1};
   if(level==='Auditor') return {view:1,verifiedCount:1};
-  return                       {view:1,capture:1,edit:1,closeday:0,history:0,users:0,audit:0,adjust:0,seal_admin:0,seal_create:0,seal_void_open:0,seal_edit_used:0,seal_boundary:0,faultyCapture:1,faultyRegister:0,residualGas:1,manageSuppliers:0}; // Operator
+  return                       {view:1,capture:1,edit:1,closeday:0,history:0,users:0,audit:0,adjust:0,seal_admin:0,seal_create:0,seal_void_open:0,seal_edit_used:0,seal_boundary:0,faultyCapture:1,faultyRegister:0,residualGas:1,manageSuppliers:0,dailySales:0}; // Operator - off by default, toggle per-user in Manage Users
 }
 function userPerms(u){
   if(!u)return {};
@@ -4245,7 +4245,7 @@ function _finishLogin(u,b){
   var _tvt=document.getElementById('tileVerifiedTake');if(_tvt)_tvt.style.display=(perm('verifiedCount')||role==='Owner')?'flex':'none';
   // opened to Manager+Owner per the spec's real intended audience.
   var _trb=document.getElementById('tileRangeBalance');if(_trb)_trb.style.display=(role==='Manager'||role==='Owner')?'flex':'none';
-  var _tds=document.getElementById('tileDailySales');if(_tds)_tds.style.display=(role==='Manager'||role==='Owner')?'flex':'none';
+  var _tds=document.getElementById('tileDailySales');if(_tds)_tds.style.display=(perm('dailySales')||role==='Owner')?'flex':'none';
   auditLog('Login','Signed in to '+b);
   editUnlocked=false;
   loadWorkingStore();
