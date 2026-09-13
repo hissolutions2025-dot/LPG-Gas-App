@@ -319,6 +319,7 @@
     <div class="datebar"><label>Stock-take date</label><div class="val" id="dateVal">—</div></div>
     <div id="closeDayPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div id="countPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
+    <div id="minFullHoldBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div class="greet">Every entry uses today's date, your name and branch.</div>
     <div class="greet" id="homeEditHint" style="display:none">Drag the middle of a tile to reorder. Drag its edge or corner to resize.</div>
     <div class="grid" id="homeGrid">
@@ -2472,7 +2473,7 @@ function _adminTabShow(t){
   var _tf=document.getElementById('atab-faulty');if(_tf)_tf.classList.toggle('on',t==='faulty');
   var _tsm=document.getElementById('atab-suppliersmgmt');if(_tsm)_tsm.classList.toggle('on',t==='suppliersmgmt');
   var _tct=document.getElementById('atab-counttimes');if(_tct)_tct.classList.toggle('on',t==='counttimes');
-  if(t==='bsetup'){renderBsetup();_fetchAppConfig('branch_setup',bcfgSave).then(renderBsetup);}
+  if(t==='bsetup'){renderBsetup();Promise.all([_fetchAppConfig('branch_setup',bcfgSave),_fetchAppConfig('stock_thresholds',thresholdsSave)]).then(renderBsetup);}
   if(t==='manifold')renderManifoldSlots();
   if(t==='clear'){var d=document.getElementById('clrDate');if(d&&!d.value)d.value=today;}
   if(t==='seals'){fillBrandPicker();renderRolls();_fetchSealLive(adminBranch).then(function(){renderRolls();renderUsedSeals();});}
@@ -2662,6 +2663,19 @@ function renderBsetup(){
         html+='<label style="display:inline-block;width:48%;font-size:12px;margin-bottom:3px"><input type="checkbox" '+(ion?'checked':'')+' onchange="toggleItem(\''+br+'\',\''+sec+'\',\''+it+'\',this.checked)" style="margin-right:5px"> '+it+'</label>';
       });
       html+='</div>';
+      if(sec==='count'){
+        html+='<div style="margin-top:10px;padding-left:8px;border-top:1px solid #EEE;padding-top:8px">';
+        html+='<div style="font-size:12px;font-weight:700;color:var(--navy);margin-bottom:4px">Stock Thresholds (per size)</div>';
+        items.forEach(function(it){
+          var th=thresholdFor(br,it);
+          html+='<div style="display:flex;align-items:center;gap:8px;font-size:11px;margin-bottom:4px">'+
+            '<span style="width:80px">'+it+'</span>'+
+            '<label style="display:flex;align-items:center;gap:3px">Min Full Hold <input type="number" min="0" value="'+th.minFullHold+'" style="width:55px" onchange="setThreshold(\''+br+'\',\''+it+'\',\'minFullHold\',this.value)"></label>'+
+            '<label style="display:flex;align-items:center;gap:3px">Extra Alloc. Threshold <input type="number" value="'+th.extraAllocThreshold+'" style="width:55px" onchange="setThreshold(\''+br+'\',\''+it+'\',\'extraAllocThreshold\',this.value)"></label>'+
+            '</div>';
+        });
+        html+='</div>';
+      }
     } else {
       html+='<div style="font-size:11px;color:var(--muted);margin-top:4px;padding-left:8px">(no individual items)</div>';
     }
@@ -2757,6 +2771,21 @@ function toggleSection(br,sec,val){
 function toggleItem(br,sec,item,val){
   if(!(role==='Owner'||perm('branch_setup'))){toast('No Branch Setup rights',true);return;}
   bcfgSet(br,sec,item,val);toast((val?'Activated ':'Deactivated ')+item);
+}
+function thresholdsSet(br,sz,field,val){
+  var t=thresholdsLoad();
+  t[br]=t[br]||{};
+  t[br][sz]=t[br][sz]||{minFullHold:0,extraAllocThreshold:0};
+  t[br][sz][field]=val;
+  thresholdsSave(t);
+  _pushAppConfig('stock_thresholds',t);
+}
+function setThreshold(br,sz,field,val){
+  if(!(role==='Owner'||perm('branch_setup'))){toast('No Branch Setup rights',true);return;}
+  var n=num(val);
+  if(field==='minFullHold'&&n<0)n=0; // a stock count can't be negative; extraAllocThreshold is a negative tolerance, left as-is
+  thresholdsSet(br,sz,field,n);
+  toast(sz+' threshold updated');
 }
 function doClearStockTake(){
   if(!perm('seal_edit_used') && role!=='Owner'){toast('Owner rights required',true);return;}
@@ -3417,6 +3446,51 @@ var REFILL_ITEMS=['5kg','9kg','12kg','14kg','19kg','14kg-FLT','19kg-FLT','8kg-Pr
 var SECTION_ITEMS={count:COUNT_ITEMS,refill:REFILL_ITEMS,received:COUNT_ITEMS,private:[],manifold:['Cyl 1','Cyl 2','Cyl 3','Cyl 4']};
 function bcfgLoad(){try{return JSON.parse(localStorage.getItem('gs_bcfg')||'{}');}catch(e){return {};}}
 function bcfgSave(c){localStorage.setItem('gs_bcfg',JSON.stringify(c));}
+// Stock Thresholds - live cross-device config (app_config key 'stock_thresholds'), same
+// mechanism as bcfg/count_cutoff. {branch:{size:{minFullHold, extraAllocThreshold}}}.
+// Manager-adjustable (perm('branch_setup')) - seasonally, since demand isn't constant.
+function thresholdsLoad(){try{return JSON.parse(localStorage.getItem('gs_stock_thresholds')||'{}');}catch(e){return {};}}
+function thresholdsSave(c){localStorage.setItem('gs_stock_thresholds',JSON.stringify(c));}
+function thresholdFor(br,sz){
+  var t=thresholdsLoad();
+  return (t[br]&&t[br][sz])||{minFullHold:0,extraAllocThreshold:0};
+}
+// Minimum Full Stock Hold - sizes whose today's Closing Full count (current branch) has
+// dropped below their configured minimum. Only considers sizes with minFullHold>0 (0 = opted
+// out, never alerts - same convention as thresholdFor's own default). Iterates the configured
+// sizes themselves (not just sizes with a count row today) so a size that got NO Closing count
+// at all today - i.e. sitting at 0 - still correctly flags rather than being silently skipped.
+// Reads store.count directly (same branch/date/countType/state filter convention _dayCompleteness
+// above already uses) rather than reusing _countFullKg, which sums KG across every size, not a
+// per-size unit count.
+function _minFullHoldShortages(br){
+  br=br||branch;
+  var bySize={};
+  (store.count||[]).forEach(function(r){
+    if(r.branch&&r.branch!==br)return;
+    if((r._date||today)!==today)return;
+    if(r.countType!=='Closing')return;
+    if((r.state==='Empty'?'Empty':'Full')!=='Full')return;
+    bySize[r.size]=(bySize[r.size]||0)+num(r.qty);
+  });
+  var cfg=thresholdsLoad()[br]||{};
+  var short=[];
+  Object.keys(cfg).forEach(function(sz){
+    var min=cfg[sz].minFullHold;
+    if(min>0&&(bySize[sz]||0)<min)short.push(sz);
+  });
+  return short;
+}
+// Same visual pattern as _updateCloseDayPendingBadge/_updateCountPendingBadge (amber banner,
+// shown/hidden by style.display) and refreshed at the same call site(s) as those - Home-screen
+// only (no History variant needed here). Flag only - never blocks anything.
+function _updateMinFullHoldBadge(){
+  var el=document.getElementById('minFullHoldBadge');
+  if(!el)return;
+  var short=_minFullHoldShortages(branch);
+  el.style.display=short.length?'block':'none';
+  el.textContent=short.length?('⚠ Below minimum full stock hold: '+short.join(', ')):'';
+}
 // Live cross-device config: app_config holds one row per key ('branch_setup','count_cutoff').
 // Fetched into the same local blobs bcfgLoad()/loadCountCutoffCfg() already read (so every
 // existing read call site needs zero changes), written straight through on save - these are
@@ -4267,6 +4341,7 @@ function _finishLogin(u,b){
   _updateCloseDayPendingBadge();
   _countFlushQueue();
   _updateCountPendingBadge();
+  _updateMinFullHoldBadge();
   _updateMismatchPendingBadge();
   _refreshCountMismatches(branch).then(_updateMismatchPendingBadge);
   refreshTestDateUI();
@@ -5682,11 +5757,17 @@ function fetchRangeStockBalance(br,startDate,endDate){
 
     var realSales=r[8]; // _fetchRangeDailySales result, or null if nothing captured this range
     var salesIsReal=!!realSales;
+    // Per-size Net Exchange (sold minus returned) - only meaningful when real captured Sales
+    // data exists for this range (the inference-fallback path below has no real per-size
+    // returned data to compute it from, so this stays empty in that case - Task 3 Extra
+    // Allocation flag reads this and must never flag off the inferred/estimated path).
+    var netExchangeBySize={};
     if(salesIsReal){
       estSoldBySize={}; estSoldTotal=0;
       allSizes.forEach(function(sz){
         var v=(realSales.soldBySize[sz]||0);
         estSoldBySize[sz]=v; estSoldTotal+=v;
+        netExchangeBySize[sz]=v-(realSales.returnedBySize[sz]||0);
       });
     }
 
@@ -5700,7 +5781,7 @@ function fetchRangeStockBalance(br,startDate,endDate){
       transfers:{inBySize:transfers.inBySize,outBySize:transfers.outBySize,inTotal:totalOfSizeMap(transfers.inBySize),outTotal:totalOfSizeMap(transfers.outBySize)},
       manifold:{openingKg:manOpeningKg,closingKg:manClosingKg,diffKg:manOpeningKg-manClosingKg,hasOpening:manifold.opening.length>0,hasClosing:manifold.closing.length>0},
       faulty:faulty,
-      estSold:{bySize:estSoldBySize,total:estSoldTotal,isReal:salesIsReal,daysCaptured:realSales?realSales.daysCaptured:0}
+      estSold:{bySize:estSoldBySize,total:estSoldTotal,isReal:salesIsReal,daysCaptured:realSales?realSales.daysCaptured:0,netExchangeBySize:netExchangeBySize}
     };
   });
 }
@@ -5806,6 +5887,20 @@ function rbRenderReport(bal){
     '<tr><td>Closing ('+bal.endDate+')</td><td class="n">'+(bal.manifold.hasClosing?kg(bal.manifold.closingKg):'—')+'</td></tr>'+
     '<tr><td><b>Diff</b></td><td class="n"><b>'+((bal.manifold.hasOpening&&bal.manifold.hasClosing)?kg(bal.manifold.diffKg):'—')+'</b></td></tr></table>';
   html+='<div class="callout" style="font-weight:800">'+(bal.estSold.isReal?'Sales (captured, '+bal.estSold.daysCaptured+' day(s))':'Estimated sold this range')+': '+bal.estSold.total+' cylinder(s)</div>';
+  // Extra Allocation flag (pool-creep detection) - netExchangeBySize is only ever populated
+  // over real captured Sales data (fetchRangeStockBalance leaves it empty on the inference-
+  // fallback path), so this naturally renders nothing there. Only sizes with a configured,
+  // non-zero threshold can flag - 0 means opted out, same convention thresholdFor's own
+  // default and Task 2's Min Full Hold check both already use.
+  var neb=bal.estSold.netExchangeBySize||{};
+  var flagLines='';
+  Object.keys(neb).forEach(function(sz){
+    var thr=thresholdFor(bal.branch,sz).extraAllocThreshold;
+    if(thr>0&&neb[sz]<-thr){
+      flagLines+='<div class="callout" style="color:#C0392B">⚠ '+sz+': Net Exchange '+neb[sz]+' — possible cylinder creep, consider extra allocation</div>';
+    }
+  });
+  if(flagLines)html+=flagLines;
   return html;
 }
 // Task 4: one marker per Auditor take found inside the picked range. comparisons[i]
