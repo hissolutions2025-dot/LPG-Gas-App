@@ -172,6 +172,13 @@
   .htable th{text-align:left;color:var(--muted);font-weight:700;padding:5px 6px;border-bottom:1.5px solid var(--line);font-size:11px;}
   .htable td{padding:6px;border-bottom:1px solid #EEF1F4;} .htable td.n{text-align:center;font-weight:700;color:var(--navy);}
   .histEmpty{font-size:12px;color:var(--muted);padding:6px 0;}
+  .dsTable{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:10px;}
+  .dsTable th{background:var(--navy);color:#fff;font-weight:700;padding:8px 6px;border:1.5px solid var(--navy);font-size:12px;}
+  .dsTable td{border:1.5px solid var(--line);padding:6px;text-align:center;}
+  .dsTable td.dsSizeCell{background:var(--yellow);font-weight:800;color:var(--navy);}
+  .dsTable td.dsDiffCell{font-weight:800;color:var(--navy);}
+  .dsTable input{width:100%;border:none;background:transparent;text-align:center;font-size:14px;font-weight:700;color:var(--navy);padding:4px;-moz-appearance:textfield;}
+  .dsTable input::-webkit-outer-spin-button,.dsTable input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
   .exportBtn{width:100%;background:var(--navy);color:#fff;border:none;border-radius:10px;padding:13px;font-size:13px;font-weight:600;cursor:pointer;}
 
   /* ===== COUNT MODULE (grid -> detail) ===== */
@@ -1523,18 +1530,15 @@ function openDailySales(){
 }
 function dsRenderGrid(){
   var g=document.getElementById('dsGrid');
-  g.innerHTML=ALLSIZES.map(function(sz){
+  var rowsHtml=ALLSIZES.map(function(sz){
     var r=_dsRows[sz]||{sold:0,returned:0};
     var diff=num(r.sold)-num(r.returned);
-    return '<div class="brandCard"><b style="font-size:12px">'+sz+'</b><div class="bLine" style="margin-top:6px">'+
-      '<span style="font-size:11px;font-weight:800;color:var(--navy);text-transform:uppercase;letter-spacing:.4px;width:56px;flex:none">Sold</span>'+
-      '<input type="number" min="0" step="1" value="'+num(r.sold)+'" oninput="dsSetLine(\''+sz+'\',\'sold\',this.value)">'+
-      '</div><div class="bLine" style="margin-top:4px">'+
-      '<span style="font-size:11px;font-weight:800;color:var(--navy);text-transform:uppercase;letter-spacing:.4px;width:56px;flex:none">Back</span>'+
-      '<input type="number" min="0" step="1" value="'+num(r.returned)+'" oninput="dsSetLine(\''+sz+'\',\'returned\',this.value)">'+
-      '<span style="font-size:11px;color:var(--muted);flex:none">Diff '+(diff>0?'+':'')+diff+'</span>'+
-      '</div></div>';
+    return '<tr><td class="dsSizeCell"><b>'+sz+'</b></td>'+
+      '<td><input type="number" min="0" step="1" value="'+num(r.sold)+'" oninput="dsSetLine(\''+sz+'\',\'sold\',this.value)"></td>'+
+      '<td><input type="number" min="0" step="1" value="'+num(r.returned)+'" oninput="dsSetLine(\''+sz+'\',\'returned\',this.value)"></td>'+
+      '<td class="dsDiffCell"><b>'+diff+'</b></td></tr>';
   }).join('');
+  g.innerHTML='<table class="dsTable"><tr><th></th><th>Full Sold</th><th>Emp Return</th><th>Diff</th></tr>'+rowsHtml+'</table>';
   dsRenderNetExchange();
 }
 function dsSetLine(sz,field,val){
