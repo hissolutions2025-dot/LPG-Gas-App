@@ -5757,11 +5757,17 @@ function fetchRangeStockBalance(br,startDate,endDate){
 
     var realSales=r[8]; // _fetchRangeDailySales result, or null if nothing captured this range
     var salesIsReal=!!realSales;
+    // Per-size Net Exchange (sold minus returned) - only meaningful when real captured Sales
+    // data exists for this range (the inference-fallback path below has no real per-size
+    // returned data to compute it from, so this stays empty in that case - Task 3 Extra
+    // Allocation flag reads this and must never flag off the inferred/estimated path).
+    var netExchangeBySize={};
     if(salesIsReal){
       estSoldBySize={}; estSoldTotal=0;
       allSizes.forEach(function(sz){
         var v=(realSales.soldBySize[sz]||0);
         estSoldBySize[sz]=v; estSoldTotal+=v;
+        netExchangeBySize[sz]=v-(realSales.returnedBySize[sz]||0);
       });
     }
 
@@ -5775,7 +5781,7 @@ function fetchRangeStockBalance(br,startDate,endDate){
       transfers:{inBySize:transfers.inBySize,outBySize:transfers.outBySize,inTotal:totalOfSizeMap(transfers.inBySize),outTotal:totalOfSizeMap(transfers.outBySize)},
       manifold:{openingKg:manOpeningKg,closingKg:manClosingKg,diffKg:manOpeningKg-manClosingKg,hasOpening:manifold.opening.length>0,hasClosing:manifold.closing.length>0},
       faulty:faulty,
-      estSold:{bySize:estSoldBySize,total:estSoldTotal,isReal:salesIsReal,daysCaptured:realSales?realSales.daysCaptured:0}
+      estSold:{bySize:estSoldBySize,total:estSoldTotal,isReal:salesIsReal,daysCaptured:realSales?realSales.daysCaptured:0,netExchangeBySize:netExchangeBySize}
     };
   });
 }
@@ -5881,6 +5887,20 @@ function rbRenderReport(bal){
     '<tr><td>Closing ('+bal.endDate+')</td><td class="n">'+(bal.manifold.hasClosing?kg(bal.manifold.closingKg):'—')+'</td></tr>'+
     '<tr><td><b>Diff</b></td><td class="n"><b>'+((bal.manifold.hasOpening&&bal.manifold.hasClosing)?kg(bal.manifold.diffKg):'—')+'</b></td></tr></table>';
   html+='<div class="callout" style="font-weight:800">'+(bal.estSold.isReal?'Sales (captured, '+bal.estSold.daysCaptured+' day(s))':'Estimated sold this range')+': '+bal.estSold.total+' cylinder(s)</div>';
+  // Extra Allocation flag (pool-creep detection) - netExchangeBySize is only ever populated
+  // over real captured Sales data (fetchRangeStockBalance leaves it empty on the inference-
+  // fallback path), so this naturally renders nothing there. Only sizes with a configured,
+  // non-zero threshold can flag - 0 means opted out, same convention thresholdFor's own
+  // default and Task 2's Min Full Hold check both already use.
+  var neb=bal.estSold.netExchangeBySize||{};
+  var flagLines='';
+  Object.keys(neb).forEach(function(sz){
+    var thr=thresholdFor(bal.branch,sz).extraAllocThreshold;
+    if(thr>0&&neb[sz]<-thr){
+      flagLines+='<div class="callout" style="color:#C0392B">⚠ '+sz+': Net Exchange '+neb[sz]+' — possible cylinder creep, consider extra allocation</div>';
+    }
+  });
+  if(flagLines)html+=flagLines;
   return html;
 }
 // Task 4: one marker per Auditor take found inside the picked range. comparisons[i]
