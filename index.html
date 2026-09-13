@@ -2092,21 +2092,22 @@ function _fetchManifoldLiveRows(br,date){
 // while in flight/offline/no prior close - never blocks capture).
 var _manifoldPrevClose={};
 function _fetchManifoldPrevClose(br){
-  var yDate;
-  try{yDate=_dayBefore(today);}catch(e){return;}
-  sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
-    if(res.error){console.error('_fetchManifoldPrevClose failed for '+br+':',res.error.message);return;}
-    if(!res.data){delete _manifoldPrevClose[br];return;} // no prior close - tier 3 has nothing, tier 4 (no baseline) applies
-    var exp={};
-    ((res.data.store_snapshot&&res.data.store_snapshot.manifold)||[]).filter(function(r){return r.stage==='Closing';}).forEach(function(r){
-      // scale/gasLeft added for the Opening-discipline live check (see popCalc()) - the
-      // Removed-step baseline chain that originally built this cache only ever needed
-      // brand/gasType/tare, gasLeft is derived defensively (r.gasLeft may be absent on an
-      // older row that predates the field) rather than assumed present.
-      exp[r.cyl]={brand:r.brand,gasType:r.gasType,tare:num(r.tare),scale:num(r.scale),gasLeft:(r.gasLeft!==undefined?num(r.gasLeft):(num(r.scale)-num(r.tare)))};
-    });
-    _manifoldPrevClose[br]=exp;
-  },function(e){console.error('_fetchManifoldPrevClose rejected for '+br+':',e&&e.message);});
+  _lastCloseDate(br,today).then(function(yDate){
+    if(!yDate){delete _manifoldPrevClose[br];return;} // no prior close - tier 3 has nothing, tier 4 (no baseline) applies
+    return sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
+      if(res.error){console.error('_fetchManifoldPrevClose failed for '+br+':',res.error.message);return;}
+      if(!res.data){delete _manifoldPrevClose[br];return;} // no prior close - tier 3 has nothing, tier 4 (no baseline) applies
+      var exp={};
+      ((res.data.store_snapshot&&res.data.store_snapshot.manifold)||[]).filter(function(r){return r.stage==='Closing';}).forEach(function(r){
+        // scale/gasLeft added for the Opening-discipline live check (see popCalc()) - the
+        // Removed-step baseline chain that originally built this cache only ever needed
+        // brand/gasType/tare, gasLeft is derived defensively (r.gasLeft may be absent on an
+        // older row that predates the field) rather than assumed present.
+        exp[r.cyl]={brand:r.brand,gasType:r.gasType,tare:num(r.tare),scale:num(r.scale),gasLeft:(r.gasLeft!==undefined?num(r.gasLeft):(num(r.scale)-num(r.tare)))};
+      });
+      _manifoldPrevClose[br]=exp;
+    },function(e){console.error('_fetchManifoldPrevClose rejected for '+br+':',e&&e.message);});
+  });
 }
 function _getManifoldPrevClose(br,item){return (_manifoldPrevClose[br]||{})[item]||null;}
 const SIZEKG={'5kg':5,'9kg':9,'12kg':12,'14kg':14,'19kg':19,'14kg-FLT':14,'19kg-FLT':19,'8kg-Prop':8,'18kg-Prop':18};
@@ -4801,19 +4802,20 @@ function cIsFlagged(br,st,sz){
 // local carry-forward while the fetch is in flight or offline, so nothing regresses/blocks.
 var _liveExpectedOpening={};
 function _fetchLiveExpectedOpening(br){
-  var yDate;
-  try{yDate=_dayBefore(today);}catch(e){return;}
-  sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
-    if(res.error){console.error('_fetchLiveExpectedOpening failed for '+br+':',res.error.message);return;}
-    if(!res.data){delete _liveExpectedOpening[br];return;} // no prior close - local carry-forward fallback applies
-    var exp={};
-    ((res.data.store_snapshot&&res.data.store_snapshot.count)||[]).filter(function(r){return r.countType==='Closing';}).forEach(function(r){
-      var st=(r.state==='Empty')?'Empty':'Full';
-      if(!exp[r.size])exp[r.size]={Full:{},Empty:{}};
-      exp[r.size][st][r.brand]=(exp[r.size][st][r.brand]||0)+num(r.qty);
-    });
-    _liveExpectedOpening[br]={exp:exp};
-  },function(e){console.error('_fetchLiveExpectedOpening rejected for '+br+':',e&&e.message);});
+  _lastCloseDate(br,today).then(function(yDate){
+    if(!yDate){delete _liveExpectedOpening[br];return;} // no prior close - local carry-forward fallback applies
+    return sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
+      if(res.error){console.error('_fetchLiveExpectedOpening failed for '+br+':',res.error.message);return;}
+      if(!res.data){delete _liveExpectedOpening[br];return;} // no prior close - local carry-forward fallback applies
+      var exp={};
+      ((res.data.store_snapshot&&res.data.store_snapshot.count)||[]).filter(function(r){return r.countType==='Closing';}).forEach(function(r){
+        var st=(r.state==='Empty')?'Empty':'Full';
+        if(!exp[r.size])exp[r.size]={Full:{},Empty:{}};
+        exp[r.size][st][r.brand]=(exp[r.size][st][r.brand]||0)+num(r.qty);
+      });
+      _liveExpectedOpening[br]={exp:exp};
+    },function(e){console.error('_fetchLiveExpectedOpening rejected for '+br+':',e&&e.message);});
+  });
 }
 function _getLiveExpectedOpening(br){return _liveExpectedOpening[br]||loadExpectedOpening(br);}
 function cExpectedFor(br,st,sz,brand){
@@ -5957,6 +5959,19 @@ function _dayBefore(dateStr){
   d.setUTCDate(d.getUTCDate()-1);
   return d.toISOString().slice(0,10);
 }
+// Returns the most recent date (strictly before `beforeDate`) that `br` actually closed, or
+// null if none exists. Replaces the naive "always literally yesterday" pattern every
+// prev-close comparison in this file used to follow (_dayBefore(x) + an exact-date lookup) -
+// on a day following a non-working day (Sunday, a holiday - no Close Day happened), that
+// naive pattern silently found nothing and every blind-mismatch/baseline/report comparison
+// just didn't fire, instead of correctly reaching back to the last real close (e.g. Saturday).
+function _lastCloseDate(br,beforeDate){
+  return sb.from('day_closes').select('date').eq('branch',br).lt('date',beforeDate)
+    .order('date',{ascending:false}).limit(1).then(function(res){
+      if(res.error||!res.data||!res.data.length)return null;
+      return res.data[0].date;
+    },function(){return null;});
+}
 // Reads yesterday's Closing figures live from the shared day_closes snapshot (never
 // stored separately - see the design doc's rejection of a redundant expected_opening
 // table), diffs them against today's committed Opening stock_counts rows for this
@@ -5985,28 +6000,34 @@ function _refreshCountMismatches(br, localOverlayRows){
   // session has logged in must keep querying/writing under the date it was originally
   // issued for, never silently drift onto the new session's date.
   var myToday=today;
+  // Resolved (below) to the actual last-close date this run's baseline comparison used
+  // (see _lastCloseDate) - stashed here, and onto each mismatch object pushed into
+  // store._openMismatch further down, so the mismatch-resolution hand-off
+  // (adjustMismatch's accepted-branch block, ~10660) can reuse the EXACT date this run
+  // compared against instead of risking an independently-recomputed date disagreeing.
+  var myCloseDate=null;
   var prior=_refreshCountMismatchesChains[br]||Promise.resolve();
   var chained=prior.then(function(){
-    var yDate;
-    try{
-      yDate=_dayBefore(myToday);
-    }catch(e){
-      console.error('_refreshCountMismatches: could not compute yesterday\'s date:',e.message);
-      return;
-    }
-    var dcPromise=sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle();
-    // op is read live from the shared stock_counts table (the Phase 2b pilot's table),
-    // never from local store.count - a device that hasn't itself committed or synced
-    // anything today must never be treated as "nothing counted anywhere," since another
-    // device may genuinely have real, unresolved mismatches this device simply doesn't
-    // know about locally. Reading both baselines live is the whole point of this design
-    // (see the spec's rejection of a redundant expected_opening table) - op deserved the
-    // exact same treatment exp already got, and originally didn't.
-    var opPromise=sb.from('stock_counts').select('*').eq('branch',br).eq('date',myToday).eq('count_type','Opening');
-    return Promise.all([dcPromise,opPromise]).then(function(results){
-      var dcRes=results[0], opRes=results[1];
-      if(dcRes.error)throw new Error('day_closes fetch failed: '+dcRes.error.message);
-      if(opRes.error)throw new Error('stock_counts fetch failed: '+opRes.error.message);
+    return _lastCloseDate(br,myToday).then(function(yDate){
+      myCloseDate=yDate;
+      // No prior close at all (yDate null) - skip the day_closes fetch entirely and use the
+      // same "nothing found" shape maybeSingle() itself returns for a miss, so every check
+      // below (dcRes.error, dcRes.data) behaves exactly as it already did for that outcome.
+      var dcPromise=yDate
+        ? sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle()
+        : Promise.resolve({data:null,error:null});
+      // op is read live from the shared stock_counts table (the Phase 2b pilot's table),
+      // never from local store.count - a device that hasn't itself committed or synced
+      // anything today must never be treated as "nothing counted anywhere," since another
+      // device may genuinely have real, unresolved mismatches this device simply doesn't
+      // know about locally. Reading both baselines live is the whole point of this design
+      // (see the spec's rejection of a redundant expected_opening table) - op deserved the
+      // exact same treatment exp already got, and originally didn't.
+      var opPromise=sb.from('stock_counts').select('*').eq('branch',br).eq('date',myToday).eq('count_type','Opening');
+      return Promise.all([dcPromise,opPromise]).then(function(results){
+        var dcRes=results[0], opRes=results[1];
+        if(dcRes.error)throw new Error('day_closes fetch failed: '+dcRes.error.message);
+        if(opRes.error)throw new Error('stock_counts fetch failed: '+opRes.error.message);
 
       // hasBaseline mirrors computeOpeningMismatches()'s own "no prior close to compare
       // against" skip (~3893: !expWrap||!expWrap.exp) - there, no localStorage entry for
@@ -6163,16 +6184,20 @@ function _refreshCountMismatches(br, localOverlayRows){
           })
         : Promise.resolve();
 
-      return reconcileAndUpsertPromise;
-    }).then(function(){
-      return sb.from('count_mismatches').select('*').eq('branch',br).eq('date',myToday);
-    }).then(function(res){
-      if(res.error)throw new Error('count_mismatches fetch failed: '+res.error.message);
-      if(_sessionGen!==myGen)return; // a different session has started since this call began - discard, matching the offline-safe "never write stale data" contract
-      var rows=res.data||[];
-      store._openMismatch=(store._openMismatch||[]).filter(function(m){return m.branch!==br||m.kind==='manifold';});
-      rows.forEach(function(d){store._openMismatch.push(_countMismatchFromShared(d));});
+        return reconcileAndUpsertPromise;
+      });
     });
+  }).then(function(){
+    return sb.from('count_mismatches').select('*').eq('branch',br).eq('date',myToday);
+  }).then(function(res){
+    if(res.error)throw new Error('count_mismatches fetch failed: '+res.error.message);
+    if(_sessionGen!==myGen)return; // a different session has started since this call began - discard, matching the offline-safe "never write stale data" contract
+    var rows=res.data||[];
+    store._openMismatch=(store._openMismatch||[]).filter(function(m){return m.branch!==br||m.kind==='manifold';});
+    // closeDate stashed here (not just kept in this function's closure) so
+    // adjustMismatch()'s accepted-branch hand-off (~10660) can read it straight off `m`
+    // and reuse the exact date this refresh compared against - see myCloseDate above.
+    rows.forEach(function(d){var mm=_countMismatchFromShared(d);mm.closeDate=myCloseDate;store._openMismatch.push(mm);});
   }).catch(function(e){
     console.error('_refreshCountMismatches failed for '+br+':',e&&e.message);
   });
@@ -10656,20 +10681,32 @@ function adjustMismatch(i){
           // Manager working a different branch's mismatch is told to switch branches first
           // rather than risking opening the wrong branch's saved day.
           if(accepted){
-            var yDate;
-            try{yDate=_dayBefore(myMismatchDate);}catch(e){console.error('Could not compute the previous day for the Closing hand-off:',e.message);}
-            if(yDate){
-              if(bc!==branch){
-                toast('To correct '+yDate+'\'s Closing for '+itemLabel+', switch to '+bc+' branch, then use Count History → Past.',true);
-              } else {
-                // No toast here - the resolved line's own "✓ accepted as correct" is already
-                // visible in the (dimmed, still-showing-behind-the-modal) Mismatches list
-                // itself, and the auth modal's own title below names the date. A toast tried
-                // here before, but its 1800ms fade outlives the short pause before the modal
-                // opens, so it visibly clipped/overlapped the modal instead of finishing first.
-                setTimeout(function(){viewSavedDay(yDate,'Open the closing count for '+yDate+'?');},500);
+            // m.closeDate (when present) is the EXACT date _refreshCountMismatches actually
+            // compared this mismatch against (stashed there for this reason - see its own
+            // comment). Reusing it here, rather than independently recomputing, guarantees
+            // this hand-off always lands on the same date the mismatch itself was raised
+            // against, even in a hypothetical case where day_closes gains an earlier row
+            // between then and now. m.closeDate!==undefined (not just truthy) is the right
+            // check: a stashed `null` means _refreshCountMismatches itself found no prior
+            // close and must be honoured as-is, not treated as "not stashed, go recompute".
+            // Only a genuinely never-stashed entry (e.g. a local-only computeOpeningMismatches
+            // entry not yet overwritten by _refreshCountMismatches's async refresh) falls
+            // back to resolving it fresh here.
+            var closeDatePromise=(m.closeDate!==undefined)?Promise.resolve(m.closeDate):_lastCloseDate(bc,myMismatchDate);
+            closeDatePromise.then(function(yDate){
+              if(yDate){
+                if(bc!==branch){
+                  toast('To correct '+yDate+'\'s Closing for '+itemLabel+', switch to '+bc+' branch, then use Count History → Past.',true);
+                } else {
+                  // No toast here - the resolved line's own "✓ accepted as correct" is already
+                  // visible in the (dimmed, still-showing-behind-the-modal) Mismatches list
+                  // itself, and the auth modal's own title below names the date. A toast tried
+                  // here before, but its 1800ms fade outlives the short pause before the modal
+                  // opens, so it visibly clipped/overlapped the modal instead of finishing first.
+                  setTimeout(function(){viewSavedDay(yDate,'Open the closing count for '+yDate+'?');},500);
+                }
               }
-            }
+            });
           }
       });
     }
@@ -11154,18 +11191,19 @@ function _fetchFaultyHeld(br){
 // baseline", not "expected zero of everything", so an empty result here means the Opening
 // table renders with no comparison column rather than a misleading all-zero one.
 function _fetchPrevCloseExpected(br,date){
-  var yDate;
-  try{yDate=_dayBefore(date);}catch(e){return Promise.resolve({});}
-  return sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
-    if(res.error||!res.data)return {};
-    var exp={};
-    ((res.data.store_snapshot&&res.data.store_snapshot.count)||[]).filter(function(r){return r.countType==='Closing';}).forEach(function(r){
-      var st=(r.state==='Empty')?'Empty':'Full';
-      if(!exp[r.size])exp[r.size]={Full:{},Empty:{}};
-      exp[r.size][st][r.brand]=(exp[r.size][st][r.brand]||0)+num(r.qty);
-    });
-    return Object.keys(exp).length?exp:{};
-  },function(){return {};});
+  return _lastCloseDate(br,date).then(function(yDate){
+    if(!yDate)return {};
+    return sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
+      if(res.error||!res.data)return {};
+      var exp={};
+      ((res.data.store_snapshot&&res.data.store_snapshot.count)||[]).filter(function(r){return r.countType==='Closing';}).forEach(function(r){
+        var st=(r.state==='Empty')?'Empty':'Full';
+        if(!exp[r.size])exp[r.size]={Full:{},Empty:{}};
+        exp[r.size][st][r.brand]=(exp[r.size][st][r.brand]||0)+num(r.qty);
+      });
+      return Object.keys(exp).length?exp:{};
+    },function(){return {};});
+  });
 }
 // Sum of every brand's qty for one size+state in an _fetchPrevCloseExpected() result.
 function _prevCloseTotal(exp,sz,st){
