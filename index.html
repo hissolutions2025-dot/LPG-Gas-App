@@ -5588,6 +5588,26 @@ function sumBySize(rows,field){
   return out;
 }
 function totalOfSizeMap(m){return Object.keys(m).reduce(function(s,k){return s+m[k];},0);}
+// Real captured Sales for every day in the range that has one - {date: {sold:{}, returned:{}}}
+// per size, summed across the range. Days with no daily_sales row simply contribute nothing
+// here (the aggregator below falls back to the existing inference for the whole range if
+// this comes back empty - a range can't be "partially captured, partially inferred" per size,
+// that would double-count or under-count depending which days had real data).
+function _fetchRangeDailySales(br,startDate,endDate){
+  return sb.from('daily_sales').select('lines').eq('branch',br).gte('date',startDate).lte('date',endDate).then(function(res){
+    if(res.error){console.error('_fetchRangeDailySales failed:',res.error.message);return null;}
+    var rows=res.data||[];
+    if(!rows.length)return null; // nothing captured anywhere in this range - caller falls back to inference
+    var soldBySize={},returnedBySize={};
+    rows.forEach(function(r){
+      (r.lines||[]).forEach(function(l){
+        soldBySize[l.size]=(soldBySize[l.size]||0)+num(l.sold);
+        returnedBySize[l.size]=(returnedBySize[l.size]||0)+num(l.returned);
+      });
+    });
+    return {soldBySize:soldBySize,returnedBySize:returnedBySize,daysCaptured:rows.length};
+  },function(){return null;});
+}
 function fetchRangeStockBalance(br,startDate,endDate){
   return Promise.all([
     _fetchRangeOpeningCounts(br,startDate),
@@ -5597,7 +5617,8 @@ function fetchRangeStockBalance(br,startDate,endDate){
     _fetchRangeCaptureLiveRows('private',br,startDate,endDate),
     _fetchRangeManifold(br,startDate,endDate),
     _fetchRangeTransfers(br,startDate,endDate),
-    _fetchRangeFaulty(br,startDate,endDate)
+    _fetchRangeFaulty(br,startDate,endDate),
+    _fetchRangeDailySales(br,startDate,endDate)
   ]).then(function(r){
     var openingRows=r[0], closingRows=r[1], receivedRows=r[2], refillRows=r[3], privateRows=r[4],
         manifold=r[5], transfers=r[6], faulty=r[7];
@@ -5633,6 +5654,16 @@ function fetchRangeStockBalance(br,startDate,endDate){
     });
     estSoldTotal-=faulty.loggedInRangeCount;
 
+    var realSales=r[8]; // _fetchRangeDailySales result, or null if nothing captured this range
+    var salesIsReal=!!realSales;
+    if(salesIsReal){
+      estSoldBySize={}; estSoldTotal=0;
+      allSizes.forEach(function(sz){
+        var v=(realSales.soldBySize[sz]||0);
+        estSoldBySize[sz]=v; estSoldTotal+=v;
+      });
+    }
+
     return {
       branch:br, startDate:startDate, endDate:endDate,
       opening:{full:openingFullBySize,empty:openingEmptyBySize,fullTotal:totalOfSizeMap(openingFullBySize),emptyTotal:totalOfSizeMap(openingEmptyBySize),hasData:openingRows.length>0},
@@ -5643,7 +5674,7 @@ function fetchRangeStockBalance(br,startDate,endDate){
       transfers:{inBySize:transfers.inBySize,outBySize:transfers.outBySize,inTotal:totalOfSizeMap(transfers.inBySize),outTotal:totalOfSizeMap(transfers.outBySize)},
       manifold:{openingKg:manOpeningKg,closingKg:manClosingKg,diffKg:manOpeningKg-manClosingKg,hasOpening:manifold.opening.length>0,hasClosing:manifold.closing.length>0},
       faulty:faulty,
-      estSold:{bySize:estSoldBySize,total:estSoldTotal}
+      estSold:{bySize:estSoldBySize,total:estSoldTotal,isReal:salesIsReal,daysCaptured:realSales?realSales.daysCaptured:0}
     };
   });
 }
@@ -5734,7 +5765,7 @@ function rbRenderReport(bal){
     '<tr><td>Opening ('+bal.startDate+')</td><td class="n">'+(bal.manifold.hasOpening?kg(bal.manifold.openingKg):'—')+'</td></tr>'+
     '<tr><td>Closing ('+bal.endDate+')</td><td class="n">'+(bal.manifold.hasClosing?kg(bal.manifold.closingKg):'—')+'</td></tr>'+
     '<tr><td><b>Diff</b></td><td class="n"><b>'+((bal.manifold.hasOpening&&bal.manifold.hasClosing)?kg(bal.manifold.diffKg):'—')+'</b></td></tr></table>';
-  html+='<div class="callout" style="font-weight:800">Estimated sold this range: '+bal.estSold.total+' cylinder(s)</div>';
+  html+='<div class="callout" style="font-weight:800">'+(bal.estSold.isReal?'Sales (captured, '+bal.estSold.daysCaptured+' day(s))':'Estimated sold this range')+': '+bal.estSold.total+' cylinder(s)</div>';
   return html;
 }
 // Task 4: one marker per Auditor take found inside the picked range. comparisons[i]
