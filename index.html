@@ -319,6 +319,7 @@
     <div class="datebar"><label>Stock-take date</label><div class="val" id="dateVal">—</div></div>
     <div id="closeDayPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div id="countPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
+    <div id="minFullHoldBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div class="greet">Every entry uses today's date, your name and branch.</div>
     <div class="greet" id="homeEditHint" style="display:none">Drag the middle of a tile to reorder. Drag its edge or corner to resize.</div>
     <div class="grid" id="homeGrid">
@@ -3454,6 +3455,42 @@ function thresholdFor(br,sz){
   var t=thresholdsLoad();
   return (t[br]&&t[br][sz])||{minFullHold:0,extraAllocThreshold:0};
 }
+// Minimum Full Stock Hold - sizes whose today's Closing Full count (current branch) has
+// dropped below their configured minimum. Only considers sizes with minFullHold>0 (0 = opted
+// out, never alerts - same convention as thresholdFor's own default). Iterates the configured
+// sizes themselves (not just sizes with a count row today) so a size that got NO Closing count
+// at all today - i.e. sitting at 0 - still correctly flags rather than being silently skipped.
+// Reads store.count directly (same branch/date/countType/state filter convention _dayCompleteness
+// above already uses) rather than reusing _countFullKg, which sums KG across every size, not a
+// per-size unit count.
+function _minFullHoldShortages(br){
+  br=br||branch;
+  var bySize={};
+  (store.count||[]).forEach(function(r){
+    if(r.branch&&r.branch!==br)return;
+    if((r._date||today)!==today)return;
+    if(r.countType!=='Closing')return;
+    if((r.state==='Empty'?'Empty':'Full')!=='Full')return;
+    bySize[r.size]=(bySize[r.size]||0)+num(r.qty);
+  });
+  var cfg=thresholdsLoad()[br]||{};
+  var short=[];
+  Object.keys(cfg).forEach(function(sz){
+    var min=cfg[sz].minFullHold;
+    if(min>0&&(bySize[sz]||0)<min)short.push(sz);
+  });
+  return short;
+}
+// Same visual pattern as _updateCloseDayPendingBadge/_updateCountPendingBadge (amber banner,
+// shown/hidden by style.display) and refreshed at the same call site(s) as those - Home-screen
+// only (no History variant needed here). Flag only - never blocks anything.
+function _updateMinFullHoldBadge(){
+  var el=document.getElementById('minFullHoldBadge');
+  if(!el)return;
+  var short=_minFullHoldShortages(branch);
+  el.style.display=short.length?'block':'none';
+  el.textContent=short.length?('⚠ Below minimum full stock hold: '+short.join(', ')):'';
+}
 // Live cross-device config: app_config holds one row per key ('branch_setup','count_cutoff').
 // Fetched into the same local blobs bcfgLoad()/loadCountCutoffCfg() already read (so every
 // existing read call site needs zero changes), written straight through on save - these are
@@ -4304,6 +4341,7 @@ function _finishLogin(u,b){
   _updateCloseDayPendingBadge();
   _countFlushQueue();
   _updateCountPendingBadge();
+  _updateMinFullHoldBadge();
   _updateMismatchPendingBadge();
   _refreshCountMismatches(branch).then(_updateMismatchPendingBadge);
   refreshTestDateUI();
