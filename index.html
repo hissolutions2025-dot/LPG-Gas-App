@@ -2685,24 +2685,27 @@ function renderBsetup(){
         html+='<label style="display:inline-block;width:48%;font-size:12px;margin-bottom:3px"><input type="checkbox" '+(ion?'checked':'')+' onchange="toggleItem(\''+br+'\',\''+sec+'\',\''+it+'\',this.checked)" style="margin-right:5px"> '+it+'</label>';
       });
       html+='</div>';
-      if(sec==='count'){
-        html+='<div style="margin-top:10px;padding-left:8px;border-top:1px solid #EEE;padding-top:8px">';
-        html+='<div style="font-size:12px;font-weight:700;color:var(--navy);margin-bottom:4px">Stock Thresholds (per size)</div>';
-        items.forEach(function(it){
-          var th=thresholdFor(br,it);
-          html+='<div style="display:flex;align-items:center;gap:8px;font-size:11px;margin-bottom:4px">'+
-            '<span style="width:80px">'+it+'</span>'+
-            '<label style="display:flex;align-items:center;gap:3px">Min Full Hold <input type="number" min="0" value="'+th.minFullHold+'" style="width:55px" onchange="setThreshold(\''+br+'\',\''+it+'\',\'minFullHold\',this.value)"></label>'+
-            '<label style="display:flex;align-items:center;gap:3px">Extra Alloc. Threshold <input type="number" value="'+th.extraAllocThreshold+'" style="width:55px" onchange="setThreshold(\''+br+'\',\''+it+'\',\'extraAllocThreshold\',this.value)"></label>'+
-            '</div>';
-        });
-        html+='</div>';
-      }
     } else {
       html+='<div style="font-size:11px;color:var(--muted);margin-top:4px;padding-left:8px">(no individual items)</div>';
     }
     html+='</div>';
   });
+  // Stock Thresholds - own card at the bottom of the screen, after all other sections
+  // (was previously nested inside the 'count' section's card; moved out per user request).
+  var thItems=SECTION_ITEMS['count']||[];
+  if(thItems.length){
+    html+='<div style="border:1px solid #DDD;border-radius:8px;margin-bottom:10px;padding:10px">';
+    html+='<div style="font-size:12px;font-weight:700;color:var(--navy);margin-bottom:4px">Stock Thresholds (per size)</div>';
+    thItems.forEach(function(it){
+      var th=thresholdFor(br,it);
+      html+='<div style="display:flex;align-items:center;gap:8px;font-size:11px;margin-bottom:4px">'+
+        '<span style="width:80px">'+it+'</span>'+
+        '<label style="display:flex;align-items:center;gap:3px">Min Full Hold <input type="number" min="0" value="'+th.minFullHold+'" style="width:55px" onchange="setThreshold(\''+br+'\',\''+it+'\',\'minFullHold\',this.value)"></label>'+
+        '<label style="display:flex;align-items:center;gap:3px">Extra Alloc. Threshold <input type="number" value="'+th.extraAllocThreshold+'" style="width:55px" onchange="setThreshold(\''+br+'\',\''+it+'\',\'extraAllocThreshold\',this.value)"></label>'+
+        '</div>';
+    });
+    html+='</div>';
+  }
   box.innerHTML=html;
 }
 function renderManifoldSlots(){
