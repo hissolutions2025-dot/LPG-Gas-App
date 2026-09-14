@@ -11650,6 +11650,23 @@ function buildCountDocAsync(src){
     var _sumMan=(st.manifold||[]).filter(inBr);
     var _sumManCylSub=_sumMan.filter(function(m){return (m.stage||'Opening')==='Closing';})
       .map(function(m){return m.cyl+': '+(+m.gasLeft).toFixed(2)+'kg';}).join(' · ')||'No Closing readings';
+    // Manifold Opening vs Last Close - the blind comparison addLine() runs live as Opening is
+    // captured (see popCalc()'s "Opening-discipline live flags") stamps a MISMATCH flag onto
+    // each field that didn't match yesterday's Closing (_openingBrandFlag/_openingGasTypeFlag/
+    // _tareFlag/_openingGasLeftFlag - all four already ride along on st.manifold rows via
+    // _fetchManifoldLiveRows, no extra fetch needed), but until now nothing ever surfaced that
+    // result anywhere a Manager reviewing the finished report would see it - only a momentary
+    // on-screen highlight during entry (easy to miss) and a buried Audit Log line. Report
+    // gap fix: 2026-09-14, "blind comparison ... did not pull through" feedback.
+    var _odMismatchLines=[];
+    _sumMan.filter(function(m){return (m.stage||'Opening')==='Opening';}).forEach(function(m){
+      var bad=[];
+      if(m._openingBrandFlag==='MISMATCH')bad.push('brand');
+      if(m._openingGasTypeFlag==='MISMATCH')bad.push('gas type');
+      if(m._tareFlag==='MISMATCH')bad.push('tare');
+      if(m._openingGasLeftFlag==='MISMATCH')bad.push('gas left');
+      if(bad.length)_odMismatchLines.push(m.cyl+': '+bad.join(', '));
+    });
     // Grouped by relevance/type, not insertion order - Total Gas On Hand pinned first (the
     // single headline figure), then: overall stock totals -> today's movement -> Manifold ->
     // Refills -> condition/risk (Faulty/Residual) -> Exceptions -> People. Grouping requested
@@ -11665,6 +11682,7 @@ function buildCountDocAsync(src){
       // Manifold
       {label:'Manifold Balance',val:bal.hasData?((bal.diff>0?'+':'')+bal.diff.toFixed(2)+' kg'):'—',cls:bal.hasData?(bal.balanced?'ok':'bad'):'',sub:bal.hasData?(bal.balanced?'Balanced':'Needs review'):'No manifold activity'},
       {label:'Manifold — Cyl Weights + Total',val:_sumManClosingKg.toFixed(2)+' kg',cls:'',sub:_sumManCylSub},
+      {label:'Manifold Opening vs Last Close',val:_odMismatchLines.length?(_odMismatchLines.length+' mismatch'+(_odMismatchLines.length>1?'es':'')):'All matched',cls:_odMismatchLines.length?'warn':'ok',sub:_odMismatchLines.join(' · ')||'Blind comparison against last Closing'},
       // Refills
       {label:'Total Refills',val:_sumRefKg.toFixed(2)+' kg',cls:'',sub:_sumRf.length+' cylinder(s) pumped'},
       {label:'Total Private Refill',val:_sumPvTot.toFixed(2)+' kg',cls:'',sub:_sumPvUsTot.toFixed(2)+'kg by us + '+(_sumPvTot-_sumPvUsTot).toFixed(2)+'kg by supplier'},
@@ -12178,6 +12196,18 @@ function buildCountCSVAsync(src){
     row('Total Gas Capacity - Empty Cylinders (kg)',emptyCapKg.toFixed(2),'Closing - what these shells could take once refilled');
     row('Stock Received Today (kg)',recvKg.toFixed(2),recvRows.length+' line(s)');
     row('Manifold Balance (kg)',bal.hasData?bal.diff.toFixed(2):'',bal.hasData?(bal.balanced?'Balanced':'Needs review'):'No manifold activity');
+    // Manifold Opening vs Last Close - CSV/export parity with the HTML report's own tile of
+    // the same name (see there for the full "why" comment on this being a report gap fix).
+    var _csvOdMismatchLines=[];
+    man.filter(function(m){return (m.stage||'Opening')==='Opening';}).forEach(function(m){
+      var bad=[];
+      if(m._openingBrandFlag==='MISMATCH')bad.push('brand');
+      if(m._openingGasTypeFlag==='MISMATCH')bad.push('gas type');
+      if(m._tareFlag==='MISMATCH')bad.push('tare');
+      if(m._openingGasLeftFlag==='MISMATCH')bad.push('gas left');
+      if(bad.length)_csvOdMismatchLines.push(m.cyl+': '+bad.join(', '));
+    });
+    row('Manifold Opening vs Last Close',_csvOdMismatchLines.length?(_csvOdMismatchLines.length+' mismatch'+(_csvOdMismatchLines.length>1?'es':'')):'All matched',_csvOdMismatchLines.join('; ')||'Blind comparison against last Closing');
     row('Total Refills (kg)',rfTot.toFixed(2),rf.length+' cylinder(s) pumped');
     row('Total Private Refill (kg)',pvTot.toFixed(2),'By us '+pvUsTot.toFixed(2)+'kg + by supplier '+(pvTot-pvUsTot).toFixed(2)+'kg');
     row('Faulty Cylinders',faultyTot.count,faultyTot.gasLoss.toFixed(2)+'kg gas at risk, '+faultyTot.gasRemaining.toFixed(2)+'kg remaining');
