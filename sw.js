@@ -9,9 +9,19 @@
 // support beyond "don't hard-fail if the network blips while loading the shell".
 // Only the app shell itself (this origin's navigation requests, i.e. index.html) is
 // ever cached, and only as a last-resort fallback when the network is genuinely
-// unreachable - every online load goes to the network FIRST, bypassing the HTTP
-// cache entirely (cache:'no-store'), so a fresh deploy is picked up on the very
-// next load, not whenever the phone's own cache happens to expire.
+// unreachable - every online load goes to the network FIRST.
+//
+// cache:'no-cache' (NOT 'no-store', despite the confusing name) - always revalidates
+// with the server via a conditional GET (If-None-Match against GitHub Pages/Fastly's
+// ETag, confirmed present on every response) before trusting anything cached, so a
+// fresh deploy is still picked up on the very next load same as before. Unlike
+// 'no-store', an UNCHANGED file gets a 304 back (near-zero bytes) instead of the
+// full ~1.2MB+ body every single time - this is the fix for 2026-09-14's "app uses
+// a lot of airtime data" complaint (operator's phone re-downloading the whole app
+// shell on every open/reopen). See the project memory file for the full root-cause
+// writeup and the two fix options that were NOT chosen (version-check ping, which
+// would need an extra small fetch; this needed none, since GitHub Pages already
+// sends a real ETag).
 var SHELL_CACHE = 'gas-app-shell-v1';
 
 self.addEventListener('install', function(e){
@@ -32,7 +42,7 @@ self.addEventListener('fetch', function(e){
   if(e.request.method!=='GET')return; // never intercept POSTs (Supabase/Sheets sync calls)
   if(e.request.mode!=='navigate')return; // only the page shell itself - not API calls, images, fonts
   e.respondWith(
-    fetch(e.request,{cache:'no-store'}).then(function(res){
+    fetch(e.request,{cache:'no-cache'}).then(function(res){
       var copy=res.clone();
       caches.open(SHELL_CACHE).then(function(c){c.put(e.request,copy);}).catch(function(){});
       return res;
