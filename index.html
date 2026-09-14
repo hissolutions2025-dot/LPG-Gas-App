@@ -2135,6 +2135,27 @@ function _updateManifoldLiveRowOverrideStatus(rowRid,status,note){
     }));
   },function(e){console.error('_updateManifoldLiveRowOverrideStatus rejected:',e&&e.message);});
 }
+// Same select-then-update-by-row_id pattern as _updateManifoldLiveRowOverrideStatus above,
+// generalized to any field(s) - fixes a real, confirmed gap: the same-day Manifold Adjust
+// tool (_openCapAdjustReal's onApply, below) already corrected the local device's store,
+// the Sheet row, and the Adjustments audit trail, but NEVER the manifold_live_rows mirror -
+// documented at the time as a deliberately-scoped limitation ("an Adjust correction doesn't
+// update the mirror row"), but that means the correction was invisible to every OTHER
+// device and to the report (both read manifold_live_rows, never the correcting device's own
+// local store) - reported 2026-09-14 as "I did the adjustment but it won't let me commit".
+function _updateManifoldLiveRowFields(rowRid,fields){
+  if(!rowRid)return Promise.resolve();
+  return sb.from('manifold_live_rows').select('id,row').eq('row_id',rowRid).then(function(res){
+    if(res.error){console.error('_updateManifoldLiveRowFields select failed:',res.error.message);return;}
+    if(!res.data||!res.data.length){console.error('_updateManifoldLiveRowFields: no manifold_live_rows match for row_id',rowRid,'- mirror row not updated (may not have finished syncing yet)');return;}
+    return Promise.all(res.data.map(function(rec){
+      var updatedRow=Object.assign({},rec.row,fields);
+      return sb.from('manifold_live_rows').update({row:updatedRow}).eq('id',rec.id).then(function(ures){
+        if(ures.error)console.error('_updateManifoldLiveRowFields update failed:',ures.error.message);
+      });
+    }));
+  },function(e){console.error('_updateManifoldLiveRowFields rejected:',e&&e.message);});
+}
 function resolvePendingOverride(id,decision){
   if(!(role==='Manager'||role==='Owner')){toast('Manager or Owner only',true);return;}
   var item=_manifoldPendingOverrides.filter(function(x){return x.id===id;})[0];
@@ -7836,6 +7857,20 @@ function _openCapAdjustReal(jumpToRid){
           updates={Pumped:newVal};
         }
         adjustSheetRow(sectionName,sel.row._rid,updates);
+        // Also correct the manifold_live_rows mirror - see _updateManifoldLiveRowFields'
+        // own comment for why this was previously missing entirely. Field names here match
+        // the live JSON row's own shape (brand/gasType/scale/tare/gasLeft), not the Sheet's
+        // capitalized column names in `updates` above. Also stamps correction provenance
+        // (previously only ever stamped on the correcting device's own local copy) so any
+        // device/report reading the mirror can see it was corrected, by whom, and from what.
+        if(capType==='manifold'){
+          var liveFields={_correctedFrom:oldVal,_correctedBy:auth.name,_correctedTime:nowStamp()};
+          if(sel.field==='brand')liveFields.brand=newVal;
+          else if(sel.field==='gasType')liveFields.gasType=newVal;
+          else if(sel.field==='scale'){liveFields.scale=newVal;liveFields.gasLeft=sel.row.gasLeft;}
+          else if(sel.field==='tare'){liveFields.tare=newVal;liveFields.gasLeft=sel.row.gasLeft;}
+          _updateManifoldLiveRowFields(sel.row._rid,liveFields);
+        }
       }
     },
     afterClose:function(){
