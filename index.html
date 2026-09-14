@@ -436,7 +436,7 @@
     </div>
     <div id="rbPanel" style="display:none">
       <label>Branch</label>
-      <select id="rbBranch" onchange="rbLoad()"><option>Helderberg</option><option>Kleinmond</option></select>
+      <select id="rbBranch" onchange="rbLoad()"><option>Helderberg</option><option>Kleinmond</option><option value="__ALL__">All branches (combined)</option></select>
       <div class="histTabs">
         <button class="htab" id="rbtab-week" onclick="rbSetPreset('week')">This Week</button>
         <button class="htab" id="rbtab-month" onclick="rbSetPreset('month')">This Month</button>
@@ -6146,6 +6146,71 @@ function fetchRangeStockBalance(br,startDate,endDate){
     };
   });
 }
+// Combined "All branches" view for the Date-Range Stock Balance report (2026-09-14 build,
+// "consolidating both branches' stock counts... compare to Xero count"). Simply sums the two
+// branches' already-computed fetchRangeStockBalance results field by field - deliberately NOT
+// a new fetch/aggregation of raw rows. Transfers between Helderberg and Kleinmond need no
+// special handling in the sold/received formula: each branch's own estSold already folded in
+// its own transfer in/out, and since every transfer in this 2-branch app is between exactly
+// these two, one side's tOut is always the other side's matching tIn for the same items - so
+// summing the two branches' estSold totals makes the transfer terms cancel automatically
+// (-X from the sending branch's tOut, +X from the receiving branch's tIn). No extra fetch, no
+// extra logic - transfers are shown separately as an informational "internal volume" figure
+// only, never fed into the balance math here.
+// Known, deliberately-accepted limitation: estSold.isReal here is true only when BOTH
+// branches have real captured Daily Sales for the exact same range - if only one does, the
+// combined bySize total silently mixes one branch's real figures with the other's inferred
+// ones. Flagged rather than solved: splitting the display by real/inferred per branch is a
+// real feature, not attempted in this pass.
+function _fetchCombinedRangeBalance(startDate,endDate){
+  return Promise.all([
+    fetchRangeStockBalance('Helderberg',startDate,endDate),
+    fetchRangeStockBalance('Kleinmond',startDate,endDate)
+  ]).then(function(results){
+    var a=results[0], b=results[1];
+    function sumSizeMap(m1,m2){
+      var out={};
+      Object.keys(m1||{}).forEach(function(k){out[k]=(out[k]||0)+m1[k];});
+      Object.keys(m2||{}).forEach(function(k){out[k]=(out[k]||0)+m2[k];});
+      return out;
+    }
+    var openingFull=sumSizeMap(a.opening.full,b.opening.full), openingEmpty=sumSizeMap(a.opening.empty,b.opening.empty);
+    var closingFull=sumSizeMap(a.closing.full,b.closing.full), closingEmpty=sumSizeMap(a.closing.empty,b.closing.empty);
+    var recvFullIn=sumSizeMap(a.received.fullIn,b.received.fullIn), recvEmptyOut=sumSizeMap(a.received.emptyOut,b.received.emptyOut);
+    var estSoldBySize=sumSizeMap(a.estSold.bySize,b.estSold.bySize);
+    return {
+      branch:'All', startDate:startDate, endDate:endDate,
+      opening:{full:openingFull,empty:openingEmpty,fullTotal:totalOfSizeMap(openingFull),emptyTotal:totalOfSizeMap(openingEmpty),hasData:a.opening.hasData||b.opening.hasData},
+      closing:{full:closingFull,empty:closingEmpty,fullTotal:totalOfSizeMap(closingFull),emptyTotal:totalOfSizeMap(closingEmpty),hasData:a.closing.hasData||b.closing.hasData},
+      received:{fullIn:recvFullIn,emptyOut:recvEmptyOut,fullInTotal:totalOfSizeMap(recvFullIn),emptyOutTotal:totalOfSizeMap(recvEmptyOut)},
+      refilled:{count:a.refilled.count+b.refilled.count,kg:a.refilled.kg+b.refilled.kg},
+      private:{kg:a.private.kg+b.private.kg,usKg:a.private.usKg+b.private.usKg},
+      transfersInternalVolume:a.transfers.outTotal+b.transfers.outTotal,
+      faulty:{loggedInRangeCount:a.faulty.loggedInRangeCount+b.faulty.loggedInRangeCount,gasLossBookedInRange:a.faulty.gasLossBookedInRange+b.faulty.gasLossBookedInRange,heldAsOfEndCount:a.faulty.heldAsOfEndCount+b.faulty.heldAsOfEndCount,heldAsOfEndGasRemaining:a.faulty.heldAsOfEndGasRemaining+b.faulty.heldAsOfEndGasRemaining},
+      manifold:{openingKg:a.manifold.openingKg+b.manifold.openingKg,closingKg:a.manifold.closingKg+b.manifold.closingKg,
+        diffKg:(a.manifold.openingKg+b.manifold.openingKg)-(a.manifold.closingKg+b.manifold.closingKg),
+        hasOpening:a.manifold.hasOpening||b.manifold.hasOpening,hasClosing:a.manifold.hasClosing||b.manifold.hasClosing},
+      estSold:{bySize:estSoldBySize,total:totalOfSizeMap(estSoldBySize),isReal:a.estSold.isReal&&b.estSold.isReal,
+        daysCaptured:Math.max(a.estSold.daysCaptured,b.estSold.daysCaptured),
+        netExchangeBySize:sumSizeMap(a.estSold.netExchangeBySize,b.estSold.netExchangeBySize),
+        netExchangeBySizeBrand:sumSizeMap(a.estSold.netExchangeBySizeBrand,b.estSold.netExchangeBySizeBrand)}
+    };
+  });
+}
+// Xero stock-count comparison (manual entry) for a given branch-scope+range - see the
+// xero_counts migration's own comment for the full "why". Fetched alongside the balance in
+// rbLoad; returns {bySize, enteredBy, enteredAt} or null if nothing's been entered yet for
+// this exact scope+range.
+function _fetchXeroCounts(branchScope,startDate,endDate){
+  return sb.from('xero_counts').select('size,qty,entered_by_name_snapshot,entered_at')
+    .eq('branch_scope',branchScope).eq('start_date',startDate).eq('end_date',endDate)
+    .then(function(res){
+      if(res.error||!res.data||!res.data.length)return null;
+      var bySize={}; var enteredBy=res.data[0].entered_by_name_snapshot, enteredAt=res.data[0].entered_at;
+      res.data.forEach(function(r){bySize[r.size]=num(r.qty);});
+      return {bySize:bySize,enteredBy:enteredBy,enteredAt:enteredAt};
+    },function(){return null;});
+}
 // Task 4: Verified checkpoints inline. A lightweight sibling fetch to fetchRangeStockBalance
 // above - just the raw verified_stock_takes rows inside the picked range, in date order, so
 // rbLoad (Task 3) can show each Auditor take as a marker alongside the aggregated balance.
@@ -6197,14 +6262,16 @@ function rbUnlock(){
 }
 var _rbLoadToken=0;
 function rbLoad(){
-  var br=document.getElementById('rbBranch').value;
+  var brSel=document.getElementById('rbBranch').value;
+  var isAll=(brSel==='__ALL__');
+  var br=isAll?'All':brSel; // 'All' is the branch_scope key used for xero_counts/display - never a real branch value passed to per-branch fetches
   var start=document.getElementById('rbStart').value, end=document.getElementById('rbEnd').value;
   if(!start||!end){return;}
   if(start>end){toast('From date must be before To date',true);return;}
   var myToken=++_rbLoadToken; // last-request-wins guard against a slow earlier fetch clobbering a newer one
   document.getElementById('rbReport').innerHTML='Loading…';
   Promise.all([
-    fetchRangeStockBalance(br,start,end),
+    isAll?_fetchCombinedRangeBalance(start,end):fetchRangeStockBalance(brSel,start,end),
     // Checkpoints are an additive, secondary section of this report - a take fetch or a
     // comparison lookup failing here must never take down the main balance report with it,
     // so this whole chain is given its own .catch() that degrades to "no checkpoints shown"
@@ -6212,28 +6279,31 @@ function rbLoad(){
     // report actually failing to load). Each take's comparison reuses the real, already-live
     // _fetchVerifiedTakeComparison(br,date,verifiedCount) from the Verified Stock Takes
     // feature (Phase 1) - verifiedCount is that take's own `count` jsonb array, not a number.
-    _fetchVerifiedTakesInRange(br,start,end).then(function(takes){
+    // Verified Stock Take is always logged against one real branch, never "All" - skipped
+    // entirely for the combined view rather than passing a branch value that could never match.
+    isAll?Promise.resolve({takes:[],comparisons:[]}):_fetchVerifiedTakesInRange(brSel,start,end).then(function(takes){
       // Per-item .catch() (code review catch): a rejection inside one _fetchVerifiedTakeComparison
       // call is already absorbed by its own second .then() argument, but a SYNCHRONOUS throw in
       // its fulfillment handler (e.g. malformed `count` data on one take) is not - that would
       // propagate past Promise.all and wipe every checkpoint, not just the bad one. This local
       // .catch() per mapped item keeps one malformed take from taking the rest down with it.
       return Promise.all(takes.map(function(t){
-        return _fetchVerifiedTakeComparison(br,t.date,t.count).catch(function(){return {hasClosing:false,lines:[]};});
+        return _fetchVerifiedTakeComparison(brSel,t.date,t.count).catch(function(){return {hasClosing:false,lines:[]};});
       })).then(function(comparisons){
         return {takes:takes,comparisons:comparisons};
       });
-    }).catch(function(){return {takes:[],comparisons:[]};})
+    }).catch(function(){return {takes:[],comparisons:[]};}),
+    _fetchXeroCounts(br,start,end)
   ]).then(function(results){
     if(myToken!==_rbLoadToken)return; // a newer rbLoad() call already superseded this one
-    var bal=results[0], ck=results[1];
-    document.getElementById('rbReport').innerHTML=rbRenderReport(bal)+rbRenderCheckpoints(ck.takes,ck.comparisons);
+    var bal=results[0], ck=results[1], xero=results[2];
+    document.getElementById('rbReport').innerHTML=rbRenderReport(bal,xero)+rbRenderCheckpoints(ck.takes,ck.comparisons);
   }).catch(function(){
     if(myToken!==_rbLoadToken)return;
     document.getElementById('rbReport').innerHTML='<div class="histEmpty">Could not load this report — check your connection.</div>';
   });
 }
-function rbRenderReport(bal){
+function rbRenderReport(bal,xero){
   function kg(n){return (n||0).toFixed(2)+' kg';}
   var html='';
   html+='<div class="callout">Opening ('+bal.startDate+'): <b>'+bal.opening.fullTotal+'</b> full, <b>'+bal.opening.emptyTotal+'</b> empty'+(bal.opening.hasData?'':' <span style="color:#B9761F">— no Opening count found for this date</span>')+'</div>';
@@ -6241,7 +6311,11 @@ function rbRenderReport(bal){
   html+='<div class="callout">Received: <b>'+bal.received.fullInTotal+'</b> full in, <b>'+bal.received.emptyOutTotal+'</b> empty out</div>';
   html+='<div class="callout">Refilled: <b>'+bal.refilled.count+'</b> cylinder(s), '+kg(bal.refilled.kg)+'</div>';
   html+='<div class="callout">Private Refill: '+kg(bal.private.kg)+' ('+kg(bal.private.usKg)+' by us)</div>';
-  html+='<div class="callout">Transfers: <b>'+bal.transfers.inTotal+'</b> in, <b>'+bal.transfers.outTotal+'</b> out</div>';
+  // Combined "All branches" view has no single .transfers object (a transfer's in/out only
+  // means something per-branch) - shows the informational internal-volume figure instead.
+  html+=bal.transfers?
+    ('<div class="callout">Transfers: <b>'+bal.transfers.inTotal+'</b> in, <b>'+bal.transfers.outTotal+'</b> out</div>'):
+    ('<div class="callout">Internal transfers between branches this range: <b>'+bal.transfersInternalVolume+'</b> cylinder(s) moved (nets to zero for the group - shown for visibility only)</div>');
   html+='<div class="callout">Faulty: <b>'+bal.faulty.loggedInRangeCount+'</b> logged this range, '+kg(bal.faulty.gasLossBookedInRange)+' booked loss, <b>'+bal.faulty.heldAsOfEndCount+'</b> still held as of '+bal.endDate+'</div>';
   html+='<h3 style="margin:16px 0 6px">Manifold</h3><table class="htable"><tr><th></th><th>kg</th></tr>'+
     '<tr><td>Opening ('+bal.startDate+')</td><td class="n">'+(bal.manifold.hasOpening?kg(bal.manifold.openingKg):'—')+'</td></tr>'+
@@ -6266,7 +6340,51 @@ function rbRenderReport(bal){
     }
   });
   if(flagLines)html+=flagLines;
+  // Xero stock-count comparison (manual entry) - "compare to Xero count" build, 2026-09-14.
+  // Per size: Captured (this app's own Closing Full count for the range) vs whatever Xero
+  // figure a Manager/Owner has entered for this exact branch-scope+range, with a Diff flagged
+  // the same way Daily Sales' Captured/Estimated columns already are. Xero is the external,
+  // outside-this-app figure here - deliberately NOT auto-fetched (no Xero API integration
+  // built, per explicit scope decision) - typed in by whoever's reconciling against Xero's
+  // own report.
+  var xeroSizes=Object.keys(bal.closing.full||{});
+  if(xero&&xero.bySize)Object.keys(xero.bySize).forEach(function(sz){if(xeroSizes.indexOf(sz)===-1)xeroSizes.push(sz);});
+  if(xeroSizes.length){
+    var xeroRows='', xeroDiffFlags=[];
+    xeroSizes.sort().forEach(function(sz){
+      var captured=bal.closing.full[sz]||0; // fetchRangeStockBalance's closing.full is already a flat size→qty map, not brand-keyed like the single-day report's counts.Closing.Full
+      var xeroVal=(xero&&xero.bySize&&xero.bySize[sz]!=null)?xero.bySize[sz]:'';
+      var diff=(xeroVal===''?null:captured-num(xeroVal));
+      if(diff!==null&&diff!==0)xeroDiffFlags.push(sz+': captured '+captured+' vs Xero '+xeroVal+' ('+(diff>0?'+':'')+diff+')');
+      xeroRows+='<tr><td class="sz">'+sz+'</td><td class="n">'+captured+'</td>'+
+        '<td class="n"><input type="number" class="xeroQtyInput" data-sz="'+sz+'" value="'+xeroVal+'" style="width:70px" placeholder="—"></td>'+
+        '<td class="n" style="font-weight:800;color:'+(diff===null?'#8B96A3':(diff===0?'#1E8449':'#C0392B'))+'">'+(diff===null?'—':((diff>0?'+':'')+diff))+'</td></tr>';
+    });
+    html+='<h3 style="margin:16px 0 6px">Xero stock count comparison</h3>'+
+      '<p style="font-size:11px;color:#777;margin:-4px 0 8px">Closing Full count (this range\'s end) vs whatever Xero reports - type Xero\'s figure per size and save. Blank = not yet entered, no comparison shown.</p>'+
+      '<table class="htable"><tr><th>Size</th><th>Captured</th><th>Xero</th><th>Diff</th></tr>'+xeroRows+'</table>'+
+      (xeroDiffFlags.length?('<div class="callout" style="color:#C0392B;font-weight:700">⚠ Doesn\'t match Xero, worth investigating:<br>'+xeroDiffFlags.join('<br>')+'</div>'):'')+
+      (xero&&xero.enteredBy?('<p style="font-size:11px;color:#777">Last entered by '+xero.enteredBy+' — '+(xero.enteredAt||'').replace('T',' ').slice(0,16)+'</p>'):'')+
+      '<button class="saveBtn" onclick="rbSaveXeroCounts()">Save Xero counts</button>';
+  }
   return html;
+}
+function rbSaveXeroCounts(){
+  var brSel=document.getElementById('rbBranch').value;
+  var branchScope=(brSel==='__ALL__')?'All':brSel;
+  var start=document.getElementById('rbStart').value, end=document.getElementById('rbEnd').value;
+  var inputs=[].slice.call(document.querySelectorAll('.xeroQtyInput'));
+  var writes=inputs.filter(function(el){return el.value!=='';}).map(function(el){
+    return {branch_scope:branchScope,start_date:start,end_date:end,size:el.getAttribute('data-sz'),qty:num(el.value),
+      entered_by:currentProfile&&currentProfile.id,entered_by_name_snapshot:operator};
+  });
+  if(!writes.length){toast('Enter at least one Xero figure first',true);return;}
+  sb.from('xero_counts').upsert(writes,{onConflict:'branch_scope,start_date,end_date,size'}).then(function(res){
+    if(res.error){toast('Could not save — try again',true);console.error('rbSaveXeroCounts failed:',res.error.message);return;}
+    auditLog('Xero counts saved',branchScope+' '+start+' to '+end+' — '+writes.length+' size(s)');
+    toast('Xero counts saved ✓');
+    rbLoad();
+  },function(){toast('Could not save — try again',true);});
 }
 // Task 4: one marker per Auditor take found inside the picked range. comparisons[i]
 // corresponds to takes[i] (built that way by rbLoad's Promise.all above). The summary line
