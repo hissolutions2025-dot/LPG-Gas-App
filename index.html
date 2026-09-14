@@ -327,6 +327,7 @@
     <div id="closeDayPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div id="countPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div id="minFullHoldBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
+    <div id="usageLiveBadge" style="font-size:11px;color:var(--muted);margin-bottom:12px"></div>
     <div class="greet">Every entry uses today's date, your name and branch.</div>
     <div class="greet" id="homeEditHint" style="display:none">Drag the middle of a tile to reorder. Drag its edge or corner to resize.</div>
     <div class="grid" id="homeGrid">
@@ -1019,10 +1020,25 @@
       <div class="grow"><label class="mLabel" style="font-size:11px">Person</label>
         <input type="text" class="mField" id="auditRangeUser" placeholder="Optional name filter"></div>
     </div>
-    <button class="saveBtn" onclick="auditSearchRange()">Search</button>
-    <div id="auditRangeResults" style="margin-top:12px"></div>
-    <button class="exportBtn" style="background:#B5533B;margin-top:10px" onclick="auditPDF()">Download PDF</button>
-    <button class="exportBtn" style="margin-top:8px" onclick="auditCSV()">Export to CSV (Excel)</button>
+    <!-- Audit Log / Usage share this same filter row (From/To/Branch/Person) per explicit
+         request - only the results below and what Search actually queries differ per tab. -->
+    <div style="display:flex;gap:8px;margin:12px 0 4px">
+      <button class="htab on" id="atab-log" onclick="auditTab('log')">Audit Log</button>
+      <button class="htab" id="atab-usage" onclick="auditTab('usage')">Usage</button>
+    </div>
+    <button class="saveBtn" onclick="auditDoSearch()">Search</button>
+
+    <div id="auditTabLog">
+      <div id="auditRangeResults" style="margin-top:12px"></div>
+      <button class="exportBtn" style="background:#B5533B;margin-top:10px" onclick="auditPDF()">Download PDF</button>
+      <button class="exportBtn" style="margin-top:8px" onclick="auditCSV()">Export to CSV (Excel)</button>
+    </div>
+    <div id="auditTabUsage" style="display:none">
+      <div style="font-size:11px;color:var(--muted);margin:12px 0">Time active + estimated app data per person per day - NOT a true OS data-usage meter (see each row's own caveats). Blank Connection = device doesn't report it (all iPhones; Android only reports while actually online).</div>
+      <div id="usageRangeResults"></div>
+      <button class="exportBtn" style="background:#B5533B;margin-top:10px" onclick="usagePDF()">Download PDF</button>
+      <button class="exportBtn" style="margin-top:8px" onclick="usageCSV()">Export to CSV (Excel)</button>
+    </div>
   </div>
 </div></div>
 
@@ -4209,8 +4225,20 @@ function auditUnlock(){
     var today10=today.slice(0,10);
     document.getElementById('auditFrom').value=today10;
     document.getElementById('auditTo').value=today10;
-    auditSearchRange();
+    auditTab('log');
   });
+}
+var _auditActiveTab='log';
+function auditTab(name){
+  _auditActiveTab=name;
+  document.getElementById('atab-log').classList.toggle('on',name==='log');
+  document.getElementById('atab-usage').classList.toggle('on',name==='usage');
+  document.getElementById('auditTabLog').style.display=(name==='log')?'block':'none';
+  document.getElementById('auditTabUsage').style.display=(name==='usage')?'block':'none';
+  auditDoSearch();
+}
+function auditDoSearch(){
+  if(_auditActiveTab==='usage')usageSearchRange();else auditSearchRange();
 }
 function auditSearchRange(){
   var from=document.getElementById('auditFrom').value;
@@ -4283,6 +4311,99 @@ function auditCSV(){
   var blob=new Blob([csv],{type:'text/csv'});
   var url=URL.createObjectURL(blob);
   var a=document.createElement('a');a.href=url;a.download='audit_'+document.getElementById('auditFrom').value+'_to_'+document.getElementById('auditTo').value+'.csv';document.body.appendChild(a);a.click();
+  setTimeout(function(){document.body.removeChild(a);URL.revokeObjectURL(url);},100);
+  toast('CSV exported ✓');
+}
+
+// ---------- Usage tab (usage_sessions) - shares Audit Log's From/To/Branch/Person filter
+// row (see auditView HTML), queried/rendered separately since this rolls raw sessions up to
+// one line per person+day rather than showing them chronologically. See the usage_sessions
+// migration + the _usage* tracking block near the idle-lock code for what these figures do
+// and don't measure (real active time + real app-shell bytes + real Supabase call count -
+// NOT a true OS-level data-usage meter, that's inaccessible to any web app).
+function usageSearchRange(){
+  var from=document.getElementById('auditFrom').value;
+  var to=document.getElementById('auditTo').value;
+  var br=document.getElementById('auditRangeBranch').value;
+  var user=(document.getElementById('auditRangeUser').value||'').trim();
+  if(!from||!to){toast('Pick both dates',true);return;}
+  var box=document.getElementById('usageRangeResults');
+  box.innerHTML='<div class="histEmpty" style="text-align:center;padding:16px">Loading…</div>';
+  var q=sb.from('usage_sessions').select('*').gte('date',from).lte('date',to).order('session_start',{ascending:true}).limit(2000);
+  if(br)q=q.eq('branch',br);
+  if(user)q=q.ilike('user_name_snapshot','%'+user+'%');
+  q.then(function(res){
+    if(res.error){box.innerHTML='<div class="histEmpty" style="text-align:center;padding:20px">Could not load: '+res.error.message+'</div>';return;}
+    _usageRangeCache=_usageAggregate(res.data||[]);
+    renderUsageRangeResults();
+  },function(e){box.innerHTML='<div class="histEmpty" style="text-align:center;padding:20px">Could not load: '+(e&&e.message)+'</div>';});
+}
+var _usageRangeCache=[];
+// Rolls raw usage_sessions rows (one per login session) up to one line per person+day+branch
+// - a Manager wants "how much time/data did X use on day Y", not a list of every individual
+// login. connectionType takes the LAST row seen per group (rows arrive session_start
+// ascending, so this is naturally the most recent sample for that person/day).
+function _usageAggregate(rows){
+  var by={};
+  rows.forEach(function(r){
+    var key=r.user_name_snapshot+'|'+r.date+'|'+(r.branch||'');
+    if(!by[key])by[key]={user:r.user_name_snapshot,date:r.date,branch:r.branch,activeSeconds:0,shellBytes:0,syncCalls:0,connectionType:null,sessions:0};
+    by[key].activeSeconds+=num(r.active_seconds);
+    by[key].shellBytes+=num(r.shell_bytes);
+    by[key].syncCalls+=num(r.sync_call_count);
+    by[key].sessions+=1;
+    if(r.connection_type)by[key].connectionType=r.connection_type;
+  });
+  return Object.keys(by).map(function(k){return by[k];}).sort(function(a,b){
+    if(a.date!==b.date)return b.date.localeCompare(a.date);
+    return a.user.localeCompare(b.user);
+  });
+}
+function renderUsageRangeResults(){
+  var box=document.getElementById('usageRangeResults');
+  if(!_usageRangeCache.length){box.innerHTML='<div class="histEmpty" style="text-align:center;padding:20px">No usage recorded in this range.</div>';return;}
+  box.innerHTML=_usageRangeCache.map(function(r){
+    var h=Math.floor(r.activeSeconds/3600),m=Math.floor((r.activeSeconds%3600)/60);
+    var kb=(r.shellBytes/1024).toFixed(r.shellBytes<10240?1:0);
+    return '<div class="brandCard" style="margin-bottom:8px">'+
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'+
+      '<div><b style="color:var(--navy)">'+r.user+'</b><div style="font-size:11px;color:var(--steel);font-weight:700;margin-top:2px">'+(r.branch||'—')+' · '+r.sessions+' session(s)</div></div>'+
+      '<div style="font-size:10px;color:var(--muted);text-align:right;white-space:nowrap">'+r.date+'</div></div>'+
+      '<div style="font-size:12px;color:var(--ink);margin-top:6px">'+h+'h '+m+'m active · ~'+kb+'KB app data · '+r.syncCalls+' sync calls · '+(r.connectionType||'—')+'</div>'+
+      '</div>';
+  }).join('');
+}
+function usagePDF(){
+  var rows=_usageRangeCache;
+  if(rows.length===0){toast('Nothing to export',true);return;}
+  function esc(s){return (''+(s===undefined||s===null?'':s)).replace(/</g,'&lt;');}
+  var trs=rows.map(function(r){
+    var h=Math.floor(r.activeSeconds/3600),m=Math.floor((r.activeSeconds%3600)/60);
+    var kb=(r.shellBytes/1024).toFixed(r.shellBytes<10240?1:0);
+    return '<tr><td>'+esc(r.date)+'</td><td>'+esc(r.user)+'</td><td>'+esc(r.branch)+'</td><td>'+h+'h '+m+'m</td><td>~'+kb+'KB</td><td>'+r.syncCalls+'</td><td>'+esc(r.connectionType||'—')+'</td></tr>';
+  }).join('');
+  var doc='<!DOCTYPE html><html><head><meta charset="utf-8"><title>Usage '+esc(document.getElementById('auditFrom').value)+' to '+esc(document.getElementById('auditTo').value)+'</title><style>'+
+    'body{font-family:Arial,sans-serif;color:#16202B;padding:26px;max-width:900px;margin:0 auto}'+
+    'h1{color:#1F3A5F;font-size:20px;margin:0 0 4px}.meta{color:#555;font-size:12px;margin-bottom:16px}'+
+    'table{border-collapse:collapse;width:100%;font-size:12px}th,td{border:1px solid #ccc;padding:6px 8px;text-align:left;vertical-align:top}'+
+    'th{background:#1F3A5F;color:#fff}button{margin-top:16px;padding:10px 18px;font-size:14px}'+
+    '</style></head><body><h1>Gas Sales — Usage Report</h1>'+
+    '<div class="meta">Range: <b>'+esc(document.getElementById('auditFrom').value)+' to '+esc(document.getElementById('auditTo').value)+'</b> · Generated by '+esc(operator)+' · '+nowStamp()+'<br>Estimate only - real active time + app-shell bytes + Supabase call count, not a true OS data-usage meter (see in-app note).</div>'+
+    '<table><tr><th>Date</th><th>User</th><th>Branch</th><th>Active</th><th>App data</th><th>Sync calls</th><th>Connection</th></tr>'+trs+'</table>'+
+    '<button onclick="window.print()">Print / Save as PDF</button></body></html>';
+  var w=window.open('','_blank');if(w){w.document.write(doc);w.document.close();}else toast('Allow popups to export',true);
+}
+function usageCSV(){
+  var rows=_usageRangeCache;
+  if(rows.length===0){toast('Nothing to export',true);return;}
+  function q(s){s=(s===undefined||s===null)?'':(''+s);return '"'+s.replace(/"/g,'""')+'"';}
+  var head=['Date','User','Branch','Active seconds','App-shell bytes','Sync calls','Connection','Sessions'];
+  var lines=[head.map(q).join(',')];
+  rows.forEach(function(r){lines.push([r.date,r.user,r.branch,r.activeSeconds,r.shellBytes,r.syncCalls,r.connectionType,r.sessions].map(q).join(','));});
+  var csv=lines.join('\r\n');
+  var blob=new Blob([csv],{type:'text/csv'});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement('a');a.href=url;a.download='usage_'+document.getElementById('auditFrom').value+'_to_'+document.getElementById('auditTo').value+'.csv';document.body.appendChild(a);a.click();
   setTimeout(function(){document.body.removeChild(a);URL.revokeObjectURL(url);},100);
   toast('CSV exported ✓');
 }
@@ -4419,9 +4540,11 @@ function _finishLogin(u,b){
   if(!_restoreCurrentSection()){show('landing');applyHomeLayout();}
   updateBadges();
   _armIdleTimer();
+  _usageStart();
 }
 function logout(){
   if(operator)auditLog('Logout','Signed out');
+  _usageEnd();
   sb.auth.signOut();
   operator=null;branch=null;role=null;currentProfile=null;store._openMismatch=[];_liveExpectedOpening={};_sessionGen++;
   // idle lock must not be able to outlive its own session - clear it unconditionally on
@@ -4487,6 +4610,108 @@ function idleUnlock(){
 // don't know the locked user's password - just routes into the normal logout flow (which
 // itself clears the lock state unconditionally, see logout() above).
 function idleSignOutInstead(){logout();}
+
+// ===== USER TIME/DATA USAGE TRACKING (usage_sessions) =====
+// Deliberately NOT a true OS-level "mobile data usage" meter - that's invisible to any web
+// app, full stop (Settings > Data Usage is OS territory, not JS). This is an honest estimate:
+// - active_seconds: real foreground time, paused while the tab is hidden or the idle-lock
+//   overlay is up (reuses idleLockActive - see the idle-lock block just above).
+// - shell_bytes: real transferSize for this app's own index.html/sw.js loads (Resource/
+//   Navigation Timing, same-origin so fully measurable - and now tiny post-ETag-fix, see
+//   sw.js). NOT a Supabase byte total - cross-origin resource sizes are blocked from JS
+//   without the far end sending Timing-Allow-Origin, which Supabase's API doesn't.
+// - sync_call_count: a real COUNT of *.supabase.co requests this session - counts/names/
+//   timing stay visible cross-origin even when sizes don't, so this is exact, just not a
+//   byte figure.
+// - connection_type: navigator.connection.type (Android Chrome only - undefined on iOS
+//   Safari, no Network Information API there at all - null by design, not a bug).
+// Resource Timing's default buffer (~250 entries in most browsers) would silently start
+// dropping old entries over a full work day of Supabase calls - bumped once at load.
+try{performance.setResourceTimingBufferSize(Infinity);}catch(e){}
+var _usageState=null; // {rowId, sessionStart, activeSeconds} while a session is live, else null
+var _usageTimer=null;
+var USAGE_TICK_MS=10000;      // how often the live Home-screen figure updates
+var USAGE_PUSH_EVERY_N=6;     // push to Supabase every 6th tick (~60s) - not every tick, so
+                               // this tracking doesn't itself become a meaningful chunk of
+                               // the very data usage it's trying to measure
+var _usageTickCount=0;
+
+function _usageConnectionType(){
+  try{return (navigator.connection&&navigator.connection.type)||'unknown';}catch(e){return null;}
+}
+// Same-origin app-shell bytes seen so far this page life (navigation + any explicit re-
+// fetches of index.html/sw.js/manifest.json), plus a plain count of Supabase calls seen so
+// far - both recomputed fresh each tick (cheap; entries only ever accumulate during one page
+// life, this SPA never navigates away mid-session) rather than tracked incrementally.
+function _usageComputeCounters(){
+  var shellBytes=0, syncCalls=0;
+  try{
+    var nav=performance.getEntriesByType('navigation');
+    if(nav&&nav[0])shellBytes+=(nav[0].transferSize||0);
+    performance.getEntriesByType('resource').forEach(function(e){
+      if(e.name.indexOf(location.origin)===0 && /\.(html|js|json)(\?|$)/.test(e.name) && /(index\.html|sw\.js|manifest\.json)/.test(e.name)){
+        shellBytes+=(e.transferSize||0);
+      }
+      if(e.name.indexOf('supabase.co')>-1)syncCalls++;
+    });
+  }catch(e){}
+  return {shellBytes:shellBytes, syncCalls:syncCalls};
+}
+function _usageStart(){
+  if(_usageTimer){clearInterval(_usageTimer);_usageTimer=null;}
+  _usageState={rowId:null,sessionStart:new Date().toISOString(),activeSeconds:0};
+  _usageTickCount=0;
+  sb.from('usage_sessions').insert({
+    user_id:currentProfile&&currentProfile.id, user_name_snapshot:operator, branch:branch,
+    date:today, session_start:_usageState.sessionStart, connection_type:_usageConnectionType()
+  }).select().then(function(res){
+    if(res.error){console.error('_usageStart failed:',res.error.message);return;}
+    if(_usageState&&res.data&&res.data[0])_usageState.rowId=res.data[0].id;
+  },function(e){console.error('_usageStart rejected:',e&&e.message);});
+  _usageTimer=setInterval(_usageTick,USAGE_TICK_MS);
+  _renderUsageLive();
+}
+function _usageTick(){
+  if(!_usageState||!operator)return;
+  if(document.visibilityState==='visible'&&!idleLockActive)_usageState.activeSeconds+=Math.round(USAGE_TICK_MS/1000);
+  _renderUsageLive();
+  _usageTickCount++;
+  if(_usageTickCount%USAGE_PUSH_EVERY_N===0)_usagePush(false);
+}
+function _usagePush(final){
+  if(!_usageState||!_usageState.rowId)return;
+  var counters=_usageComputeCounters();
+  var payload={active_seconds:_usageState.activeSeconds, shell_bytes:counters.shellBytes,
+    sync_call_count:counters.syncCalls, connection_type:_usageConnectionType(), updated_at:new Date().toISOString()};
+  if(final)payload.session_end=new Date().toISOString();
+  sb.from('usage_sessions').update(payload).eq('id',_usageState.rowId).then(function(res){
+    if(res.error)console.error('_usagePush failed:',res.error.message);
+  },function(e){console.error('_usagePush rejected:',e&&e.message);});
+}
+function _usageEnd(){
+  if(_usageTimer){clearInterval(_usageTimer);_usageTimer=null;}
+  if(_usageState)_usagePush(true);
+  _usageState=null;
+}
+// Live Home-screen figure - the operator's own current session, updating every tick. Not
+// gated (unlike the Audit Log "Usage" tab, which is Manager/Owner-only history across
+// everyone) - this is just a personal live readout, same spirit as a phone's own "screen
+// time today" widget.
+// Opportunistic flush when the tab is backgrounded - best-effort only, matches every other
+// draft-persistence mechanism in this app (an OS-killed backgrounded PWA gets no final flush
+// anywhere, this is no different) - still worth doing since a normal "switch app, come back
+// later" backgrounding DOES fire visibilitychange reliably before anything gets killed.
+document.addEventListener('visibilitychange',function(){
+  if(document.visibilityState==='hidden')_usagePush(false);
+});
+function _renderUsageLive(){
+  var el=document.getElementById('usageLiveBadge');
+  if(!el||!_usageState)return;
+  var counters=_usageComputeCounters();
+  var mins=Math.floor(_usageState.activeSeconds/60), secs=_usageState.activeSeconds%60;
+  var kb=(counters.shellBytes/1024).toFixed(counters.shellBytes<10240?1:0);
+  el.textContent='This session: '+mins+'m '+secs+'s active · ~'+kb+'KB app data · '+counters.syncCalls+' sync calls';
+}
 // Header title/subtitle on the landing page: the logged-in user's name + role (+ branch),
 // replacing the generic "Gas Sales — Operator" app name once someone's actually signed in.
 function renderLandingHeader(){
