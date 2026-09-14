@@ -1518,7 +1518,11 @@ function _manifoldPendingFlush(){
   });
 }
 // ===== Daily Sales / Returns (daily_sales) - closes the "no point-of-sale record" gap =====
-var _dsRows={}; // size -> {sold, returned}
+// Rows are captured per size+brand (not just size) - branches can stock more than one full-
+// cylinder brand for different customer bases (e.g. Kleinmond: Afrox for commercial, Oryx
+// for residential), and Extra Allocation needs real per-brand sales data to flag pool-creep
+// per brand. Brand list per branch = C_FULLBRANDS, same list Stock Thresholds' admin UI uses.
+var _dsRows={}; // size -> {brand -> {sold, returned}}
 function openDailySales(){
   if(!perm('dailySales')&&role!=='Owner'){toast('Not available for this role',true);return;}
   show('dailySalesView');
@@ -1530,25 +1534,35 @@ function openDailySales(){
 }
 function dsRenderGrid(){
   var g=document.getElementById('dsGrid');
-  var rowsHtml=ALLSIZES.map(function(sz){
-    var r=_dsRows[sz]||{sold:0,returned:0};
-    var diff=num(r.sold)-num(r.returned);
-    return '<tr><td class="dsSizeCell"><b>'+sz+'</b></td>'+
-      '<td><input type="number" min="0" step="1" value="'+num(r.sold)+'" oninput="dsSetLine(\''+sz+'\',\'sold\',this.value)"></td>'+
-      '<td><input type="number" min="0" step="1" value="'+num(r.returned)+'" oninput="dsSetLine(\''+sz+'\',\'returned\',this.value)"></td>'+
-      '<td class="dsDiffCell"><b>'+diff+'</b></td></tr>';
-  }).join('');
+  var br=document.getElementById('dsBranch').value;
+  var brands=C_FULLBRANDS[br]||['Other'];
+  var rowsHtml='';
+  ALLSIZES.forEach(function(sz){
+    brands.forEach(function(brand){
+      var r=(_dsRows[sz]&&_dsRows[sz][brand])||{sold:0,returned:0};
+      var diff=num(r.sold)-num(r.returned);
+      rowsHtml+='<tr><td class="dsSizeCell"><b>'+sz+'</b> <span style="color:var(--muted);font-weight:400">'+brand+'</span></td>'+
+        '<td><input type="number" min="0" step="1" value="'+num(r.sold)+'" oninput="dsSetLine(\''+sz+'\',\''+brand+'\',\'sold\',this.value)"></td>'+
+        '<td><input type="number" min="0" step="1" value="'+num(r.returned)+'" oninput="dsSetLine(\''+sz+'\',\''+brand+'\',\'returned\',this.value)"></td>'+
+        '<td class="dsDiffCell"><b>'+diff+'</b></td></tr>';
+    });
+  });
   g.innerHTML='<table class="dsTable"><tr><th></th><th>Full Sold</th><th>Emp Return</th><th>Diff</th></tr>'+rowsHtml+'</table>';
   dsRenderNetExchange();
 }
-function dsSetLine(sz,field,val){
-  if(!_dsRows[sz])_dsRows[sz]={sold:0,returned:0};
-  _dsRows[sz][field]=Math.max(0,Math.round(num(val)));
-  dsRenderGrid(); // re-render for the updated Diff readout - cheap, ALLSIZES is small
+function dsSetLine(sz,brand,field,val){
+  if(!_dsRows[sz])_dsRows[sz]={};
+  if(!_dsRows[sz][brand])_dsRows[sz][brand]={sold:0,returned:0};
+  _dsRows[sz][brand][field]=Math.max(0,Math.round(num(val)));
+  dsRenderGrid(); // re-render for the updated Diff readout - cheap, ALLSIZES x brands is small
 }
 function dsRenderNetExchange(){
   var soldTotal=0,returnedTotal=0;
-  ALLSIZES.forEach(function(sz){var r=_dsRows[sz];if(r){soldTotal+=num(r.sold);returnedTotal+=num(r.returned);}});
+  Object.keys(_dsRows).forEach(function(sz){
+    Object.keys(_dsRows[sz]).forEach(function(brand){
+      var r=_dsRows[sz][brand];soldTotal+=num(r.sold);returnedTotal+=num(r.returned);
+    });
+  });
   var net=soldTotal-returnedTotal;
   document.getElementById('dsNetExchange').textContent='Net Cylinder Exchange: '+(net>0?'+':'')+net+' shells ('+soldTotal+' sold − '+returnedTotal+' back)';
 }
@@ -1568,7 +1582,15 @@ function dsLoad(){
   ]).then(function(results){
     var saved=results[0], autoKg=results[1];
     if(saved&&saved.lines){
-      saved.lines.forEach(function(l){_dsRows[l.size]={sold:num(l.sold),returned:num(l.returned)};});
+      // Legacy rows captured before the brand dimension was added have no `brand` field -
+      // can't be attributed to a specific brand here, so they're skipped on restore (the
+      // grid starts blank for that size rather than guessing a brand). Only affects same-
+      // day edits of a pre-migration row, which won't happen going forward.
+      saved.lines.forEach(function(l){
+        if(!l.brand)return;
+        if(!_dsRows[l.size])_dsRows[l.size]={};
+        _dsRows[l.size][l.brand]={sold:num(l.sold),returned:num(l.returned)};
+      });
     }
     dsRenderGrid();
     var kgField=document.getElementById('dsPrivateKg'), hint=document.getElementById('dsPrivateKgHint');
@@ -1588,8 +1610,13 @@ var _dsCommitBusy=false;
 function dsCommit(){
   if(_dsCommitBusy)return;
   var br=document.getElementById('dsBranch').value;
-  var lines=ALLSIZES.map(function(sz){var r=_dsRows[sz]||{sold:0,returned:0};return {size:sz,sold:num(r.sold),returned:num(r.returned)};})
-    .filter(function(l){return l.sold||l.returned;});
+  var lines=[];
+  Object.keys(_dsRows).forEach(function(sz){
+    Object.keys(_dsRows[sz]).forEach(function(brand){
+      var r=_dsRows[sz][brand];
+      if(r.sold||r.returned)lines.push({size:sz,brand:brand,sold:num(r.sold),returned:num(r.returned)});
+    });
+  });
   var privateKg=num(document.getElementById('dsPrivateKg').value);
   if(!lines.length&&!privateKg){toast('Nothing entered',true);return;}
   _dsCommitBusy=true;
@@ -2692,17 +2719,25 @@ function renderBsetup(){
   });
   // Stock Thresholds - own card at the bottom of the screen, after all other sections
   // (was previously nested inside the 'count' section's card; moved out per user request).
+  // Per size+brand (not just per size) - branches can stock more than one full-cylinder
+  // brand for different customer bases (e.g. Kleinmond: Afrox for commercial, Oryx for
+  // residential), each needing its own minimum/tolerance. Brand list per branch = C_FULLBRANDS.
   var thItems=SECTION_ITEMS['count']||[];
+  var thBrands=C_FULLBRANDS[br]||['Other'];
   if(thItems.length){
     html+='<div style="border:1px solid #DDD;border-radius:8px;margin-bottom:10px;padding:10px">';
-    html+='<div style="font-size:12px;font-weight:700;color:var(--navy);margin-bottom:4px">Stock Thresholds (per size)</div>';
+    html+='<div style="font-size:12px;font-weight:700;color:var(--navy);margin-bottom:4px">Stock Thresholds (per size &amp; brand)</div>';
     thItems.forEach(function(it){
-      var th=thresholdFor(br,it);
-      html+='<div style="display:flex;align-items:center;gap:8px;font-size:11px;margin-bottom:4px">'+
-        '<span style="width:80px">'+it+'</span>'+
-        '<label style="display:flex;align-items:center;gap:3px">Min Full Hold <input type="number" min="0" value="'+th.minFullHold+'" style="width:55px" onchange="setThreshold(\''+br+'\',\''+it+'\',\'minFullHold\',this.value)"></label>'+
-        '<label style="display:flex;align-items:center;gap:3px">Extra Alloc. Threshold <input type="number" value="'+th.extraAllocThreshold+'" style="width:55px" onchange="setThreshold(\''+br+'\',\''+it+'\',\'extraAllocThreshold\',this.value)"></label>'+
-        '</div>';
+      html+='<div style="margin-bottom:6px"><div style="font-size:11px;font-weight:700;color:var(--muted)">'+it+'</div>';
+      thBrands.forEach(function(brand){
+        var th=thresholdFor(br,it,brand);
+        html+='<div style="display:flex;align-items:center;gap:8px;font-size:11px;margin-bottom:2px;padding-left:8px">'+
+          '<span style="width:70px">'+brand+'</span>'+
+          '<label style="display:flex;align-items:center;gap:3px">Min Full Hold <input type="number" min="0" value="'+th.minFullHold+'" style="width:55px" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'minFullHold\',this.value)"></label>'+
+          '<label style="display:flex;align-items:center;gap:3px">Extra Alloc. Threshold <input type="number" value="'+th.extraAllocThreshold+'" style="width:55px" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'extraAllocThreshold\',this.value)"></label>'+
+          '</div>';
+      });
+      html+='</div>';
     });
     html+='</div>';
   }
@@ -2797,20 +2832,25 @@ function toggleItem(br,sec,item,val){
   if(!(role==='Owner'||perm('branch_setup'))){toast('No Branch Setup rights',true);return;}
   bcfgSet(br,sec,item,val);toast((val?'Activated ':'Deactivated ')+item);
 }
-function thresholdsSet(br,sz,field,val){
+// Per branch+size+brand (not just branch+size) - Kleinmond stocks Afrox for commercial
+// clients and Oryx for residential, each needing its own minimum/tolerance. Brand list per
+// branch reuses C_FULLBRANDS (already the source of truth for which full-cylinder brands a
+// branch actually stocks).
+function thresholdsSet(br,sz,brand,field,val){
   var t=thresholdsLoad();
   t[br]=t[br]||{};
-  t[br][sz]=t[br][sz]||{minFullHold:0,extraAllocThreshold:0};
-  t[br][sz][field]=val;
+  t[br][sz]=t[br][sz]||{};
+  t[br][sz][brand]=t[br][sz][brand]||{minFullHold:0,extraAllocThreshold:0};
+  t[br][sz][brand][field]=val;
   thresholdsSave(t);
   _pushAppConfig('stock_thresholds',t);
 }
-function setThreshold(br,sz,field,val){
+function setThreshold(br,sz,brand,field,val){
   if(!(role==='Owner'||perm('branch_setup'))){toast('No Branch Setup rights',true);return;}
   var n=num(val);
   if(field==='minFullHold'&&n<0)n=0; // a stock count can't be negative; extraAllocThreshold is a negative tolerance, left as-is
-  thresholdsSet(br,sz,field,n);
-  toast(sz+' threshold updated');
+  thresholdsSet(br,sz,brand,field,n);
+  toast(sz+' ('+brand+') threshold updated');
 }
 function doClearStockTake(){
   if(!perm('seal_edit_used') && role!=='Owner'){toast('Owner rights required',true);return;}
@@ -3476,9 +3516,9 @@ function bcfgSave(c){localStorage.setItem('gs_bcfg',JSON.stringify(c));}
 // Manager-adjustable (perm('branch_setup')) - seasonally, since demand isn't constant.
 function thresholdsLoad(){try{return JSON.parse(localStorage.getItem('gs_stock_thresholds')||'{}');}catch(e){return {};}}
 function thresholdsSave(c){localStorage.setItem('gs_stock_thresholds',JSON.stringify(c));}
-function thresholdFor(br,sz){
+function thresholdFor(br,sz,brand){
   var t=thresholdsLoad();
-  return (t[br]&&t[br][sz])||{minFullHold:0,extraAllocThreshold:0};
+  return (t[br]&&t[br][sz]&&t[br][sz][brand])||{minFullHold:0,extraAllocThreshold:0};
 }
 // Minimum Full Stock Hold - sizes whose today's Closing Full count (current branch) has
 // dropped below their configured minimum. Only considers sizes with minFullHold>0 (0 = opted
@@ -3490,19 +3530,22 @@ function thresholdFor(br,sz){
 // per-size unit count.
 function _minFullHoldShortages(br){
   br=br||branch;
-  var bySize={};
+  var bySizeBrand={};
   (store.count||[]).forEach(function(r){
     if(r.branch&&r.branch!==br)return;
     if((r._date||today)!==today)return;
     if(r.countType!=='Closing')return;
     if((r.state==='Empty'?'Empty':'Full')!=='Full')return;
-    bySize[r.size]=(bySize[r.size]||0)+num(r.qty);
+    var key=r.size+'|'+r.brand;
+    bySizeBrand[key]=(bySizeBrand[key]||0)+num(r.qty);
   });
   var cfg=thresholdsLoad()[br]||{};
   var short=[];
   Object.keys(cfg).forEach(function(sz){
-    var min=cfg[sz].minFullHold;
-    if(min>0&&(bySize[sz]||0)<min)short.push(sz);
+    Object.keys(cfg[sz]).forEach(function(brand){
+      var min=cfg[sz][brand].minFullHold;
+      if(min>0&&(bySizeBrand[sz+'|'+brand]||0)<min)short.push(sz+' ('+brand+')');
+    });
   });
   return short;
 }
@@ -5724,14 +5767,22 @@ function _fetchRangeDailySales(br,startDate,endDate){
     if(res.error){console.error('_fetchRangeDailySales failed:',res.error.message);return null;}
     var rows=res.data||[];
     if(!rows.length)return null; // nothing captured anywhere in this range - caller falls back to inference
-    var soldBySize={},returnedBySize={};
+    var soldBySize={},returnedBySize={},soldBySizeBrand={},returnedBySizeBrand={};
     rows.forEach(function(r){
       (r.lines||[]).forEach(function(l){
         soldBySize[l.size]=(soldBySize[l.size]||0)+num(l.sold);
         returnedBySize[l.size]=(returnedBySize[l.size]||0)+num(l.returned);
+        // Per-brand breakdown, only when the line actually carries a brand (lines captured
+        // before the brand dimension was added don't, and are correctly excluded here rather
+        // than guessed into a brand - see dsLoad's matching skip-on-restore comment).
+        if(l.brand){
+          var key=l.size+'|'+l.brand;
+          soldBySizeBrand[key]=(soldBySizeBrand[key]||0)+num(l.sold);
+          returnedBySizeBrand[key]=(returnedBySizeBrand[key]||0)+num(l.returned);
+        }
       });
     });
-    return {soldBySize:soldBySize,returnedBySize:returnedBySize,daysCaptured:rows.length};
+    return {soldBySize:soldBySize,returnedBySize:returnedBySize,soldBySizeBrand:soldBySizeBrand,returnedBySizeBrand:returnedBySizeBrand,daysCaptured:rows.length};
   },function(){return null;});
 }
 function fetchRangeStockBalance(br,startDate,endDate){
@@ -5786,13 +5837,19 @@ function fetchRangeStockBalance(br,startDate,endDate){
     // data exists for this range (the inference-fallback path below has no real per-size
     // returned data to compute it from, so this stays empty in that case - Task 3 Extra
     // Allocation flag reads this and must never flag off the inferred/estimated path).
-    var netExchangeBySize={};
+    var netExchangeBySize={}, netExchangeBySizeBrand={};
     if(salesIsReal){
       estSoldBySize={}; estSoldTotal=0;
       allSizes.forEach(function(sz){
         var v=(realSales.soldBySize[sz]||0);
         estSoldBySize[sz]=v; estSoldTotal+=v;
         netExchangeBySize[sz]=v-(realSales.returnedBySize[sz]||0);
+      });
+      // Per-brand net exchange - only keys that actually had a brand on the captured lines
+      // (see _fetchRangeDailySales); Extra Allocation reads this to flag per brand, e.g.
+      // Kleinmond's Afrox (commercial) vs Oryx (residential) pools separately.
+      Object.keys(realSales.soldBySizeBrand||{}).forEach(function(key){
+        netExchangeBySizeBrand[key]=(realSales.soldBySizeBrand[key]||0)-(realSales.returnedBySizeBrand[key]||0);
       });
     }
 
@@ -5806,7 +5863,7 @@ function fetchRangeStockBalance(br,startDate,endDate){
       transfers:{inBySize:transfers.inBySize,outBySize:transfers.outBySize,inTotal:totalOfSizeMap(transfers.inBySize),outTotal:totalOfSizeMap(transfers.outBySize)},
       manifold:{openingKg:manOpeningKg,closingKg:manClosingKg,diffKg:manOpeningKg-manClosingKg,hasOpening:manifold.opening.length>0,hasClosing:manifold.closing.length>0},
       faulty:faulty,
-      estSold:{bySize:estSoldBySize,total:estSoldTotal,isReal:salesIsReal,daysCaptured:realSales?realSales.daysCaptured:0,netExchangeBySize:netExchangeBySize}
+      estSold:{bySize:estSoldBySize,total:estSoldTotal,isReal:salesIsReal,daysCaptured:realSales?realSales.daysCaptured:0,netExchangeBySize:netExchangeBySize,netExchangeBySizeBrand:netExchangeBySizeBrand}
     };
   });
 }
@@ -5912,17 +5969,21 @@ function rbRenderReport(bal){
     '<tr><td>Closing ('+bal.endDate+')</td><td class="n">'+(bal.manifold.hasClosing?kg(bal.manifold.closingKg):'—')+'</td></tr>'+
     '<tr><td><b>Diff</b></td><td class="n"><b>'+((bal.manifold.hasOpening&&bal.manifold.hasClosing)?kg(bal.manifold.diffKg):'—')+'</b></td></tr></table>';
   html+='<div class="callout" style="font-weight:800">'+(bal.estSold.isReal?'Sales (captured, '+bal.estSold.daysCaptured+' day(s))':'Estimated sold this range')+': '+bal.estSold.total+' cylinder(s)</div>';
-  // Extra Allocation flag (pool-creep detection) - netExchangeBySize is only ever populated
-  // over real captured Sales data (fetchRangeStockBalance leaves it empty on the inference-
-  // fallback path), so this naturally renders nothing there. Only sizes with a configured,
-  // non-zero threshold can flag - 0 means opted out, same convention thresholdFor's own
-  // default and Task 2's Min Full Hold check both already use.
-  var neb=bal.estSold.netExchangeBySize||{};
+  // Extra Allocation flag (pool-creep detection) - per size+brand, since a branch stocking
+  // more than one full-cylinder brand (e.g. Kleinmond: Afrox commercial, Oryx residential)
+  // needs each brand's pool watched separately - one brand creeping doesn't mean the other
+  // is. netExchangeBySizeBrand is only ever populated over real captured Sales data with a
+  // brand on the line (fetchRangeStockBalance/_fetchRangeDailySales), so this naturally
+  // renders nothing on the inference-fallback path or for pre-brand-capture history. Only
+  // size+brand pairs with a configured, non-zero threshold can flag - 0 means opted out,
+  // same convention thresholdFor's own default and Min Full Hold's check both already use.
+  var neb=bal.estSold.netExchangeBySizeBrand||{};
   var flagLines='';
-  Object.keys(neb).forEach(function(sz){
-    var thr=thresholdFor(bal.branch,sz).extraAllocThreshold;
-    if(thr>0&&neb[sz]<-thr){
-      flagLines+='<div class="callout" style="color:#C0392B">⚠ '+sz+': Net Exchange '+neb[sz]+' — possible cylinder creep, consider extra allocation</div>';
+  Object.keys(neb).forEach(function(key){
+    var parts=key.split('|'), sz=parts[0], brand=parts[1];
+    var thr=thresholdFor(bal.branch,sz,brand).extraAllocThreshold;
+    if(thr>0&&neb[key]<-thr){
+      flagLines+='<div class="callout" style="color:#C0392B">⚠ '+sz+' ('+brand+'): Net Exchange '+neb[key]+' — possible cylinder creep, consider extra allocation</div>';
     }
   });
   if(flagLines)html+=flagLines;
