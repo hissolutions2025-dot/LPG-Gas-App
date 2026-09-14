@@ -10230,6 +10230,34 @@ function _updateCloseDayPendingBadge(){
   });
 }
 window.addEventListener('online',_closeDayFlushQueue);
+// Zeroes every capture area's leftover UNCOMMITTED draft for a branch+day, once Close Day is
+// done - committed rows were already cleared from store[k] (see the two call sites below),
+// but a still-open draft in capData/cData/rData/residualList (typed but never hit Commit)
+// used to survive Close Day untouched, so reopening that screen afterward showed yesterday's
+// half-finished capture sitting there for the NEW day. Reported 2026-09-14: "ensure all count
+// areas completed... zero'd directly after close day." Shared by BOTH devices that need this:
+// the device that actually ran Close Day (_closeDayFinalize) AND every other device that only
+// finds out later (_adoptRemoteCloseIfNeeded) - each device can only ever clear its OWN
+// localStorage, there's no way to reach into another device's from here, so both call sites
+// matter and neither is redundant.
+function _clearBranchDayDrafts(br){
+  var cDirty=false;
+  ['Opening','Closing'].forEach(function(ct){var k=br+'|'+ct;if(cData[k]){delete cData[k];cDirty=true;}});
+  if(cDirty){cSaveDraft();if(cBranch===br)cRenderGrid();}
+  if(rData[br]||rSupplierState[br]){
+    delete rData[br];delete rSupplierState[br];rSaveDraft();
+    if(rBranch===br)rRenderGrid();
+  }
+  // Manifold/Refill/Private share one runtime capData with no branch key of its own (see
+  // capData's own declaration comment) - each still has its own persisted branch+type
+  // draftKey though, so the STORED copy is always safely clearable by branch regardless of
+  // what's currently loaded in memory on this device.
+  ['manifold','refill','private'].forEach(function(t){clearDraft(t,br);});
+  if(capBranch===br){capData={};if(document.getElementById('capView')&&document.getElementById('capView').classList.contains('active'))renderGrid();}
+  var beforeLen=residualList.length;
+  residualList=residualList.filter(function(r){return (r.Branch||residualBranch)!==br;});
+  if(residualList.length!==beforeLen){residualSaveDraft();if(residualBranch===br)renderResidualList();}
+}
 function _closeDayFinalize(bal){
   dayClosed=true;
   var record={
@@ -10246,6 +10274,10 @@ function _closeDayFinalize(bal){
   saveDayToHistory(); // local backup copy - the next task makes History reading prefer Supabase, falling back to this
   clearWorkingStore();
   ['count','manifold','refill','private','received'].forEach(function(k){store[k]=(store[k]||[]).filter(function(r){return r.branch&&r.branch!==branch;});});
+  // Residual Gas rows use a capitalised r.Branch (own historical convention, unlike every
+  // other section's lowercase r.branch) - was previously missing from this clear entirely.
+  store.residual=(store.residual||[]).filter(function(r){return r.Branch&&r.Branch!==branch;});
+  _clearBranchDayDrafts(branch);
   store._startedBy=null;store._startedAt=null;updateBadges();
   auditLog('Day closed','Day closed — '+branch+' ('+today+') · authorised by '+(store._closeAuth||'?')+' · signed: Op='+(sigSignedBy.sigOp||'?')+', Mgr='+(sigSignedBy.sigMgr||'?')+((bal.hasData&&!bal.balanced)?(' · manifold imbalance overridden ('+bal.diff.toFixed(2)+'kg): '+(store._manifoldOverride||'')):''));
   toast('Day closed, signed & saved ✓');
@@ -11401,6 +11433,8 @@ function _adoptRemoteCloseIfNeeded(br){
     ['count','manifold','refill','private','received'].forEach(function(k2){
       store[k2]=(store[k2]||[]).filter(function(r){return r.branch&&r.branch!==br;});
     });
+    store.residual=(store.residual||[]).filter(function(r){return r.Branch&&r.Branch!==br;});
+    _clearBranchDayDrafts(br);
     saveWorkingStore();
     toast(br+'’s day for '+today+' was already closed on another device — view it in Count History.',true);
     return true;
