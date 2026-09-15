@@ -9559,11 +9559,20 @@ function _openHistoryCombined(){
   document.getElementById('histBody').innerHTML='Loading…';
   show('historyView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);
   setHistTab('today');
-  // Live mirrors only ever hold an unclosed day - fetch whichever of the two branches aren't
-  // already closed today, same "only worth it while still open" reasoning the single-branch
-  // fetch below uses, just for both branches instead of one.
+  // Always fetch both branches live, unconditionally - do NOT gate this on loadSavedDay()
+  // like the single-branch fetch below does. loadSavedDay() reads a LOCAL, per-device
+  // localStorage flag (histKey), not the authoritative Supabase day_closes table (confirmed
+  // separately, via a privileged query, to have zero rows for today) - it can go stale on a
+  // given device (e.g. a close-then-reopen/correction flow that doesn't clear it) without
+  // ever affecting Supabase. Confirmed live 2026-09-15: this is exactly what made Combined
+  // render its header but every section "No count entered/etc." while the single-branch tab
+  // on the SAME device, SAME moment, showed real data fine - single-branch's own local store
+  // already had that branch's data from normal use, so it never needed its own gated fetch to
+  // succeed; Combined has no such fallback and depends entirely on this fetch actually firing.
+  // A fetch against an already-closed branch is harmless - its live mirror rows are emptied on
+  // close, so it just resolves with nothing extra, same cost as any other no-op network call.
   var myToken=++_histCombinedToken;
-  Promise.all(['Helderberg','Kleinmond'].filter(function(br){return !loadSavedDay(today,br);}).map(function(br){
+  Promise.all(['Helderberg','Kleinmond'].map(function(br){
     return Promise.all([
       _fetchManifoldLiveRows(br,today),
       _fetchCaptureLiveRows('received','received',br,today),
