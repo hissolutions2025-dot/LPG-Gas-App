@@ -661,7 +661,8 @@
   <div class="cgControls" style="border-radius:12px;border:1px solid var(--line);margin-bottom:14px;position:static">
     <div class="cgRow"><label>Branch</label><div class="cgToggle">
       <button class="cgTg" id="hbr-Helderberg" onclick="histSetBranch('Helderberg')">Helderberg</button>
-      <button class="cgTg" id="hbr-Kleinmond" onclick="histSetBranch('Kleinmond')">Kleinmond</button></div></div>
+      <button class="cgTg" id="hbr-Kleinmond" onclick="histSetBranch('Kleinmond')">Kleinmond</button>
+      <button class="cgTg" id="hbr-All" onclick="histSetBranch('All')">All Branches</button></div></div>
   </div>
 
   <!-- TODAY PANE -->
@@ -5333,10 +5334,14 @@ function cShow(id){var vs=document.querySelectorAll('.view');for(var i=0;i<vs.le
 
 function applyBranchLock(prefix,current){
   // operators: only their branch enabled; other greyed+disabled. managers: both live.
-  ['Helderberg','Kleinmond'].forEach(function(b){
+  // 'All' (only present on Count History's toggle, prefix 'hbr-' - the null check below is a
+  // no-op everywhere else this function is called) is always locked for an Operator - they're
+  // assigned to exactly one branch, a combined view is never theirs to see - and always
+  // available for Manager/Owner, same as either single branch.
+  ['Helderberg','Kleinmond','All'].forEach(function(b){
     var el=document.getElementById(prefix+b);if(!el)return;
     el.classList.toggle('on',b===current);
-    var locked=(role==='Operator' && b!==branch);
+    var locked=(role==='Operator' && b!==branch); // 'All' is never anyone's own branch, so this always locks it for an Operator too - no separate case needed
     el.disabled=locked;
     el.style.opacity=locked?'.35':'1';
     el.style.cursor=locked?'not-allowed':'pointer';
@@ -9531,11 +9536,146 @@ function openMismatches(){
   _refreshMismatchPanel(histBranch);
 }
 function cBackFromMismatches(){document.getElementById('hTitle').textContent='Stock Count';document.getElementById('hSub').textContent='Tap Full or Empty on a size';cShow('countGridView');cRenderGrid();window.scrollTo(0,0);}
+// Combined "All Branches" Count History view (2026-09-15 build - "combined stock counts...
+// should be in Count History", a tab after Kleinmond). A read-only merge of both branches'
+// TODAY figures, built from liveCounts/liveManifold/liveReceived's optional br=null override
+// (added alongside this) plus the Date-Range Balance report's own already-verified
+// _manifoldBalFromStore/_countFullKg/_countEmptyCapacityKg (all already supported a null
+// branch = "every branch" before this build - reused as-is, no new aggregation logic
+// invented). Deliberately its own function, not woven into openHistory()'s per-branch path
+// below - Day Completeness, Opening-mismatch resolution, and sign-off/Close Day are all
+// genuinely single-branch operations with no combined equivalent (you can't "close" two
+// branches as one action), so this view is numbers only, with a note pointing back to the
+// per-branch tabs for anything actionable. Manager/Owner only - see applyBranchLock/
+// histSetBranch's own Operator lock (an Operator is always locked out of 'All', same as any
+// branch that isn't their own).
+function _openHistoryCombined(){
+  applyBranchLock('hbr-','All');
+  document.getElementById('hCtx').innerHTML='';document.getElementById('hCtx').style.display='none';
+  document.getElementById('hTitle').textContent='Count History';document.getElementById('hSub').textContent='All Branches';
+  _saveCurrentSection('history');
+  var sigBlock=document.querySelector('.sigBlock');
+  if(sigBlock)sigBlock.style.display='none'; // sign-off/Close Day are per-branch - see this function's own header comment
+  document.getElementById('histBody').innerHTML='Loading…';
+  show('historyView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);
+  setHistTab('today');
+  // Live mirrors only ever hold an unclosed day - fetch whichever of the two branches aren't
+  // already closed today, same "only worth it while still open" reasoning the single-branch
+  // fetch below uses, just for both branches instead of one.
+  var myToken=++_histCombinedToken;
+  Promise.all(['Helderberg','Kleinmond'].filter(function(br){return !loadSavedDay(today,br);}).map(function(br){
+    return Promise.all([
+      _fetchManifoldLiveRows(br,today),
+      _fetchCaptureLiveRows('received','received',br,today),
+      _fetchCaptureLiveRows('refill','refill',br,today),
+      _fetchCaptureLiveRows('private','private',br,today),
+      _fetchCaptureLiveRows('residual','residual',br,today)
+    ]);
+  })).then(function(){
+    if(myToken!==_histCombinedToken)return; // a newer call (branch switch, re-open) already superseded this one
+    if(histBranch!=='All'||!document.getElementById('historyView')||!document.getElementById('historyView').classList.contains('active'))return;
+    document.getElementById('histBody').innerHTML=_renderCombinedTodayHtml();
+  });
+}
+var _histCombinedToken=0;
+function _renderCombinedTodayHtml(){
+  var counts=liveCounts(null);
+  var man=liveManifold(null);
+  var refillB=store.refill.filter(function(r){return true;}); // combined: every branch
+  var privateB=store.private.filter(function(r){return true;});
+  var html='<div class="histSection" style="border:1.5px solid var(--steel)"><h4>Combined — Helderberg + Kleinmond</h4>'+
+    '<div style="font-size:12px;color:var(--muted)">Read-only totals across both branches for today. Sign-off and Close Day happen per branch — switch to Helderberg or Kleinmond above to sign or close.</div></div>';
+  var sizesWith=ALLSIZES.filter(function(sz){return counts.Opening.Full[sz]||counts.Opening.Empty[sz]||counts.Closing.Full[sz]||counts.Closing.Empty[sz];});
+  html+='<div class="histSection"><h4>Cylinder Count — Opening &amp; Closing</h4>';
+  if(sizesWith.length===0)html+='<div class="histEmpty">No count entered yet.</div>';
+  else{
+    html+='<table class="htable"><tr><th>Size</th><th>Open Full</th><th>Open Empty</th><th>Close Full</th><th>Close Empty</th></tr>';
+    sizesWith.forEach(function(sz){
+      html+='<tr><td><b>'+sz+'</b></td>'+
+        '<td>'+brandLines(counts.Opening.Full[sz])+'</td>'+
+        '<td>'+brandLines(counts.Opening.Empty[sz])+'</td>'+
+        '<td>'+brandLines(counts.Closing.Full[sz])+'</td>'+
+        '<td>'+brandLines(counts.Closing.Empty[sz])+'</td></tr>';
+    });
+    var _histSt={count:store.count};
+    html+='<tr style="font-weight:800;background:#F4F6F8">'+
+      '<td>Total kg</td>'+
+      '<td class="n">≈ '+_countFullKg(_histSt,null,'Opening').toFixed(2)+' kg</td>'+
+      '<td class="n">≈ '+_countEmptyCapacityKg(_histSt,null,'Opening').toFixed(2)+' kg cap.</td>'+
+      '<td class="n">≈ '+_countFullKg(_histSt,null,'Closing').toFixed(2)+' kg</td>'+
+      '<td class="n">≈ '+_countEmptyCapacityKg(_histSt,null,'Closing').toFixed(2)+' kg cap.</td></tr>';
+    html+='</table><div style="font-size:11px;color:var(--muted);margin-top:6px">Opening and Closing are separate counts — never added together, and this is both branches summed together. Empty "kg cap." is what those shells could hold once refilled, not gas held now.</div>';
+  }
+  html+='</div>';
+  html+='<div class="histSection"><h4>Manifold — Cylinder Weights</h4>';
+  if(man.length===0)html+='<div class="histEmpty">No manifold readings.</div>';
+  else{
+    html+='<table class="htable"><tr><th>Branch</th><th>Stage</th><th>Cyl</th><th>Gas</th><th>Scale</th><th>Tare</th><th>Left</th></tr>';
+    ['Opening','Removed','Added','Closing'].forEach(function(stg){
+      man.filter(function(m){return (m.stage||'Opening')===stg;}).forEach(function(m){
+        html+='<tr><td>'+(m.branch||'—')+'</td><td><b>'+stg+'</b></td><td>'+m.cyl+'</td><td>'+(m.gasType||'')+'</td>'+
+          '<td class="n">'+(+m.scale).toFixed(2)+'</td><td class="n">'+(+m.tare).toFixed(2)+'</td><td class="n">'+(+m.gasLeft).toFixed(2)+'</td></tr>';
+      });
+    });
+    html+='</table>';
+    // Combined balance - same helper the Date-Range Balance report already uses (br=null
+    // already meant "every branch" there before this build), not a new formula.
+    var _bal=_manifoldBalFromStore(store,null);
+    if(_bal.hasData){
+      html+='<div style="margin-top:12px;background:var(--navy);color:#fff;border-radius:12px;padding:14px 16px;text-align:center">'+
+        '<div style="font-size:12px;opacity:.8;text-transform:uppercase;letter-spacing:.5px">Total gas pumped from manifold today — both branches</div>'+
+        '<div style="font-size:30px;font-weight:800;margin-top:2px">'+_bal.gasOut.toFixed(2)+' kg</div>'+
+        '<div style="font-size:11px;opacity:.75;margin-top:2px">opening '+_bal.opening.toFixed(2)+' + added '+_bal.added.toFixed(2)+' − closing '+_bal.closing.toFixed(2)+' − removed '+_bal.removed.toFixed(2)+'</div></div>';
+      html+='<table class="htable" style="margin-top:10px">'+
+        '<tr><th>Cross-reference</th><th>kg</th></tr>'+
+        '<tr><td>Pumped from manifold (gas out)</td><td class="n">'+_bal.gasOut.toFixed(2)+'</td></tr>'+
+        '<tr><td>Into Refills</td><td class="n">'+_bal.refKg.toFixed(2)+'</td></tr>'+
+        '<tr><td>Into Private refills</td><td class="n">'+_bal.privKg.toFixed(2)+'</td></tr>'+
+        '<tr><td><b>Total pumped into cylinders</b></td><td class="n"><b>'+_bal.pumped.toFixed(2)+'</b></td></tr>'+
+        '<tr style="background:'+(_bal.balanced?'#E9F7EF':'#FBE9E7')+'"><td><b>Balance (manifold − pumped)</b></td><td class="n"><b style="color:'+(_bal.balanced?'#1E8449':'#C0392B')+'">'+(_bal.diff>0?'+':'')+_bal.diff.toFixed(2)+' kg '+(_bal.balanced?'✓ balanced':'⚠ off')+'</b></td></tr>'+
+        '</table>';
+    }
+  }
+  html+='</div>';
+  html+='<div class="histSection"><h4>Refills — pumped today</h4>';
+  if(refillB.length===0)html+='<div class="histEmpty">No refills.</div>';
+  else{var rk=0;refillB.forEach(function(r){rk+=num(r.pumped);});
+    html+='<table class="htable"><tr><th>Branch</th><th>Size</th><th>Brand</th><th>Gas</th><th>Pumped</th><th>Seal #</th></tr>';
+    refillB.forEach(function(r){html+='<tr><td>'+(r.branch||'—')+'</td><td>'+r.size+'</td><td>'+r.brand+'</td><td>'+r.gasType+'</td><td class="n">'+(+r.pumped).toFixed(2)+'</td><td>'+(r.seal||'—')+'</td></tr>';});
+    html+='<tr><td colspan="4"><b>Total pumped</b></td><td class="n"><b>'+rk.toFixed(2)+'</b></td><td></td></tr></table>';}
+  html+='</div>';
+  html+='<div class="histSection"><h4>Stock Received — Full in / Empty out</h4>';
+  var recv=_receivedFromStore(store,null);
+  var recvSizes=ALLSIZES.filter(function(sz){return recv[sz];});
+  if(recvSizes.length===0)html+='<div class="histEmpty">No stock received.</div>';
+  else{
+    html+='<table class="htable"><tr><th>Size</th><th>Full in</th><th>Empty out</th><th>Diff</th></tr>';
+    var tf=0,te=0;
+    recvSizes.forEach(function(sz){
+      var f=recv[sz].fullIn,e=recv[sz].emptyOut,diff=f-e;tf+=f;te+=e;
+      html+='<tr><td><b>'+sz+'</b></td><td class="n">'+f+'</td><td class="n">'+e+'</td><td class="n" style="'+(diff!==0?'color:#C0392B':'')+'">'+(diff>0?'+':'')+diff+'</td></tr>';
+    });
+    html+='<tr><td><b>Total</b></td><td class="n"><b>'+tf+'</b></td><td class="n"><b>'+te+'</b></td><td class="n" style="'+((tf-te)!==0?'color:#C0392B':'')+'"><b>'+((tf-te)>0?'+':'')+(tf-te)+'</b></td></tr></table>';
+  }
+  html+='</div>';
+  var privKg=privateB.reduce(function(a,r){return a+num(r.pumped);},0);
+  html+='<div class="histSection"><h4>Private Refills</h4>';
+  if(privateB.length===0)html+='<div class="histEmpty">No private refills.</div>';
+  else{
+    html+='<table class="htable"><tr><th>Branch</th><th>Cyl brand</th><th>Gas</th><th>Pumped</th><th>Customer / notes</th></tr>';
+    privateB.forEach(function(r){var cb=(r.cylBrand==='Other'&&r.otherBrand)?('Other: '+r.otherBrand):(r.cylBrand||'—');html+='<tr><td>'+(r.branch||'—')+'</td><td>'+cb+'</td><td>'+(r.gasType||'')+'</td><td class="n">'+(+r.pumped).toFixed(2)+'</td><td>'+(r.customer||'—')+'</td></tr>';});
+    html+='<tr><td colspan="3"><b>Total kg pumped</b></td><td class="n"><b>'+privKg.toFixed(2)+'</b></td><td></td></tr></table>';
+  }
+  html+='</div>';
+  return html;
+}
 function openHistory(mismatchOverlayRows,_skipManifoldLiveFetch){
   _updateCloseDayPendingBadge();
   _updateCountPendingBadge();
   _refreshDayCloseSignatures(); // fire-and-forget, like the badge updates above - don't block render
   if(!histBranch||(role==='Operator'))histBranch=branch||'Helderberg';
+  if(histBranch==='All'){_openHistoryCombined();return;}
+  var _sb=document.querySelector('.sigBlock');if(_sb)_sb.style.display='block'; // undo any earlier combined-view hide when switching back to a real branch
   // Every live mirror (Manifold + Received/Refill/Private/Residual, via capture_live_rows)
   // only ever holds a day that isn't closed yet (see design docs) - only worth fetching when
   // this branch's day is still open, and only re-render if the user is STILL looking at
@@ -11671,13 +11811,17 @@ function _renderSavedDayBody(rec,ds){
     '<div style="flex:1"><div style="font-size:11px;color:var(--muted)">Manager</div>'+(rec.sig&&rec.sig.mgr?'<img src="'+rec.sig.mgr+'" style="max-height:50px">':'—')+'</div></div></div>';
   document.getElementById('pastDayBody').innerHTML=html;
 }
-function liveCounts(){
+function liveCounts(brOverride){
   // Keeps Opening and Closing SEPARATE (they are two counts of the same cylinders
   // at different times and must never be summed). Structure:
   // out = { Opening:{Full:{size:{brand:qty}},Empty:{...}}, Closing:{Full:{...},Empty:{...}} }
+  // brOverride lets a caller (the "All Branches" combined Count History view) explicitly pass
+  // null to mean "every branch", independent of whatever histBranch currently is - omit it
+  // (undefined) for the normal single-branch behavior every existing call site already relies on.
+  var br=(brOverride!==undefined)?brOverride:histBranch;
   var out={Opening:{Full:{},Empty:{}},Closing:{Full:{},Empty:{}}};
   store.count.forEach(function(r){
-    if(r.branch&&histBranch&&r.branch!==histBranch)return; // selected branch only
+    if(r.branch&&br&&r.branch!==br)return; // selected branch only (or every branch when br is falsy)
     var ct=(r.countType==='Closing')?'Closing':'Opening';
     var st=(r.state==='Empty')?'Empty':'Full';
     if(!out[ct][st][r.size])out[ct][st][r.size]={};
@@ -11685,20 +11829,25 @@ function liveCounts(){
   });
   return out;
 }
-function liveManifold(){
+function liveManifold(brOverride){
+  // brOverride: see liveCounts()'s matching comment - null means "every branch" (the combined
+  // Count History view), omitted means the normal histBranch-driven single-branch behavior.
+  var br=(brOverride!==undefined)?brOverride:histBranch;
   var draftKeys={}; // stage|cyl pairs currently being actively drafted on this device - these
                      // supersede any committed row for the same slot+stage (an in-progress redo
                      // shows the in-progress value, not the stale committed one), but must not
                      // hide committed data for every OTHER slot/stage - see the bug this fixes.
-                     // Gated on capBranch===histBranch below - capData carries no branch tag of
+                     // Gated on capBranch===br below - capData carries no branch tag of
                      // its own, and a device can have an in-progress draft for one branch while
-                     // History is showing a DIFFERENT branch (capBranch/histBranch are
+                     // History is showing a DIFFERENT branch (capBranch/br are
                      // independent globals, and capData isn't cleared on navigating away) - an
                      // ungated version would leak that other branch's uncommitted draft into
                      // this branch's History table, and could hide real committed rows here too
-                     // on a stage+cyl collision.
+                     // on a stage+cyl collision. (Combined view: br is null, so this never
+                     // matches any real capBranch - draft rows are correctly excluded there,
+                     // only committed/synced data is combined.)
   var arr=[];
-  if(capData._type==='manifold' && capBranch===histBranch){
+  if(capData._type==='manifold' && capBranch===br){
     Object.keys(capData).forEach(function(k){
       if(k==='_type')return;
       Object.keys(capData[k]).forEach(function(cyl){
@@ -11708,15 +11857,22 @@ function liveManifold(){
     });
   }
   var committed=store.manifold.filter(function(r){
-    if(r.branch&&histBranch&&r.branch!==histBranch)return false;
+    if(r.branch&&br&&r.branch!==br)return false;
     if(draftKeys[(r.stage||'Opening')+'|'+r.cyl])return false;
     return true;
   });
   return arr.concat(committed);
 }
-function liveReceived(){
+function liveReceived(brOverride){
+  // brOverride: see liveCounts()'s matching comment. Also gates the in-progress draft bucket
+  // on capBranch===br (previously ungated - a real pre-existing gap matching the bug
+  // liveManifold's own comment already documents: a device with an in-progress Received draft
+  // for one branch would leak it into History for a DIFFERENT branch being viewed on the same
+  // device - fixed here while adding the override, not left in place for the combined view to
+  // inherit).
+  var br=(brOverride!==undefined)?brOverride:histBranch;
   var out={};
-  var bucket=(capData._type==='received')?(capData['_flat']||{}):null;
+  var bucket=(capData._type==='received' && capBranch===br)?(capData['_flat']||{}):null;
   if(bucket){
     Object.keys(bucket).forEach(function(sz){
       if(sz==='_type')return;
@@ -11728,7 +11884,7 @@ function liveReceived(){
   }
   // add stored rows for sizes not covered in-progress
   store.received.forEach(function(r){
-    if(r.branch&&histBranch&&r.branch!==histBranch)return; // selected branch only
+    if(r.branch&&br&&r.branch!==br)return; // selected branch only (or every branch when br is falsy)
     if(bucket&&bucket[r.size])return; // in-progress covers this size
     if(!out[r.size])out[r.size]={fullIn:0,emptyOut:0};
     out[r.size].fullIn+=num(r.fullIn);out[r.size].emptyOut+=num(r.emptyOut);
