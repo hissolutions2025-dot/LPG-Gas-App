@@ -9569,7 +9569,14 @@ function _openHistoryCombined(){
       _fetchCaptureLiveRows('received','received',br,today),
       _fetchCaptureLiveRows('refill','refill',br,today),
       _fetchCaptureLiveRows('private','private',br,today),
-      _fetchCaptureLiveRows('residual','residual',br,today)
+      _fetchCaptureLiveRows('residual','residual',br,today),
+      // Real gap, confirmed live 2026-09-15: Stock Count was never actually refreshed here -
+      // only whatever this device already had cached locally (from opening the Stock Count
+      // screen itself, or loadWorkingStore() at login) ever showed. Same class of bug
+      // buildCountDocAsync's own comment already documents fixing once for the PDF report
+      // ("Opening stock count is not reflecting in report") - never applied to this screen.
+      // Fixed here for the combined view, and below for the single-branch view too.
+      _refreshSharedCounts(br)
     ]);
   })).then(function(){
     if(myToken!==_histCombinedToken)return; // a newer call (branch switch, re-open) already superseded this one
@@ -9701,7 +9708,11 @@ function openHistory(mismatchOverlayRows,_skipManifoldLiveFetch){
         _fetchCaptureLiveRows('received','received',br,today),
         _fetchCaptureLiveRows('refill','refill',br,today),
         _fetchCaptureLiveRows('private','private',br,today),
-        _fetchCaptureLiveRows('residual','residual',br,today)
+        _fetchCaptureLiveRows('residual','residual',br,today),
+        // Same real gap fixed for the combined "All Branches" view - see its own fetch list's
+        // comment. Stock Count was never actually refreshed here either, only whatever this
+        // device already had cached. Confirmed live 2026-09-15.
+        _refreshSharedCounts(br)
       ]).then(function(){
         if(histBranch===br && document.getElementById('historyView') && document.getElementById('historyView').classList.contains('active'))openHistory(mismatchOverlayRows,true);
       });
