@@ -7594,6 +7594,19 @@ const CAP={
 };
 
 let capType=null, capData={}, toggleSel={}, modalItem=null, capBranch='Helderberg', capCommitBusy=false, manifoldOverrideBusy=false;
+// True from the moment the Manifold screen (or a branch switch on it) kicks off its live
+// _fetchManifoldLiveRows() refresh until that refresh's own re-render lands. Confirmed live
+// 2026-09-15: Helderberg Cyl 4 ended up with TWO committed Opening rows - the grid renders
+// immediately with whatever's cached (renderGrid() below fires before the live fetch
+// resolves, same "instant paint, refresh catches up" pattern used everywhere else in this
+// file), so _manifoldOpeningAlreadyCaptured()'s guard (openModal(), a few hundred lines
+// down) can only see this device's LOCAL store.manifold - if the real Opening row hasn't
+// synced to this device yet, the guard sees nothing captured and lets a second, genuinely
+// duplicate Opening capture straight through. Gates the Opening-stage grid (renderGrid()
+// below) as "syncing, not yet tappable" for exactly that narrow window - Added/Removed/
+// Closing don't need this (they're legitimately repeatable, no "already captured" guard to
+// race against).
+var _manifoldOpeningSyncPending=false;
 
 // sel: optional toggle-selection object to key off instead of the live toggleSel - used by
 // _addLineFinishAfterCap() to write data against the toggle-state captured at submit time
@@ -7672,7 +7685,7 @@ function openCap(type,opts){
   document.getElementById('capCtx').innerHTML='';document.getElementById('capCtx').style.display='none';
   document.getElementById('capHint').textContent=c.hint;
   buildHeader(c);
-  if(type==='manifold'){_fetchManifoldSlotCount(capBranch).then(renderGrid);_fetchManifoldPrevClose(capBranch);_fetchManifoldLiveRows(capBranch,today).then(renderGrid);} // re-renders again once live data lands; renderGrid() below runs immediately with whatever's cached/fallback
+  if(type==='manifold'){_fetchManifoldSlotCount(capBranch).then(renderGrid);_fetchManifoldPrevClose(capBranch);_manifoldOpeningSyncPending=true;_fetchManifoldLiveRows(capBranch,today).then(function(){_manifoldOpeningSyncPending=false;renderGrid();},function(){_manifoldOpeningSyncPending=false;renderGrid();});} // re-renders again once live data lands; renderGrid() below runs immediately with whatever's cached/fallback
   if(type==='refill'||type==='private'){_fetchCaptureLiveRows(type,type,capBranch,today).then(renderGrid);}
   if(type==='refill'){_fetchSealLive(capBranch);}
   (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&capBranch===br)renderGrid();});})(capBranch);
@@ -7709,7 +7722,7 @@ function capSetBranch(x){
   if(role==='Operator' && x!==branch){toast('You are locked to '+branch,true);return;}
   capBranch=x;applyBranchLock('capbr-',x);
   document.getElementById('hSub').textContent=capBranch;
-  if(capType==='manifold'){_fetchManifoldSlotCount(x).then(renderGrid);_fetchManifoldPrevClose(x);_fetchManifoldLiveRows(x,today).then(renderGrid);}
+  if(capType==='manifold'){_fetchManifoldSlotCount(x).then(renderGrid);_fetchManifoldPrevClose(x);_manifoldOpeningSyncPending=true;_fetchManifoldLiveRows(x,today).then(function(){_manifoldOpeningSyncPending=false;renderGrid();},function(){_manifoldOpeningSyncPending=false;renderGrid();});}
   if(capType==='refill'||capType==='private'){_fetchCaptureLiveRows(capType,capType,x,today).then(renderGrid);}
   if(capType==='refill'){_fetchSealLive(x);}
   (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&capBranch===br)renderGrid();});})(x);
@@ -7821,6 +7834,18 @@ function renderGrid(){
     });
   }
   var _gridItems=(typeof c.grid==='function'?c.grid():c.grid);
+  // Still waiting on the live refresh this screen kicked off (openCap()/capSetBranch()) -
+  // _manifoldOpeningAlreadyCaptured()'s guard just below can only see this device's LOCAL
+  // store.manifold, so tapping a slot before that refresh lands risks a genuine duplicate
+  // Opening capture if the real row was committed on a different device/session and hasn't
+  // synced here yet - confirmed live 2026-09-15 for Helderberg Cyl 4. Show every tile as
+  // syncing/disabled instead of tappable for this narrow window rather than risk it again.
+  if(capType==='manifold' && toggleSel.stage==='Opening' && _manifoldOpeningSyncPending){
+    document.getElementById('capGrid').innerHTML=_gridItems.map(function(item){
+      return '<button class="csize" style="background:#EDEDED;color:#B0B0B0;opacity:.7;cursor:not-allowed" disabled><span class="sz" style="color:#B0B0B0">'+item+'</span><span class="det" style="font-size:10px">syncing…</span></button>';
+    }).join('');
+    return;
+  }
   // Sequential order lock (Manifold Opening stage only) - operational discipline, confirmed
   // explicitly: "operator subjected to discipline [rather] than confusion trying to figure
   // out what fits where" - hard-blocked, no override. Pre-computed once per render as a
