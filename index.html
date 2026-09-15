@@ -12429,7 +12429,13 @@ function buildCountDocAsync(src){
       (dailySalesRow.lines||[]).forEach(function(l){_sumCapturedSold+=num(l.sold);_sumCapturedRecv+=num(l.returned);});
       _sumSoldTotal=_sumCapturedSold;_sumRecvBackTotal=_sumCapturedRecv;
     }
-    var _sumNetExchange=_sumSoldTotal-_sumRecvBackTotal;
+    // Sign flipped 2026-09-15, per explicit request: this whole document is a STOCK report -
+    // every other figure in it reads negative when stock goes DOWN. Sold-minus-Received (the
+    // old convention) put a straight no-swap sale as a POSITIVE number even though it's shells
+    // leaving the branch, fighting that convention and requiring its own explanatory caption
+    // just to read correctly. Received-minus-Sold instead means negative = net shells left the
+    // building today, matching how Opening/Closing/Total Gas On Hand etc already read.
+    var _sumNetExchange=_sumRecvBackTotal-_sumSoldTotal;
     // Manifold Cyl Weights - per-slot Closing weight breakdown alongside the same total
     // (bal.closing) the "Total Gas On Hand" tile already folds in.
     var _sumMan=(st.manifold||[]).filter(inBr);
@@ -12463,7 +12469,7 @@ function buildCountDocAsync(src){
       {label:'Total Gas Capacity — Empty Cylinders',val:_sumEmptyCapKg.toFixed(2)+' kg',cls:'',sub:'Closing — what these shells could take once refilled'},
       // Today's stock movement
       {label:'Stock Received Today',val:_sumRecvKg.toFixed(2)+' kg',cls:_sumRecvKg?'ok':'',sub:(st.received||[]).filter(inBr).length+' line(s)'},
-      {label:'Net Cylinder Exchange',val:(_sumNetExchange>0?'+':'')+_sumNetExchange+' shells',cls:'',sub:_sumSoldTotal+' est. sold − '+_sumRecvBackTotal+' est. received back'},
+      {label:'Net Cylinder Exchange',val:(_sumNetExchange>0?'+':'')+_sumNetExchange+' shells',cls:'',sub:_sumRecvBackTotal+' est. received back − '+_sumSoldTotal+' est. sold'},
       // Manifold
       {label:'Manifold Balance',val:bal.hasData?((bal.diff>0?'+':'')+bal.diff.toFixed(2)+' kg'):'—',cls:bal.hasData?(bal.balanced?'ok':'bad'):'',sub:bal.hasData?(bal.balanced?'Balanced':'Needs review'):'No manifold activity'},
       {label:'Manifold — Cyl Weights + Total',val:_sumManClosingKg.toFixed(2)+' kg',cls:'',sub:_sumManCylSub},
@@ -12780,7 +12786,9 @@ function buildCountDocAsync(src){
       // are NOT overridden here - only the Us-only "part of Sales" line is correctable.
       var pvUsDisplay=(salesIsReal&&dailySalesRow.private_refill_kg!=null)?num(dailySalesRow.private_refill_kg):pvUsTot;
       var estSoldKgTotal=soldKg+pvAllTot;
-      var netExchange=soldTotal-recvBackTotal;
+      // Sign flipped 2026-09-15, per explicit request - see _sumNetExchange's matching comment
+      // in the At-a-Glance summary above. Negative now means net shells left the branch today.
+      var netExchange=recvBackTotal-soldTotal;
       var soldTableHtml=salesIsReal?
         ('<table><tr><th>Size</th><th>Captured (Sold)</th><th>Estimated</th><th>Diff</th></tr>'+soldRowsHtml+'<tr><td><b>Total units sold</b></td><td class="n"><b>'+soldTotal+'</b></td><td colspan="2"></td></tr></table>'):
         ('<table><tr><th>Size</th><th>Opening</th><th>+ Received in</th><th>+ Refilled</th><th>\u00b1 Transfer</th><th>\u2212 Closing</th><th>\u2212 Faulty (Full)</th><th>= Est. sold</th></tr>'+soldRowsHtml+
@@ -12808,7 +12816,7 @@ function buildCountDocAsync(src){
         '<tr><td style="font-size:11px;color:#777">'+soldKg.toFixed(2)+'kg from '+soldTotal+' cylinders ('+(salesIsReal?'captured':'\u2248 estimate')+') + '+pvAllTot.toFixed(2)+'kg Private Refill (exact, Us + Supplier-filled)</td><td></td></tr>'+
         '<tr><td>Private Refill (in-house, part of Sales)</td><td class="n">'+pvUsDisplay.toFixed(2)+' kg</td></tr>'+
         '<tr><td>Net cylinder exchange</td><td class="n"><b>'+(netExchange>0?'+':'')+netExchange+' shells</b></td></tr>'+
-        '<tr><td style="font-size:11px;color:#777">'+soldTotal+' sold \u2212 '+recvBackTotal+' received back \u2014 positive means more shells left than came back today</td><td></td></tr></table>'+
+        '<tr><td style="font-size:11px;color:#777">'+recvBackTotal+' received back \u2212 '+soldTotal+' sold \u2014 negative means more shells left than came back today</td><td></td></tr></table>'+
         '<p style="font-size:11px;color:#777">Refill\'s own pumped-kg isn\'t added again here - a refilled cylinder becomes one Full unit and is already counted through the mass-balance above, whether it sold today or is still sitting in Closing stock.</p>';
     }
 
@@ -13281,11 +13289,13 @@ function buildCountCSVAsync(src){
       var pvUsTot=pv.filter(function(r){return r.filledBy!=='Supplier';}).reduce(function(a,r){return a+num(r.pumped);},0);
       var pvUsDisplay=(salesIsReal&&dailySalesRow.private_refill_kg!=null)?num(dailySalesRow.private_refill_kg):pvUsTot;
       var estSoldKgTotal=soldKg+pvAllTot;
-      var netExchange=soldTotal-recvBackTotal;
+      // Sign flipped 2026-09-15, per explicit request - see _sumNetExchange's matching comment
+      // in the At-a-Glance summary above. Negative now means net shells left the branch today.
+      var netExchange=recvBackTotal-soldTotal;
       blank();
       row('Estimated gas sold today (kg)',estSoldKgTotal.toFixed(2),soldKg.toFixed(2)+'kg from '+soldTotal+' cylinders ('+(salesIsReal?'captured':'estimate')+') + '+pvAllTot.toFixed(2)+'kg Private Refill (exact)');
       row('Private Refill (in-house, part of Sales) (kg)',pvUsDisplay.toFixed(2));
-      row('Net cylinder exchange',(netExchange>0?'+':'')+netExchange+' shells',soldTotal+' sold - '+recvBackTotal+' received back');
+      row('Net cylinder exchange',(netExchange>0?'+':'')+netExchange+' shells',recvBackTotal+' received back - '+soldTotal+' sold (negative = more shells left than came back)');
     }
 
     // ---- Grand Totals ----
