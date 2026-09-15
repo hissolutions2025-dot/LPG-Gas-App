@@ -9611,7 +9611,16 @@ function _renderCombinedTodayHtml(){
   var refillB=store.refill.filter(function(r){return true;}); // combined: every branch
   var privateB=store.private.filter(function(r){return true;});
   var html='<div class="histSection" style="border:1.5px solid var(--steel)"><h4>Combined — Helderberg + Kleinmond</h4>'+
-    '<div style="font-size:12px;color:var(--muted)">Read-only totals across both branches for today. Sign-off, Close Day, and the PDF/CSV export are all per branch — switch to Helderberg or Kleinmond above for those.</div></div>';
+    '<div style="font-size:12px;color:var(--muted);margin-bottom:10px">Read-only totals across both branches for today. Sign-off and Close Day are per branch — switch to Helderberg or Kleinmond above for those.</div>'+
+    // "You already built it, why build it again?" (2026-09-15) - right: this screen's own
+    // combined numbers are already correct (fixed and verified earlier today). What was
+    // actually missing was just a way to GET them as a PDF - not a rebuild of the single-
+    // branch buildCountDocAsync report (that full pipeline - activity log, faulty cylinders,
+    // daily sales, transfers - genuinely isn't combined-aware and redoing it properly is a
+    // separate job). printCombinedReport() below just opens THIS already-rendered, already-
+    // correct HTML in a print-friendly window and calls the browser's own print-to-PDF - same
+    // numbers on screen, zero new data logic, so it can't drift from what's already verified.
+    '<button class="exportBtn" style="background:#B5533B;max-width:340px" onclick="printCombinedReport()">🖨 Print / Save as PDF</button></div>';
   var sizesWith=ALLSIZES.filter(function(sz){return counts.Opening.Full[sz]||counts.Opening.Empty[sz]||counts.Closing.Full[sz]||counts.Closing.Empty[sz];});
   html+='<div class="histSection"><h4>Cylinder Count — Opening &amp; Closing</h4>';
   if(sizesWith.length===0)html+='<div class="histEmpty">No count entered yet.</div>';
@@ -9695,6 +9704,31 @@ function _renderCombinedTodayHtml(){
   }
   html+='</div>';
   return html;
+}
+// Print/Save-as-PDF for the Combined "All Branches" view - deliberately NOT a call into
+// buildCountDocAsync (that report's whole pipeline - activity log, faulty cylinders, daily
+// sales, transfers - is single-branch only and combining it properly is separate work, see
+// _renderCombinedTodayHtml's own header comment). This just takes the exact HTML already
+// rendered on screen (already verified correct) and opens it in a plain print-friendly
+// window using the app's OWN stylesheet (so .histSection/.htable etc render identically to
+// what's already visible), then hands off to the browser's native print-to-PDF - same
+// approach _openDocAsync uses for the real PDF reports, minus building a second copy of the
+// document from scratch.
+function printCombinedReport(){
+  if(histBranch!=='All'){toast('Not available for this branch',true);return;}
+  var body=document.getElementById('histBody');
+  if(!body||!body.innerHTML.trim()){toast('Nothing to print yet',true);return;}
+  var w=window.open('','_blank');
+  if(!w){toast('Allow popups to print',true);return;}
+  var styleTags=Array.prototype.map.call(document.querySelectorAll('style'),function(s){return s.outerHTML;}).join('');
+  w.document.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>All Branches - Stock Count - '+today+'</title>'+styleTags+
+    '<style>body{background:#fff;padding:24px;max-width:820px;margin:0 auto}.exportBtn{display:none}</style></head><body>'+
+    '<h2 style="color:var(--navy);margin:0 0 4px">Gas Sales — Daily Stock Count</h2>'+
+    '<div style="font-size:12px;color:var(--muted);margin-bottom:18px">All Branches (Helderberg + Kleinmond combined) · '+today+' · Live preview — read-only, numbers only</div>'+
+    body.innerHTML+'</body></html>');
+  w.document.close();
+  w.focus();
+  setTimeout(function(){w.print();},400);
 }
 function openHistory(mismatchOverlayRows,_skipManifoldLiveFetch){
   _updateCloseDayPendingBadge();
