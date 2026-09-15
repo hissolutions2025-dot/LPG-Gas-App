@@ -10162,11 +10162,33 @@ var dayClosed=false;
 // gasLeft (this branch) - removed subtracts because it's residual gas that left the system
 // in a swapped-out cylinder, same direction as gas dispensed, not the same direction as added.
 // Must equal Refill pumped + Private pumped (combined pool), within 0.2kg.
+// Opening/Closing are meant to be a ONE-TIME daily snapshot per cyl (unlike Added/Removed,
+// genuine repeatable swap EVENTS where multiple rows per cyl are normal and correct). A
+// duplicate Opening/Closing row for the same cyl - a double-commit, or, confirmed live
+// 2026-09-15 for Helderberg Cyl 4, the same-day correction tool creating a second row
+// instead of editing the first (corrLines() lists every row with no dedup, so a stray extra
+// row is pickable and editable just like the real one) - would otherwise get silently SUMMED
+// by manifoldBalance()/_manifoldBalFromStore() instead of one superseding the other,
+// inflating the balance by whatever the stray row holds. Keyed on branch+cyl (not cyl alone)
+// so this stays safe under the Combined "All Branches" view too, where Helderberg and
+// Kleinmond can each have their own same-named slot (e.g. both have a "Cyl 4") - those must
+// never collapse into one. "Latest wins" matches the convention buildCountDocAsync's own
+// Opening/Closing summary (_manStageRows) already used for exactly this reason - shared here
+// instead of three independent copies.
+function _dedupManifoldSnapshotRows(rows){
+  var latest={};
+  rows.forEach(function(r){
+    var key=(r.branch||'')+'|'+r.cyl;
+    if(!latest[key]||(r._time||'')>(latest[key]._time||''))latest[key]=r;
+  });
+  return Object.keys(latest).map(function(k){return latest[k];});
+}
 function manifoldBalance(){
   var TOL=0.2;
   function sumStage(stage){
-    return store.manifold.filter(function(r){return (!r.branch||!branch||r.branch===branch)&&r.stage===stage;})
-      .reduce(function(a,r){return a+num(r.gasLeft);},0);
+    var rows=store.manifold.filter(function(r){return (!r.branch||!branch||r.branch===branch)&&r.stage===stage;});
+    if(stage==='Opening'||stage==='Closing')rows=_dedupManifoldSnapshotRows(rows);
+    return rows.reduce(function(a,r){return a+num(r.gasLeft);},0);
   }
   var opening=sumStage('Opening');
   var added=sumStage('Added');
@@ -12066,7 +12088,11 @@ function _receivedFromStore(st, br){
 function _manifoldBalFromStore(st, br){
   var man=(st.manifold||[]).filter(function(m){return !m.branch||!br||m.branch===br;});
   var opening=0,added=0,closing=0,removed=0;
-  man.forEach(function(m){var g=num(m.gasLeft);var s=(m.stage||'Opening');if(s==='Opening')opening+=g;else if(s==='Added')added+=g;else if(s==='Closing')closing+=g;else if(s==='Removed')removed+=g;});
+  // Opening/Closing deduped to one row per branch+cyl first - see _dedupManifoldSnapshotRows'
+  // own comment. Added/Removed are legitimate repeatable events and stay summed as every row.
+  _dedupManifoldSnapshotRows(man.filter(function(m){return (m.stage||'Opening')==='Opening';})).forEach(function(m){opening+=num(m.gasLeft);});
+  _dedupManifoldSnapshotRows(man.filter(function(m){return m.stage==='Closing';})).forEach(function(m){closing+=num(m.gasLeft);});
+  man.forEach(function(m){var g=num(m.gasLeft);var s=(m.stage||'Opening');if(s==='Added')added+=g;else if(s==='Removed')removed+=g;});
   var gasOut=opening+added-closing-removed;
   var pumped=0;
   (st.refill||[]).filter(function(r){return !r.branch||!br||r.branch===br;}).forEach(function(r){pumped+=num(r.pumped);});
