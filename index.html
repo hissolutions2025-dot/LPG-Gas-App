@@ -684,7 +684,7 @@
         <button class="sigClear" id="sigMgr-clear" onclick="sigClear('sigMgr')" style="display:none">Clear</button>
       </div>
     </div>
-    <div style="margin-top:16px;display:flex;flex-direction:column;gap:10px;">
+    <div id="histActionBar" style="margin-top:16px;display:flex;flex-direction:column;gap:10px;">
       <button class="exportBtn" style="background:#B5533B;" onclick="downloadCountPDF()">Preview / download stock count report</button>
       <button class="exportBtn" id="shareTodayBtn" style="background:#25D366;color:#08331B;display:none" onclick="shareTodayCount()">⬆ Share stock count (WhatsApp / Email)</button>
       <button class="exportBtn" style="background:#1E8449;color:#fff;" onclick="copyForSheet()">📋 Copy today's data for Master Sheet</button>
@@ -9556,6 +9556,17 @@ function _openHistoryCombined(){
   _saveCurrentSection('history');
   var sigBlock=document.querySelector('.sigBlock');
   if(sigBlock)sigBlock.style.display='none'; // sign-off/Close Day are per-branch - see this function's own header comment
+  // Same reasoning, extended 2026-09-15: the action-bar buttons below sigBlock (PDF/CSV
+  // export, Copy for Master Sheet, Close Day) are ALL single-branch-only under the hood -
+  // downloadCountPDF()/_todaySrc() literally passes the string 'All' through as a branch
+  // name to buildCountDocAsync, which has no idea it means "every branch" and filters every
+  // row out, producing a fully blank report (confirmed live 2026-09-15 - reported "All
+  // branches report is not populating"). Rather than leave a broken/blank export reachable
+  // (or worse, an active Close Day button that would try to close a branch literally named
+  // "All"), hide the whole bar here, same as sigBlock - a clear note replaces it below
+  // pointing back to the real per-branch tabs, which already export correctly.
+  var _hab=document.getElementById('histActionBar');
+  if(_hab)_hab.style.display='none';
   document.getElementById('histBody').innerHTML='Loading…';
   show('historyView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);
   setHistTab('today');
@@ -9600,7 +9611,7 @@ function _renderCombinedTodayHtml(){
   var refillB=store.refill.filter(function(r){return true;}); // combined: every branch
   var privateB=store.private.filter(function(r){return true;});
   var html='<div class="histSection" style="border:1.5px solid var(--steel)"><h4>Combined — Helderberg + Kleinmond</h4>'+
-    '<div style="font-size:12px;color:var(--muted)">Read-only totals across both branches for today. Sign-off and Close Day happen per branch — switch to Helderberg or Kleinmond above to sign or close.</div></div>';
+    '<div style="font-size:12px;color:var(--muted)">Read-only totals across both branches for today. Sign-off, Close Day, and the PDF/CSV export are all per branch — switch to Helderberg or Kleinmond above for those.</div></div>';
   var sizesWith=ALLSIZES.filter(function(sz){return counts.Opening.Full[sz]||counts.Opening.Empty[sz]||counts.Closing.Full[sz]||counts.Closing.Empty[sz];});
   html+='<div class="histSection"><h4>Cylinder Count — Opening &amp; Closing</h4>';
   if(sizesWith.length===0)html+='<div class="histEmpty">No count entered yet.</div>';
@@ -9692,6 +9703,7 @@ function openHistory(mismatchOverlayRows,_skipManifoldLiveFetch){
   if(!histBranch||(role==='Operator'))histBranch=branch||'Helderberg';
   if(histBranch==='All'){_openHistoryCombined();return;}
   var _sb=document.querySelector('.sigBlock');if(_sb)_sb.style.display='block'; // undo any earlier combined-view hide when switching back to a real branch
+  var _hab2=document.getElementById('histActionBar');if(_hab2)_hab2.style.display='flex'; // same undo, for the action bar hidden alongside sigBlock in _openHistoryCombined()
   // Every live mirror (Manifold + Received/Refill/Private/Residual, via capture_live_rows)
   // only ever holds a day that isn't closed yet (see design docs) - only worth fetching when
   // this branch's day is still open, and only re-render if the user is STILL looking at
@@ -11502,7 +11514,22 @@ function adjustMismatch(i){
         correct=num(mmRes.qty);
         var reason=mmRes.reason;
         var accepted=(mmRes.action==='accept');
-        var mrow=store.manifold.filter(function(r){return r.stage==='Opening'&&r.cyl===m.cyl&&(!r.branch||r.branch===bc);})[0];
+        // Real bug, confirmed live 2026-09-15 ("manifold correction... report updated but not
+        // completely in all sections" / "Cyl 4 line hasn't updated"): this used to just take
+        // [0] - the FIRST matching Opening row for this cyl, in whatever order store.manifold
+        // happens to hold them. When more than one Opening row exists for the same cyl/branch
+        // (a redo, a duplicate from an offline retry, etc - store.manifold is never deduped in
+        // place), that's not necessarily the SAME row every report reads: buildCountDocAsync's
+        // own "Manifold — Opening vs Closing" summary (_manStageRows) explicitly takes the
+        // LATEST row by _time per slot, exactly like the Manifold capture screen's own display
+        // convention. A correction applied to [0] while the report displays "latest" silently
+        // diverge whenever they're not the same row - the correction succeeds (audit log,
+        // Adjustments sheet, toast all fire) but the figure everyone actually looks at in the
+        // report never changes. Matching the same "latest by _time wins" pick here guarantees
+        // a correction always lands on the exact row every report is already showing.
+        var mCandidates=store.manifold.filter(function(r){return r.stage==='Opening'&&r.cyl===m.cyl&&(!r.branch||r.branch===bc);});
+        var mrow=null;
+        mCandidates.forEach(function(r){if(!mrow||(r._time||'')>(mrow._time||''))mrow=r;});
         oldVal=mrow?mrow.gasLeft:m.counted;
         if(mrow){mrow.gasLeft=correct;mrow.scale=num(mrow.tare)+correct;mrow._adjusted=true;}
         m.resolved=true;m.counted=correct;m.adjustedTo=correct;
