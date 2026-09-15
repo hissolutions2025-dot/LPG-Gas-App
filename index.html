@@ -1557,7 +1557,10 @@ function dsRenderGrid(){
   ALLSIZES.forEach(function(sz){
     brands.forEach(function(brand){
       var r=(_dsRows[sz]&&_dsRows[sz][brand])||{sold:0,returned:0};
-      var diff=num(r.sold)-num(r.returned);
+      // Sign flipped 2026-09-15, matching the daily report's own Net Cylinder Exchange fix -
+      // negative now means stock went down (more sold than returned), consistent within this
+      // same screen (this per-row Diff and dsRenderNetExchange's total below, just underneath).
+      var diff=num(r.returned)-num(r.sold);
       rowsHtml+='<tr><td class="dsSizeCell"><b>'+sz+'</b> <span style="color:var(--muted);font-weight:400">'+brand+'</span></td>'+
         '<td><input type="number" min="0" step="1" value="'+num(r.sold)+'" oninput="dsSetLine(\''+sz+'\',\''+brand+'\',\'sold\',this.value)"></td>'+
         '<td><input type="number" min="0" step="1" value="'+num(r.returned)+'" oninput="dsSetLine(\''+sz+'\',\''+brand+'\',\'returned\',this.value)"></td>'+
@@ -1580,8 +1583,10 @@ function dsRenderNetExchange(){
       var r=_dsRows[sz][brand];soldTotal+=num(r.sold);returnedTotal+=num(r.returned);
     });
   });
-  var net=soldTotal-returnedTotal;
-  document.getElementById('dsNetExchange').textContent='Net Cylinder Exchange: '+(net>0?'+':'')+net+' shells ('+soldTotal+' sold − '+returnedTotal+' back)';
+  // Sign flipped 2026-09-15, per explicit follow-up request - matches the daily report's own
+  // Net Cylinder Exchange fix (Received minus Sold, negative = stock went down).
+  var net=returnedTotal-soldTotal;
+  document.getElementById('dsNetExchange').textContent='Net Cylinder Exchange: '+(net>0?'+':'')+net+' shells ('+returnedTotal+' back − '+soldTotal+' sold)';
 }
 function dsLoad(){
   var br=document.getElementById('dsBranch').value;
@@ -6117,23 +6122,30 @@ function fetchRangeStockBalance(br,startDate,endDate){
 
     var realSales=r[8]; // _fetchRangeDailySales result, or null if nothing captured this range
     var salesIsReal=!!realSales;
-    // Per-size Net Exchange (sold minus returned) - only meaningful when real captured Sales
+    // Per-size Net Exchange (returned minus sold) - only meaningful when real captured Sales
     // data exists for this range (the inference-fallback path below has no real per-size
     // returned data to compute it from, so this stays empty in that case - Task 3 Extra
     // Allocation flag reads this and must never flag off the inferred/estimated path).
+    // Sign flipped 2026-09-15, matching the daily report's own Net Cylinder Exchange fix -
+    // negative means shells left the branch pool net of returns. This also corrects the Extra
+    // Allocation "cylinder creep" flag just below: under the OLD sold-minus-returned sign, its
+    // `< -thr` check fired when RETURNED exceeded sold by a lot - the opposite of creep (creep
+    // is shells leaving and not coming back, i.e. sold exceeding returned). With this flip,
+    // `< -thr` now correctly means sold-exceeds-returned-by-more-than-thr, i.e. real creep -
+    // no separate change needed to that check itself.
     var netExchangeBySize={}, netExchangeBySizeBrand={};
     if(salesIsReal){
       estSoldBySize={}; estSoldTotal=0;
       allSizes.forEach(function(sz){
         var v=(realSales.soldBySize[sz]||0);
         estSoldBySize[sz]=v; estSoldTotal+=v;
-        netExchangeBySize[sz]=v-(realSales.returnedBySize[sz]||0);
+        netExchangeBySize[sz]=(realSales.returnedBySize[sz]||0)-v;
       });
       // Per-brand net exchange - only keys that actually had a brand on the captured lines
       // (see _fetchRangeDailySales); Extra Allocation reads this to flag per brand, e.g.
       // Kleinmond's Afrox (commercial) vs Oryx (residential) pools separately.
       Object.keys(realSales.soldBySizeBrand||{}).forEach(function(key){
-        netExchangeBySizeBrand[key]=(realSales.soldBySizeBrand[key]||0)-(realSales.returnedBySizeBrand[key]||0);
+        netExchangeBySizeBrand[key]=(realSales.returnedBySizeBrand[key]||0)-(realSales.soldBySizeBrand[key]||0);
       });
     }
 
