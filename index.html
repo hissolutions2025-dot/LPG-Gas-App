@@ -9795,7 +9795,18 @@ function openHistory(mismatchOverlayRows,_skipManifoldLiveFetch){
     });
     html+='</table>';
     // balance block
-    var _bal=manifoldBalance();
+    // Real bug, confirmed live 2026-09-15 ("manifold correction... report updated but not
+    // completely in all sections"): manifoldBalance() (used everywhere else in this file, e.g.
+    // the Close Day gate above) always filters by the global `branch` - the logged-in user's
+    // OWN assigned branch - never by histBranch, the branch this History screen is actually
+    // showing. The raw Manifold table just above already correctly uses histBranch (via
+    // liveManifold()), so it picks up a correction immediately - but this balance box silently
+    // recomputed for the viewer's own branch instead, staying stale/wrong whenever a Manager or
+    // Owner views History for a branch other than their own (exactly when a manifold correction
+    // is most likely to have just been made). _manifoldBalFromStore(st,br) is the same
+    // arithmetic, branch-explicit version already used by the Combined and Date-Range Balance
+    // reports - reused here instead of inventing a third copy.
+    var _bal=_manifoldBalFromStore(store,histBranch);
     if(_bal.hasData){
       // headline: total gas pumped from manifold today
       html+='<div style="margin-top:12px;background:var(--navy);color:#fff;border-radius:12px;padding:14px 16px;text-align:center">'+
