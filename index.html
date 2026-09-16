@@ -172,12 +172,27 @@
   .htable th{text-align:left;color:var(--muted);font-weight:700;padding:5px 6px;border-bottom:1.5px solid var(--line);font-size:11px;}
   .htable td{padding:6px;border-bottom:1px solid #EEF1F4;} .htable td.n{text-align:center;font-weight:700;color:var(--navy);}
   .histEmpty{font-size:12px;color:var(--muted);padding:6px 0;}
+  /* Restyled 2026-09-16, per explicit request: "keep the layout the same but update the look
+     and feel and colours and ease of functionality is the same as the rest of the app." Same
+     rows/columns as before, unchanged - only the visual treatment moved onto tokens/patterns
+     already used everywhere else: header now matches .htable's clean muted-label/thin-underline
+     convention instead of a solid navy block with thick cell borders (this table was the only
+     one in the app styled that way); the size/brand label cell moved off --yellow onto a plain
+     card background - --yellow is the app's own "this is an editable field" signal everywhere
+     else (.mField), so using it on a non-editable label was sending the wrong cue; the actual
+     Sold/Returned inputs now use that same --yellow/bordered/rounded .mField look instead of a
+     borderless transparent field that didn't read as tappable at a glance. */
   .dsTable{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:10px;}
-  .dsTable th{background:var(--navy);color:#fff;font-weight:700;padding:8px 6px;border:1.5px solid var(--navy);font-size:12px;}
-  .dsTable td{border:1.5px solid var(--line);padding:6px;text-align:center;}
-  .dsTable td.dsSizeCell{background:var(--yellow);font-weight:800;color:var(--navy);}
-  .dsTable td.dsDiffCell{font-weight:800;color:var(--navy);}
-  .dsTable input{width:100%;border:none;background:transparent;text-align:center;font-size:14px;font-weight:700;color:var(--navy);padding:4px;-moz-appearance:textfield;}
+  .dsTable th{text-align:center;color:var(--muted);font-weight:700;padding:8px 6px;border-bottom:1.5px solid var(--line);font-size:11px;text-transform:uppercase;letter-spacing:.3px;}
+  .dsTable td{border-bottom:1px solid #EEF1F4;padding:7px 5px;text-align:center;}
+  .dsTable tr.dsZero td{opacity:.55;}
+  .dsTable td.dsSizeCell{background:var(--card);font-weight:800;color:var(--navy);text-align:left;padding-left:8px;}
+  .dsTable td.dsDiffCell{font-weight:800;}
+  .dsTable td.dsDiffCell.dsDiffDown{color:var(--bad);}
+  .dsTable td.dsDiffCell.dsDiffUp{color:var(--ok);}
+  .dsTable td.dsDiffCell.dsDiffFlat{color:var(--navy);}
+  .dsTable input{width:100%;border:1.5px solid var(--line);border-radius:8px;background:var(--yellow);text-align:center;font-size:15px;font-weight:700;color:var(--navy);padding:7px 4px;-moz-appearance:textfield;}
+  .dsTable input:focus{border-color:var(--navy);outline:none;}
   .dsTable input::-webkit-outer-spin-button,.dsTable input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
   .exportBtn{width:100%;background:var(--navy);color:#fff;border:none;border-radius:10px;padding:13px;font-size:13px;font-weight:600;cursor:pointer;}
 
@@ -1561,10 +1576,17 @@ function dsRenderGrid(){
       // negative now means stock went down (more sold than returned), consistent within this
       // same screen (this per-row Diff and dsRenderNetExchange's total below, just underneath).
       var diff=num(r.returned)-num(r.sold);
-      rowsHtml+='<tr><td class="dsSizeCell"><b>'+sz+'</b> <span style="color:var(--muted);font-weight:400">'+brand+'</span></td>'+
-        '<td><input type="number" min="0" step="1" value="'+num(r.sold)+'" oninput="dsSetLine(\''+sz+'\',\''+brand+'\',\'sold\',this.value)"></td>'+
-        '<td><input type="number" min="0" step="1" value="'+num(r.returned)+'" oninput="dsSetLine(\''+sz+'\',\''+brand+'\',\'returned\',this.value)"></td>'+
-        '<td class="dsDiffCell"><b>'+diff+'</b></td></tr>';
+      var isZero=!num(r.sold)&&!num(r.returned);
+      var diffCls=diff<0?'dsDiffDown':(diff>0?'dsDiffUp':'dsDiffFlat');
+      // inputmode="numeric" added to match every other numeric field in the app (.mField's own
+      // convention) - was missing here, so this screen alone couldn't reliably guarantee the
+      // numeric keypad on mobile. dsZero row class just dims an all-zero row (opacity, see CSS)
+      // so a long mostly-empty size/brand list is easier to scan for what actually changed
+      // today - nothing is hidden or removed, same rows/columns as before.
+      rowsHtml+='<tr'+(isZero?' class="dsZero"':'')+'><td class="dsSizeCell"><b>'+sz+'</b> <span style="color:var(--muted);font-weight:400">'+brand+'</span></td>'+
+        '<td><input type="number" inputmode="numeric" min="0" step="1" value="'+num(r.sold)+'" oninput="dsSetLine(\''+sz+'\',\''+brand+'\',\'sold\',this.value)"></td>'+
+        '<td><input type="number" inputmode="numeric" min="0" step="1" value="'+num(r.returned)+'" oninput="dsSetLine(\''+sz+'\',\''+brand+'\',\'returned\',this.value)"></td>'+
+        '<td class="dsDiffCell '+diffCls+'"><b>'+(diff>0?'+':'')+diff+'</b></td></tr>';
     });
   });
   g.innerHTML='<table class="dsTable"><tr><th></th><th>Full Sold</th><th>Emp Return</th><th>Diff</th></tr>'+rowsHtml+'</table>';
