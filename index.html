@@ -11456,7 +11456,17 @@ function correctSavedLine(ds){
   // it exactly like every other section's array. One-time, cheap (a single row), same
   // "fetch fresh before allowing a correction" precedent openCapAdjust already sets for
   // Manifold's own same-day tool.
-  sb.from('daily_sales').select('lines').eq('branch',branch).eq('date',ds).maybeSingle().then(function(res){
+  // Real bug, confirmed live 2026-09-16 ("adjustment made... report does not update"):
+  // this used the CORRECTOR's own session branch (global `branch`) instead of rec.branch -
+  // the day/branch actually being corrected. Those two are usually the same in practice, but
+  // don't have to be (an Owner correcting the OTHER branch's day, or any future path into
+  // this screen that isn't the branch-scoped Past calendar). A mismatched branch/date filter
+  // on the update() below doesn't error - Supabase/PostgREST returns a normal success with
+  // zero rows affected - so the "Correction logged" toast fired while Helderberg's real row
+  // sat untouched, confirmed directly against the database. rec.branch is the one value that
+  // can never be wrong here - it's the actual branch of the record on screen - so every
+  // branch reference in this function now uses that instead of the assumed global.
+  sb.from('daily_sales').select('lines').eq('branch',rec.branch).eq('date',ds).maybeSingle().then(function(res){
     rec.store._dailySales=(res&&res.data&&res.data.lines)||[];
     _correctSavedLineOpen(ds,rec);
   },function(){
@@ -11467,25 +11477,29 @@ function correctSavedLine(ds){
 }
 function _correctSavedLineOpen(ds,rec){
   openCorrection({
-    title:'Correct '+ds+' - '+branch,
-    store:rec.store, branch:branch,
+    title:'Correct '+ds+' - '+rec.branch,
+    store:rec.store, branch:rec.branch,
     sections:['Opening','Closing','Received','Refills','Private','Manifold','Daily Sales'],
     onApply:function(sel,oldVal,newVal,reason,auth){
       rec.corrections=rec.corrections||[];
       var correctionEntry={at:nowStamp(),by:auth.name+' ('+auth.level+')',line:sel.tag,from:oldVal,to:newVal,reason:reason};
       rec.corrections.push(correctionEntry);
       _pushSharedCorrection(rec._sharedId, correctionEntry);
-      syncPush('Adjustments',[{date:ds,branch:branch,Kind:'HistoricalCorrection',Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:auth.name+' ('+auth.level+')'}]);
-      localStorage.setItem(histKey(ds,branch),JSON.stringify(rec));
+      syncPush('Adjustments',[{date:ds,branch:rec.branch,Kind:'HistoricalCorrection',Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:auth.name+' ('+auth.level+')'}]);
+      localStorage.setItem(histKey(ds,rec.branch),JSON.stringify(rec));
       auditLog('Historical count corrected',ds+' '+sel.tag+': '+oldVal+' \u2192 '+newVal+' by '+auth.name+' - '+reason,{was:oldVal},{now:newVal});
       // Daily Sales has no snapshot of its own to fall back on - unlike every other section
       // here (whose correction only ever needs to live in THIS local closed-day record), the
       // live daily_sales table is the only place this figure is ever read from again (the
       // report, this same picker next time) - so the corrected lines array must be written
       // back there too, or the "correction" would silently vanish the next time anyone looks.
+      // .select() added so a zero-row match (wrong branch/date, or the row genuinely missing)
+      // surfaces as a visible error instead of PostgREST's default silent-success-on-no-match -
+      // exactly the failure mode that produced this bug report.
       if(sel.section==='Daily Sales'){
-        sb.from('daily_sales').update({lines:rec.store._dailySales}).eq('branch',branch).eq('date',ds).then(function(res2){
+        sb.from('daily_sales').update({lines:rec.store._dailySales}).eq('branch',rec.branch).eq('date',ds).select().then(function(res2){
           if(res2.error)toast('Correction saved locally, but could not sync to Daily Sales: '+res2.error.message,true);
+          else if(!res2.data||!res2.data.length)toast('Correction saved locally, but no matching Daily Sales record was found for '+rec.branch+' '+ds+' to update - it may not have synced',true);
         },function(){toast('Correction saved locally, but a network error stopped it syncing to Daily Sales',true);});
       }
     },
