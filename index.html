@@ -225,6 +225,11 @@
   .threshField input{width:74px;border:1.5px solid var(--line);border-radius:8px;background:var(--yellow);text-align:center;font-size:14px;font-weight:700;color:var(--navy);padding:6px 4px;-moz-appearance:textfield;}
   .threshField input:focus{border-color:var(--navy);outline:none;}
   .threshField input::-webkit-outer-spin-button,.threshField input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
+  /* Per-brand kg note (under each input) and per-size subtotal (card footer) - added
+     2026-09-16, per explicit request, alongside the branch-wide grand total already at the
+     top of Stock Thresholds. */
+  .threshFieldKg{font-size:10px;color:var(--muted);text-align:center;}
+  .threshSizeTotal{margin-top:8px;padding-top:8px;border-top:1.5px solid var(--line);font-size:11.5px;color:var(--navy);font-weight:700;}
 
   /* ===== COUNT MODULE (grid -> detail) ===== */
   .cgControls{background:var(--card);border-bottom:1px solid var(--line);padding:14px 16px;position:sticky;top:66px;z-index:8;}
@@ -2882,22 +2887,31 @@ function renderThresholds(){
   var html='';
   thItems.forEach(function(it){
     var kg=_nominalKg(it);
-    html+='<div class="threshCard"><h5>'+it+' <span class="kg">('+kg+'kg each)</span></h5>';
+    // Per-size subtotal (added 2026-09-16, per explicit request) - Min Full Hold/Max Full
+    // Threshold kg for THIS size's brands only, shown as a card footer once every brand row is
+    // built, sitting between the per-brand kg note on each field and the branch-wide grand
+    // total already at the top of the page - three levels, none of them a separate source of
+    // truth, all just different groupings of the exact same th.minFullHold/maxThreshold*kg
+    // arithmetic the grand total already does.
+    var sizeMinKg=0,sizeMaxKg=0;
+    var rowsHtml='';
     thBrands.forEach(function(brand){
       var th=thresholdFor(br,it,brand);
-      totalMinKg+=th.minFullHold*kg;
-      totalMaxKg+=th.maxThreshold*kg;
+      var minKg=th.minFullHold*kg, maxKg=th.maxThreshold*kg;
+      totalMinKg+=minKg;totalMaxKg+=maxKg;
+      sizeMinKg+=minKg;sizeMaxKg+=maxKg;
       var have=haveNow[it+'|'+brand]||0;
       var overMax=th.maxThreshold>0&&have>th.maxThreshold;
       var underMin=th.minFullHold>0&&have<th.minFullHold;
       var haveCls=overMax?'over':(underMin?'under':'');
-      html+='<div class="threshRow"><span class="threshBrand">'+brand+'</span>'+
+      rowsHtml+='<div class="threshRow"><span class="threshBrand">'+brand+'</span>'+
         '<span class="threshHave '+haveCls+'" title="Today\'s Closing Full count">Full now<br><b>'+have+'</b>'+((overMax||underMin)?' ⚠':'')+'</span>'+
-        '<div class="threshField"><label>Min Full Hold</label><input type="number" min="0" value="'+th.minFullHold+'" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'minFullHold\',this.value)"></div>'+
-        '<div class="threshField"><label>Max Full Threshold</label><input type="number" min="0" value="'+th.maxThreshold+'" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'maxThreshold\',this.value)"></div>'+
+        '<div class="threshField"><label>Min Full Hold</label><input type="number" min="0" value="'+th.minFullHold+'" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'minFullHold\',this.value)"><span class="threshFieldKg">'+minKg.toFixed(2)+' kg</span></div>'+
+        '<div class="threshField"><label>Max Full Threshold</label><input type="number" min="0" value="'+th.maxThreshold+'" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'maxThreshold\',this.value)"><span class="threshFieldKg">'+maxKg.toFixed(2)+' kg</span></div>'+
         '</div>';
     });
-    html+='</div>';
+    html+='<div class="threshCard"><h5>'+it+' <span class="kg">('+kg+'kg each)</span></h5>'+rowsHtml+
+      '<div class="threshSizeTotal">'+it+' total &mdash; Min Full Hold: <b>'+sizeMinKg.toFixed(2)+' kg</b> &nbsp;&middot;&nbsp; Max Full Threshold: <b>'+sizeMaxKg.toFixed(2)+' kg</b></div></div>';
   });
   box.innerHTML=html;
   if(sumEl)sumEl.innerHTML='<div class="callout" style="font-weight:700">'+br+' totals across every configured size &amp; brand'+
