@@ -12850,8 +12850,21 @@ function buildCountDocAsync(src){
     // sizes considered here now include real Daily Sales lines and Transfer activity, not
     // just Stock Count/Received/Refill activity - a size sold via Daily Sales with no count-
     // screen activity that day used to be silently dropped from this table entirely.
+    // Real bug, found live 2026-09-16 while checking a day (Helderberg, this same date) that
+    // had two Daily Sales lines for one size - 48kg-SV Afrox AND 48kg-SV Other. This used to
+    // just overwrite by size (_dsLinesBySize[l.size]=l), so whichever line came LAST in the
+    // array silently replaced the other - the Afrox line's real sold/returned figures would
+    // never have appeared anywhere in this report (not the per-size row, not Sold Total, not
+    // Net Cylinder Exchange), same "brand shouldn't make cylinders disappear" class of bug as
+    // the Estimate-side brand-scoping fixed just above. Sums sold/returned across every line
+    // sharing a size instead of picking one - matches the same "units and kg's only, brand
+    // doesn't matter" principle; nothing downstream of this object reads .brand.
     var _dsLinesBySize={};
-    if(dailySalesRow)(dailySalesRow.lines||[]).forEach(function(l){_dsLinesBySize[l.size]=l;});
+    if(dailySalesRow)(dailySalesRow.lines||[]).forEach(function(l){
+      if(!_dsLinesBySize[l.size])_dsLinesBySize[l.size]={sold:0,returned:0};
+      _dsLinesBySize[l.size].sold+=num(l.sold);
+      _dsLinesBySize[l.size].returned+=num(l.returned);
+    });
     var salesSizes=ALLSIZES.filter(function(sz){
       return totalOf(counts.Opening.Full[sz])||totalOf(counts.Closing.Full[sz])||totalOf(counts.Opening.Empty[sz])||totalOf(counts.Closing.Empty[sz])||
         (recvAgg[sz]&&(recvAgg[sz].fullIn||recvAgg[sz].emptyOut))||refillCountBySize[sz]||_dsLinesBySize[sz]||
@@ -13336,8 +13349,21 @@ function buildCountCSVAsync(src){
     // any per-size gap flagged as a real net cylinder discrepancy rather than hidden. Sizes
     // considered now include real Daily Sales lines and Transfer activity too, not just
     // Stock Count/Received/Refill activity.
+    // Real bug, found live 2026-09-16 while checking a day (Helderberg, this same date) that
+    // had two Daily Sales lines for one size - 48kg-SV Afrox AND 48kg-SV Other. This used to
+    // just overwrite by size (_dsLinesBySize[l.size]=l), so whichever line came LAST in the
+    // array silently replaced the other - the Afrox line's real sold/returned figures would
+    // never have appeared anywhere in this report (not the per-size row, not Sold Total, not
+    // Net Cylinder Exchange), same "brand shouldn't make cylinders disappear" class of bug as
+    // the Estimate-side brand-scoping fixed just above. Sums sold/returned across every line
+    // sharing a size instead of picking one - matches the same "units and kg's only, brand
+    // doesn't matter" principle; nothing downstream of this object reads .brand.
     var _dsLinesBySize={};
-    if(dailySalesRow)(dailySalesRow.lines||[]).forEach(function(l){_dsLinesBySize[l.size]=l;});
+    if(dailySalesRow)(dailySalesRow.lines||[]).forEach(function(l){
+      if(!_dsLinesBySize[l.size])_dsLinesBySize[l.size]={sold:0,returned:0};
+      _dsLinesBySize[l.size].sold+=num(l.sold);
+      _dsLinesBySize[l.size].returned+=num(l.returned);
+    });
     var salesSizes=ALLSIZES.filter(function(sz){
       return totalOf(counts.Opening.Full[sz])||totalOf(counts.Closing.Full[sz])||totalOf(counts.Opening.Empty[sz])||totalOf(counts.Closing.Empty[sz])||
         (recvAgg[sz]&&(recvAgg[sz].fullIn||recvAgg[sz].emptyOut))||refillCountBySize[sz]||_dsLinesBySize[sz]||
