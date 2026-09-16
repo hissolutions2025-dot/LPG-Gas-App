@@ -204,6 +204,27 @@
   .dsTable input:focus{border-color:var(--navy);outline:none;}
   .dsTable input::-webkit-outer-spin-button,.dsTable input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
   .exportBtn{width:100%;background:var(--navy);color:#fff;border:none;border-radius:10px;padding:13px;font-size:13px;font-weight:600;cursor:pointer;}
+  /* Shared by Stock Thresholds and Extra Allocation (2026-09-16 restyle, per explicit
+     request: "doesn't follow the app look and feel and layout structures"). The old layout
+     ran on .adminRow/.grow - both used throughout Admin but neither actually styled anywhere
+     in this file (checked directly, not assumed), so it fell back to plain stacked divs with
+     no real card/spacing structure. Built fresh on the same real, already-verified pattern
+     Daily Sales' own grid restyle already established (bordered/rounded/yellow inputs,
+     card-grouped rows) instead of reusing the unstyled admin convention. */
+  .threshCard{background:var(--card);border:1.5px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px;}
+  .threshCard h5{margin:0 0 6px;font-size:13px;color:var(--navy);font-weight:800;}
+  .threshCard h5 .kg{font-weight:400;color:var(--muted);font-size:11px;}
+  .threshRow{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:9px 0;border-top:1px solid #EEF1F4;}
+  .threshRow:first-of-type{border-top:none;padding-top:2px;}
+  .threshBrand{font-weight:800;color:var(--navy);font-size:13px;width:56px;flex:none;}
+  .threshHave{font-size:11px;font-weight:700;color:var(--muted);min-width:70px;}
+  .threshHave b{font-size:13px;}
+  .threshHave.over{color:var(--bad);} .threshHave.under{color:#B9761F;}
+  .threshField{display:flex;flex-direction:column;gap:3px;}
+  .threshField label{font-size:9.5px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.3px;white-space:nowrap;}
+  .threshField input{width:74px;border:1.5px solid var(--line);border-radius:8px;background:var(--yellow);text-align:center;font-size:14px;font-weight:700;color:var(--navy);padding:6px 4px;-moz-appearance:textfield;}
+  .threshField input:focus{border-color:var(--navy);outline:none;}
+  .threshField input::-webkit-outer-spin-button,.threshField input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
 
   /* ===== COUNT MODULE (grid -> detail) ===== */
   .cgControls{background:var(--card);border-bottom:1px solid var(--line);padding:14px 16px;position:sticky;top:66px;z-index:8;}
@@ -352,6 +373,7 @@
     <div id="countPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div id="minFullHoldBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div id="maxThresholdBadge" style="display:none;background:#FDF3F2;color:#9B2C2C;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
+    <div id="replenishBadge" style="display:none;background:var(--sel);color:var(--navy);font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div id="usageLiveBadge" style="font-size:11px;color:var(--muted);margin-bottom:12px"></div>
     <div class="greet">Every entry uses today's date, your name and branch.</div>
     <div class="greet" id="homeEditHint" style="display:none">Drag the middle of a tile to reorder. Drag its edge or corner to resize.</div>
@@ -804,6 +826,7 @@
     <button class="htab" id="atab-clear" onclick="adminTab('clear')">Clear Stock Take</button>
     <button class="htab" id="atab-bsetup" onclick="adminTab('bsetup')">Branch Setup</button>
     <button class="htab" id="atab-thresholds" onclick="adminTab('thresholds')">Stock Thresholds</button>
+    <button class="htab" id="atab-extraalloc" onclick="adminTab('extraalloc')">Extra Allocation</button>
     <button class="htab" id="atab-manifold" onclick="adminTab('manifold')">Manifold Slots</button>
     <button class="htab" id="atab-faulty" onclick="adminTab('faulty')">Faulty Cylinders</button>
     <button class="htab" id="atab-suppliersmgmt" onclick="adminTab('suppliersmgmt')">Manage Suppliers</button>
@@ -877,16 +900,31 @@
   <!-- STOCK THRESHOLDS PANE - moved out of Branch Setup 2026-09-16 into its own tab, per
        explicit request, so it's not buried at the bottom of an unrelated screen. Same
        Manager/Owner password gate every admin tab already gets via adminTab() - nothing about
-       who can edit this changed, only where it lives. -->
+       who can edit this changed, only where it lives. Min Full Hold + Max Full Threshold only -
+       Extra Allocation Threshold moved to its own tab below (see ADMIN EXTRA ALLOCATION PANE). -->
   <div id="adminThresholds" style="display:none">
     <div class="histSection"><h4>Stock Thresholds — per branch, size &amp; brand</h4>
-      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Min Full Hold flags on the Home screen when today's Closing Full count drops below it. Extra Allocation Threshold flags a size/brand whose net cylinder exchange (Date-Range Balance report) has drifted past this tolerance - possible cylinder creep. Max Threshold flags when today's Closing Full count goes OVER it - holding more stock than this branch is certified for.</div>
-      <div class="adminRow">
-        <div class="grow"><label class="mLabel" style="font-size:11px">Branch</label>
-          <select class="mField" id="thBranch" onchange="renderThresholds()"><option>Helderberg</option><option>Kleinmond</option></select></div>
-      </div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Min Full Hold flags on the Home screen when today's Closing Full count drops below it. Max Full Threshold flags when today's Closing Full count goes OVER it - holding more stock than this branch is certified for.</div>
+      <label class="mLabel">Branch</label>
+      <select class="mField" id="thBranch" onchange="renderThresholds()"><option>Helderberg</option><option>Kleinmond</option></select>
       <div id="thresholdsSummary" style="margin:10px 0"></div>
       <div id="thresholdsBody" style="margin-top:4px"></div>
+    </div>
+  </div>
+
+  <!-- EXTRA ALLOCATION PANE - own tab 2026-09-16, per explicit request. Houses TWO connected
+       replenishment signals for the same underlying question ("does this branch need more
+       cylinders allocated to it"): the existing Extra Allocation Threshold (a net-cylinder-
+       exchange CREEP-RATE tolerance - unchanged, still what the Date-Range Balance report's
+       own "possible cylinder creep" flag reads), now alongside a new Replenish Below level
+       check - today's Full+Empty TOTAL (the whole rotating shell pool for that size, not just
+       full stock) compared against a manually-set target, prompting replenishment when short. -->
+  <div id="adminExtraAlloc" style="display:none">
+    <div class="histSection"><h4>Extra Allocation — per branch, size &amp; brand</h4>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Replenish Below flags on the Home screen when today's rotating stock (Full + Empty combined) for a size/brand drops below this target - prompting a request for extra allocation to replenish it. Extra Allocation Threshold is the separate net-cylinder-exchange creep tolerance used by the Date-Range Balance report's own "possible cylinder creep" flag.</div>
+      <label class="mLabel">Branch</label>
+      <select class="mField" id="eaBranch" onchange="renderExtraAlloc()"><option>Helderberg</option><option>Kleinmond</option></select>
+      <div id="extraAllocBody" style="margin-top:10px"></div>
     </div>
   </div>
 
@@ -2565,8 +2603,8 @@ function openAdmin(){
   show('adminView');window.scrollTo(0,0);
 }
 var _adminUnlocked={}; // per Admin session: which tabs unlocked
-var ADMIN_TAB_PERM={seals:'seal_admin',suppliers:'seal_admin',clear:'seal_edit_used',bsetup:'branch_setup',suppliersmgmt:'manageSuppliers',counttimes:'branch_setup',thresholds:'branch_setup'};
-var ADMIN_TAB_NAME={seals:'Seal Register',suppliers:'Brands',clear:'Clear Stock Take',bsetup:'Branch Setup',faulty:'Faulty Cylinders',suppliersmgmt:'Manage Suppliers',counttimes:'Count Times',manifold:'Manifold Slots',thresholds:'Stock Thresholds'};
+var ADMIN_TAB_PERM={seals:'seal_admin',suppliers:'seal_admin',clear:'seal_edit_used',bsetup:'branch_setup',suppliersmgmt:'manageSuppliers',counttimes:'branch_setup',thresholds:'branch_setup',extraalloc:'branch_setup'};
+var ADMIN_TAB_NAME={seals:'Seal Register',suppliers:'Brands',clear:'Clear Stock Take',bsetup:'Branch Setup',faulty:'Faulty Cylinders',suppliersmgmt:'Manage Suppliers',counttimes:'Count Times',manifold:'Manifold Slots',thresholds:'Stock Thresholds',extraalloc:'Extra Allocation'};
 function adminShowTabsOnly(){
   ['adminSeals','adminSuppliers','adminClear','adminBsetup','adminManifold','adminFaulty','adminSuppliersMgmt','adminCountTimes'].forEach(function(id){var e=document.getElementById(id);if(e)e.style.display='none';});
   ['atab-seals','atab-suppliers','atab-clear','atab-bsetup','atab-manifold','atab-faulty','atab-suppliersmgmt','atab-counttimes'].forEach(function(id){var e=document.getElementById(id);if(e)e.classList.remove('on');});
@@ -2607,6 +2645,7 @@ function _adminTabShow(t){
   var _asm=document.getElementById('adminSuppliersMgmt');if(_asm)_asm.style.display=(t==='suppliersmgmt')?'block':'none';
   var _act=document.getElementById('adminCountTimes');if(_act)_act.style.display=(t==='counttimes')?'block':'none';
   var _ath=document.getElementById('adminThresholds');if(_ath)_ath.style.display=(t==='thresholds')?'block':'none';
+  var _aea=document.getElementById('adminExtraAlloc');if(_aea)_aea.style.display=(t==='extraalloc')?'block':'none';
   document.getElementById('atab-seals').classList.toggle('on',t==='seals');
   document.getElementById('atab-suppliers').classList.toggle('on',t==='suppliers');
   var _tc=document.getElementById('atab-clear');if(_tc)_tc.classList.toggle('on',t==='clear');
@@ -2616,8 +2655,10 @@ function _adminTabShow(t){
   var _tsm=document.getElementById('atab-suppliersmgmt');if(_tsm)_tsm.classList.toggle('on',t==='suppliersmgmt');
   var _tct=document.getElementById('atab-counttimes');if(_tct)_tct.classList.toggle('on',t==='counttimes');
   var _tth=document.getElementById('atab-thresholds');if(_tth)_tth.classList.toggle('on',t==='thresholds');
+  var _tea=document.getElementById('atab-extraalloc');if(_tea)_tea.classList.toggle('on',t==='extraalloc');
   if(t==='bsetup'){renderBsetup();_fetchAppConfig('branch_setup',bcfgSave).then(renderBsetup);}
   if(t==='thresholds'){renderThresholds();_fetchAppConfig('stock_thresholds',thresholdsSave).then(renderThresholds);}
+  if(t==='extraalloc'){renderExtraAlloc();_fetchAppConfig('stock_thresholds',thresholdsSave).then(renderExtraAlloc);}
   if(t==='manifold')renderManifoldSlots();
   if(t==='clear'){var d=document.getElementById('clrDate');if(d&&!d.value)d.value=today;}
   if(t==='seals'){fillBrandPicker();renderRolls();_fetchSealLive(adminBranch).then(function(){renderRolls();renderUsedSeals();});}
@@ -2814,23 +2855,21 @@ function renderBsetup(){
   });
   box.innerHTML=html;
 }
-// Stock Thresholds - moved into its own admin tab 2026-09-16, per explicit request (was
-// previously a card tacked onto the bottom of Branch Setup). Per size+brand (not just size) -
-// branches can stock more than one full-cylinder brand for different customer bases (e.g.
-// Kleinmond: Afrox for commercial, Oryx for residential), each needing its own limits.
-// Two additions alongside the move, both per explicit request:
-// 1) A live kg-equivalent summary (#thresholdsSummary) - Min Full Hold/Extra Allocation
-//    Threshold/Max Threshold are configured as cylinder COUNTS (the unit a manager actually
-//    sets), but the figure that matters for supplier/compliance conversations is kg of gas -
-//    summed across every configured size+brand for the branch, using the same nominal-kg-per-
-//    size table (_nominalKg) the reports already use for exactly this Count-never-weighs-a-
-//    cylinder tally-estimate conversion. Recalculates live as fields change, not gated behind
-//    any explicit "done" action - there's no natural "complete" state in a config a manager
-//    can revisit and tweak seasonally.
-// 2) Max Threshold itself - the mirror of Min Full Hold: today's Closing Full count shown
-//    alongside each row so a manager can see at a glance whether they're currently over
-//    (certified-maximum compliance), not just after the fact via the Home-screen badge
-//    (_maxThresholdOverages/_updateMaxThresholdBadge, same pattern Min Full Hold already has).
+// Stock Thresholds - own admin tab, per explicit request (was previously a card tacked onto
+// the bottom of Branch Setup, then briefly a mixed card with Extra Allocation in it - that
+// moved to its own tab below, see renderExtraAlloc). Per size+brand (not just size) - branches
+// can stock more than one full-cylinder brand for different customer bases (e.g. Kleinmond:
+// Afrox for commercial, Oryx for residential), each needing its own limits. Min Full Hold and
+// Max Full Threshold only - both read today's Closing FULL count (_closingFullBySizeBrand).
+// Restyled 2026-09-16 onto .threshCard/.threshRow/.threshField (see their own CSS comment) -
+// per explicit request, the old layout looked nothing like the rest of the app.
+// Live kg-equivalent summary (#thresholdsSummary) - Min Full Hold/Max Full Threshold are
+// configured as cylinder COUNTS (the unit a manager actually sets), but the figure that
+// matters for supplier/compliance conversations is kg of gas - summed across every configured
+// size+brand for the branch, using the same nominal-kg-per-size table (_nominalKg) the reports
+// already use for exactly this Count-never-weighs-a-cylinder tally-estimate conversion.
+// Recalculates live as fields change, not gated behind any explicit "done" action - there's no
+// natural "complete" state in a config a manager can revisit and tweak seasonally.
 function renderThresholds(){
   var box=document.getElementById('thresholdsBody');if(!box)return;
   var sumEl=document.getElementById('thresholdsSummary');
@@ -2839,33 +2878,65 @@ function renderThresholds(){
   var thItems=SECTION_ITEMS['count']||[];
   var thBrands=C_FULLBRANDS[br]||['Other'];
   var haveNow=_closingFullBySizeBrand(br);
-  var totalMinKg=0,totalExtraKg=0,totalMaxKg=0;
+  var totalMinKg=0,totalMaxKg=0;
   var html='';
   thItems.forEach(function(it){
     var kg=_nominalKg(it);
-    html+='<div style="margin-bottom:10px"><div style="font-size:11px;font-weight:700;color:var(--muted)">'+it+' <span style="font-weight:400">('+kg+'kg each)</span></div>';
+    html+='<div class="threshCard"><h5>'+it+' <span class="kg">('+kg+'kg each)</span></h5>';
     thBrands.forEach(function(brand){
       var th=thresholdFor(br,it,brand);
       totalMinKg+=th.minFullHold*kg;
-      totalExtraKg+=th.extraAllocThreshold*kg;
       totalMaxKg+=th.maxThreshold*kg;
       var have=haveNow[it+'|'+brand]||0;
       var overMax=th.maxThreshold>0&&have>th.maxThreshold;
       var underMin=th.minFullHold>0&&have<th.minFullHold;
-      var haveColor=overMax?'#C0392B':(underMin?'#B9761F':'var(--muted)');
-      html+='<div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:11px;margin-bottom:4px;padding-left:8px">'+
-        '<span style="width:70px">'+brand+'</span>'+
-        '<span style="color:'+haveColor+';font-weight:800;min-width:78px" title="Today\'s Closing Full count">have: '+have+(overMax?' ⚠':(underMin?' ⚠':''))+'</span>'+
-        '<label style="display:flex;align-items:center;gap:3px">Min Full Hold <input type="number" min="0" value="'+th.minFullHold+'" style="width:55px" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'minFullHold\',this.value)"></label>'+
-        '<label style="display:flex;align-items:center;gap:3px">Extra Alloc. Threshold <input type="number" value="'+th.extraAllocThreshold+'" style="width:55px" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'extraAllocThreshold\',this.value)"></label>'+
-        '<label style="display:flex;align-items:center;gap:3px">Max Threshold <input type="number" min="0" value="'+th.maxThreshold+'" style="width:55px" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'maxThreshold\',this.value)"></label>'+
+      var haveCls=overMax?'over':(underMin?'under':'');
+      html+='<div class="threshRow"><span class="threshBrand">'+brand+'</span>'+
+        '<span class="threshHave '+haveCls+'" title="Today\'s Closing Full count">Full now<br><b>'+have+'</b>'+((overMax||underMin)?' ⚠':'')+'</span>'+
+        '<div class="threshField"><label>Min Full Hold</label><input type="number" min="0" value="'+th.minFullHold+'" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'minFullHold\',this.value)"></div>'+
+        '<div class="threshField"><label>Max Full Threshold</label><input type="number" min="0" value="'+th.maxThreshold+'" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'maxThreshold\',this.value)"></div>'+
         '</div>';
     });
     html+='</div>';
   });
   box.innerHTML=html;
   if(sumEl)sumEl.innerHTML='<div class="callout" style="font-weight:700">'+br+' totals across every configured size &amp; brand'+
-    '<div style="font-weight:400;font-size:12px;margin-top:4px">Min Full Hold: <b>'+totalMinKg.toFixed(2)+' kg</b> &nbsp;&middot;&nbsp; Extra Allocation Threshold: <b>'+totalExtraKg.toFixed(2)+' kg</b> &nbsp;&middot;&nbsp; Max Threshold: <b>'+totalMaxKg.toFixed(2)+' kg</b></div></div>';
+    '<div style="font-weight:400;font-size:12px;margin-top:4px">Min Full Hold: <b>'+totalMinKg.toFixed(2)+' kg</b> &nbsp;&middot;&nbsp; Max Full Threshold: <b>'+totalMaxKg.toFixed(2)+' kg</b></div></div>';
+}
+// Extra Allocation - own admin tab, per explicit request, connecting TWO replenishment
+// signals for the same underlying question ("does this branch need more cylinders allocated
+// to it") in one place:
+// - Extra Allocation Threshold: unchanged, still the net-cylinder-exchange CREEP-RATE
+//   tolerance the Date-Range Balance report's own "possible cylinder creep" flag reads
+//   (thresholdFor(...).extraAllocThreshold) - kept exactly as it already worked.
+// - Replenish Below (new): today's Full+Empty TOTAL - the whole rotating shell pool for that
+//   size, not just full stock, since a shell rotates between both states - compared against a
+//   manually-set target. Drop below it and the Home screen prompts a manager to request extra
+//   allocation. Same 0-means-opted-out convention every other threshold here already uses.
+function renderExtraAlloc(){
+  var box=document.getElementById('extraAllocBody');if(!box)return;
+  if(!(role==='Owner'||perm('branch_setup'))){box.innerHTML='<div style="color:#9B2C2C;font-size:13px">You do not have Branch Setup rights.</div>';return;}
+  var br=document.getElementById('eaBranch').value;
+  var eaItems=SECTION_ITEMS['count']||[];
+  var eaBrands=C_FULLBRANDS[br]||['Other'];
+  var haveNow=_closingTotalBySizeBrand(br);
+  var html='';
+  eaItems.forEach(function(it){
+    var kg=_nominalKg(it);
+    html+='<div class="threshCard"><h5>'+it+' <span class="kg">('+kg+'kg each)</span></h5>';
+    eaBrands.forEach(function(brand){
+      var th=thresholdFor(br,it,brand);
+      var have=haveNow[it+'|'+brand]||0;
+      var short=th.replenishBelow>0&&have<th.replenishBelow;
+      html+='<div class="threshRow"><span class="threshBrand">'+brand+'</span>'+
+        '<span class="threshHave '+(short?'under':'')+'" title="Today\'s Full + Empty combined">Full+Empty now<br><b>'+have+'</b>'+(short?' ⚠':'')+'</span>'+
+        '<div class="threshField"><label>Extra Alloc. Threshold</label><input type="number" value="'+th.extraAllocThreshold+'" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'extraAllocThreshold\',this.value)"></div>'+
+        '<div class="threshField"><label>Replenish Below</label><input type="number" min="0" value="'+th.replenishBelow+'" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'replenishBelow\',this.value)"></div>'+
+        '</div>';
+    });
+    html+='</div>';
+  });
+  box.innerHTML=html;
 }
 function renderManifoldSlots(){
   var box=document.getElementById('manifoldSlotsBody');if(!box)return;
@@ -2965,9 +3036,11 @@ function thresholdsSet(br,sz,brand,field,val){
   t[br]=t[br]||{};
   t[br][sz]=t[br][sz]||{};
   // maxThreshold added 2026-09-16, per explicit request - "so manager can also see that they
-  // do not hold more stock per branch than they are certified for." Same 0-means-opted-out
-  // convention minFullHold/extraAllocThreshold already use (see thresholdFor's own comment).
-  t[br][sz][brand]=t[br][sz][brand]||{minFullHold:0,extraAllocThreshold:0,maxThreshold:0};
+  // do not hold more stock per branch than they are certified for." replenishBelow added the
+  // same day, per explicit follow-up request (Extra Allocation's own new replenishment level
+  // check, Full+Empty total, separate from extraAllocThreshold's own creep-rate meaning). Same
+  // 0-means-opted-out convention every field here already uses (see thresholdFor's comment).
+  t[br][sz][brand]=t[br][sz][brand]||{minFullHold:0,extraAllocThreshold:0,maxThreshold:0,replenishBelow:0};
   t[br][sz][brand][field]=val;
   thresholdsSave(t);
   _pushAppConfig('stock_thresholds',t);
@@ -2976,7 +3049,7 @@ function setThreshold(br,sz,brand,field,val){
   if(!(role==='Owner'||perm('branch_setup'))){toast('No Branch Setup rights',true);return;}
   var n=num(val);
   // a stock count can't be negative; extraAllocThreshold is a negative tolerance, left as-is
-  if((field==='minFullHold'||field==='maxThreshold')&&n<0)n=0;
+  if((field==='minFullHold'||field==='maxThreshold'||field==='replenishBelow')&&n<0)n=0;
   thresholdsSet(br,sz,brand,field,n);
   toast(sz+' ('+brand+') threshold updated');
 }
@@ -3646,14 +3719,14 @@ function thresholdsLoad(){try{return JSON.parse(localStorage.getItem('gs_stock_t
 function thresholdsSave(c){localStorage.setItem('gs_stock_thresholds',JSON.stringify(c));}
 function thresholdFor(br,sz,brand){
   var t=thresholdsLoad();
-  return (t[br]&&t[br][sz]&&t[br][sz][brand])||{minFullHold:0,extraAllocThreshold:0,maxThreshold:0};
+  return (t[br]&&t[br][sz]&&t[br][sz][brand])||{minFullHold:0,extraAllocThreshold:0,maxThreshold:0,replenishBelow:0};
 }
 // Today's Closing Full count per size+brand for a branch - shared by both the Min Full Hold
-// shortage check below and Max Threshold's matching overage check (added 2026-09-16), so the
-// two compliance checks can never silently drift apart by each computing this differently.
-// Reads store.count directly (same branch/date/countType/state filter convention
-// _dayCompleteness above already uses) rather than reusing _countFullKg, which sums KG across
-// every size, not a per-size unit count.
+// shortage check below and Max Full Threshold's matching overage check, so the two compliance
+// checks can never silently drift apart by each computing this differently. Reads store.count
+// directly (same branch/date/countType/state filter convention _dayCompleteness above already
+// uses) rather than reusing _countFullKg, which sums KG across every size, not a per-size unit
+// count.
 function _closingFullBySizeBrand(br){
   var bySizeBrand={};
   (store.count||[]).forEach(function(r){
@@ -3661,6 +3734,22 @@ function _closingFullBySizeBrand(br){
     if((r._date||today)!==today)return;
     if(r.countType!=='Closing')return;
     if((r.state==='Empty'?'Empty':'Full')!=='Full')return;
+    var key=r.size+'|'+r.brand;
+    bySizeBrand[key]=(bySizeBrand[key]||0)+num(r.qty);
+  });
+  return bySizeBrand;
+}
+// Today's Closing Full+Empty TOTAL per size+brand - the whole rotating shell pool, not just
+// full stock, since a shell rotates between both states over its life. Feeds Extra
+// Allocation's Replenish Below check (added 2026-09-16) - deliberately a separate function
+// from _closingFullBySizeBrand rather than Full-only+Empty-only summed at the call site, so
+// this one query is the single place "today's total shells for this size/brand" is defined.
+function _closingTotalBySizeBrand(br){
+  var bySizeBrand={};
+  (store.count||[]).forEach(function(r){
+    if(r.branch&&r.branch!==br)return;
+    if((r._date||today)!==today)return;
+    if(r.countType!=='Closing')return;
     var key=r.size+'|'+r.brand;
     bySizeBrand[key]=(bySizeBrand[key]||0)+num(r.qty);
   });
@@ -3684,8 +3773,8 @@ function _minFullHoldShortages(br){
   });
   return short;
 }
-// Max Threshold - the mirror image of Min Full Hold above: sizes whose today's Closing Full
-// count has gone OVER the configured maximum - holding more stock than this branch is
+// Max Full Threshold - the mirror image of Min Full Hold above: sizes whose today's Closing
+// Full count has gone OVER the configured maximum - holding more stock than this branch is
 // certified to carry. Same "0 = opted out" convention, same data source.
 function _maxThresholdOverages(br){
   br=br||branch;
@@ -3700,6 +3789,24 @@ function _maxThresholdOverages(br){
     });
   });
   return over;
+}
+// Replenish Below (Extra Allocation, added 2026-09-16) - sizes whose today's Full+Empty TOTAL
+// (the whole rotating shell pool, via _closingTotalBySizeBrand) has dropped below the manually
+// set replenishment target - prompting a manager to request extra allocation. Same "0 = opted
+// out" convention every threshold here uses.
+function _replenishmentNeeded(br){
+  br=br||branch;
+  var bySizeBrand=_closingTotalBySizeBrand(br);
+  var cfg=thresholdsLoad()[br]||{};
+  var short=[];
+  Object.keys(cfg).forEach(function(sz){
+    Object.keys(cfg[sz]).forEach(function(brand){
+      var min=cfg[sz][brand].replenishBelow;
+      var have=bySizeBrand[sz+'|'+brand]||0;
+      if(min>0&&have<min)short.push(sz+' ('+brand+') '+have+'/'+min);
+    });
+  });
+  return short;
 }
 // Same visual pattern as _updateCloseDayPendingBadge/_updateCountPendingBadge (amber banner,
 // shown/hidden by style.display) and refreshed at the same call site(s) as those - Home-screen
@@ -3719,6 +3826,15 @@ function _updateMaxThresholdBadge(){
   var over=_maxThresholdOverages(branch);
   el.style.display=over.length?'block':'none';
   el.textContent=over.length?('⚠ Over certified maximum stock hold: '+over.join(', ')):'';
+}
+// Same pattern again, for Extra Allocation's Replenish Below - blue/informational-toned since
+// "time to reorder" is routine operations, not a compliance breach like Max Full Threshold.
+function _updateReplenishBadge(){
+  var el=document.getElementById('replenishBadge');
+  if(!el)return;
+  var short=_replenishmentNeeded(branch);
+  el.style.display=short.length?'block':'none';
+  el.textContent=short.length?('ℹ Extra allocation needed - rotating stock is low: '+short.join(', ')):'';
 }
 // Live cross-device config: app_config holds one row per key ('branch_setup','count_cutoff').
 // Fetched into the same local blobs bcfgLoad()/loadCountCutoffCfg() already read (so every
@@ -4677,6 +4793,7 @@ function _finishLogin(u,b){
   _updateCountPendingBadge();
   _updateMinFullHoldBadge();
   _updateMaxThresholdBadge();
+  _updateReplenishBadge();
   _updateMismatchPendingBadge();
   _refreshCountMismatches(branch).then(_updateMismatchPendingBadge);
   refreshTestDateUI();
