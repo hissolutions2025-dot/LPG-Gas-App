@@ -3749,7 +3749,8 @@ function thresholdsLoad(){try{return JSON.parse(localStorage.getItem('gs_stock_t
 function thresholdsSave(c){localStorage.setItem('gs_stock_thresholds',JSON.stringify(c));}
 function thresholdFor(br,sz,brand){
   var t=thresholdsLoad();
-  return (t[br]&&t[br][sz]&&t[br][sz][brand])||{minFullHold:0,extraAllocThreshold:0,maxThreshold:0,replenishBelow:0};
+  var s=(t[br]&&t[br][sz]&&t[br][sz][brand])||{};
+  return {minFullHold:s.minFullHold||0,extraAllocThreshold:s.extraAllocThreshold||0,maxThreshold:s.maxThreshold||0,replenishBelow:s.replenishBelow||0};
 }
 // Today's Closing Full count per size+brand for a branch - shared by both the Min Full Hold
 // shortage check below and Max Full Threshold's matching overage check, so the two compliance
