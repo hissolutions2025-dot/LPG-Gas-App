@@ -10973,6 +10973,21 @@ function corrLines(st,section,br){
       // picker label reflects the live value - they're not used to apply an edit.
       out.push({label:(r.stage||'Opening')+' \u00b7 '+r.cyl+' \u00b7 '+(r.brand||'?')+' '+(r.gasType||'?')+' \u00b7 scale '+r.scale+'kg tare '+r.tare+'kg (edit)'+_rejTxt, get:function(){return r.gasLeft;}, set:function(v){r.gasLeft=v;r.scale=num(v)+num(r.tare);}, tag:'Manifold '+(r.stage||'Opening')+' '+r.cyl, row:r});
     });
+  } else if(section==='Daily Sales'){
+    // Unlike every section above, Daily Sales was never folded into this day's store_snapshot
+    // at Close Day time - it lives only in its own live `daily_sales` table (one row per
+    // branch+date, a `lines` array inside). correctSavedLine() fetches that row fresh and
+    // stashes it as st._dailySales (a plain array, already scoped to one branch by the fetch
+    // itself - no inBr filter needed here, unlike every other section's multi-branch array).
+    // Sold and Returned are independently correctable (unlike Received's fullIn/emptyOut, a
+    // size+brand can genuinely have both nonzero at once), so each line contributes two
+    // separate pickable entries - same "one field per entry" shape Opening/Closing/Refills/
+    // Private already use via the generic corrStepEdit/corrApply, no Manifold-style combined
+    // multi-field editor needed.
+    (st._dailySales||[]).forEach(function(r,idx){
+      out.push({label:r.size+' \u00b7 '+r.brand+' \u00b7 Sold='+r.sold, get:function(){return r.sold;}, set:function(v){r.sold=v;}, tag:'Daily Sales '+r.size+' '+r.brand+' sold #'+(idx+1), row:r, field:'sold'});
+      out.push({label:r.size+' \u00b7 '+r.brand+' \u00b7 Returned='+r.returned, get:function(){return r.returned;}, set:function(v){r.returned=v;}, tag:'Daily Sales '+r.size+' '+r.brand+' returned #'+(idx+1), row:r, field:'returned'});
+    });
   }
   return out;
 }
@@ -11416,10 +11431,27 @@ function correctSavedLine(ds){
   var rec=_currentSavedDayRec;
   if(!rec||rec.date!==ds){toast('Record not found \u2014 reopen this day and try again',true);return;}
   if(!rec.closedTs || (Date.now()-rec.closedTs)>48*3600*1000){toast('48-hour window has closed',true);return;}
+  // Reported: "Daily sales must be part of stock that can be adjusted after day close within
+  // 48 hours." Daily Sales isn't in rec.store (see corrLines' 'Daily Sales' branch's own
+  // comment for why) - fetch that day's real row fresh (branch+ds are fixed/historical here,
+  // never `today`) and stash it onto rec.store first, so the section picker below can treat
+  // it exactly like every other section's array. One-time, cheap (a single row), same
+  // "fetch fresh before allowing a correction" precedent openCapAdjust already sets for
+  // Manifold's own same-day tool.
+  sb.from('daily_sales').select('lines').eq('branch',branch).eq('date',ds).maybeSingle().then(function(res){
+    rec.store._dailySales=(res&&res.data&&res.data.lines)||[];
+    _correctSavedLineOpen(ds,rec);
+  },function(){
+    rec.store._dailySales=rec.store._dailySales||[];
+    toast('Could not load Daily Sales for this day - other sections are still correctable',true);
+    _correctSavedLineOpen(ds,rec);
+  });
+}
+function _correctSavedLineOpen(ds,rec){
   openCorrection({
     title:'Correct '+ds+' - '+branch,
     store:rec.store, branch:branch,
-    sections:['Opening','Closing','Received','Refills','Private','Manifold'],
+    sections:['Opening','Closing','Received','Refills','Private','Manifold','Daily Sales'],
     onApply:function(sel,oldVal,newVal,reason,auth){
       rec.corrections=rec.corrections||[];
       var correctionEntry={at:nowStamp(),by:auth.name+' ('+auth.level+')',line:sel.tag,from:oldVal,to:newVal,reason:reason};
@@ -11428,6 +11460,16 @@ function correctSavedLine(ds){
       syncPush('Adjustments',[{date:ds,branch:branch,Kind:'HistoricalCorrection',Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:auth.name+' ('+auth.level+')'}]);
       localStorage.setItem(histKey(ds,branch),JSON.stringify(rec));
       auditLog('Historical count corrected',ds+' '+sel.tag+': '+oldVal+' \u2192 '+newVal+' by '+auth.name+' - '+reason,{was:oldVal},{now:newVal});
+      // Daily Sales has no snapshot of its own to fall back on - unlike every other section
+      // here (whose correction only ever needs to live in THIS local closed-day record), the
+      // live daily_sales table is the only place this figure is ever read from again (the
+      // report, this same picker next time) - so the corrected lines array must be written
+      // back there too, or the "correction" would silently vanish the next time anyone looks.
+      if(sel.section==='Daily Sales'){
+        sb.from('daily_sales').update({lines:rec.store._dailySales}).eq('branch',branch).eq('date',ds).then(function(res2){
+          if(res2.error)toast('Correction saved locally, but could not sync to Daily Sales: '+res2.error.message,true);
+        },function(){toast('Correction saved locally, but a network error stopped it syncing to Daily Sales',true);});
+      }
     },
     afterClose:function(){viewSavedDayNoAuth(ds);}
   });
