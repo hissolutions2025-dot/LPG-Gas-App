@@ -11399,28 +11399,45 @@ function corrApply(){
   corrPick.set(newVal);
   // Reported: "said apply correction and nothing happening" (Daily Sales, but this call site
   // is shared by every section/caller of openCorrection) - the value WAS set above (correct
-  // locally) by the time onApply runs, but if onApply itself throws (a real device's
-  // localStorage.setItem can genuinely throw QuotaExceededError on a large history - never
-  // reproduced with synthetic data, but ruled nothing else out either), the rest of this
-  // function - closing the modal, the toast, afterClose, and clearing corrCfg/corrAuth/
-  // corrPick AND resetting corrApplyBusy - never ran, since a thrown exception stops
-  // execution right there. That leaves the Apply button permanently disabled (corrApplyBusy
-  // stuck true forever, silently swallowing every future tap too) with no visible error -
-  // exactly the "froze, nothing happens" symptom. Wrapped so ANY onApply failure, whatever
-  // its cause, can never again leave the UI stuck - the correction was still applied locally
-  // (corrPick.set already ran), just not fully logged/synced, and the user now sees exactly
-  // that instead of silence.
+  // locally) by the time onApply runs. Two real problems found here, both now fixed:
+  // 1) if onApply threw synchronously, nothing after it ran - not the modal close, not the
+  //    toast, not the corrApplyBusy reset - leaving the Apply button permanently dead. Now
+  //    wrapped so any throw can't do that again.
+  // 2) Daily Sales' own write-back to the live table was fire-and-forget - a toast() call
+  //    replaces whatever toast is currently showing (single shared element, shared timer -
+  //    see toast()'s own body), so a failure toast arriving a moment after "Correction
+  //    logged \u2713" could get missed entirely or look like one confusing flash - confirmed live
+  //    2026-09-16, a genuine write failure went unnoticed through two separate attempts. A
+  //    caller can now RETURN a promise from onApply instead of firing it fire-and-forget;
+  //    corrApply waits for it before declaring success, and a rejection now shows a blocking
+  //    alert() (can't be missed, can't be overwritten by another toast) instead of a toast.
+  //    Every other caller here doesn't return anything, so this is a no-op for them - same
+  //    synchronous behavior as before.
+  var _corrFinish=function(){
+    document.getElementById('corrModal').classList.remove('show');
+    toast('Correction logged \u2713');
+    if(corrCfg.afterClose)corrCfg.afterClose();
+    corrCfg=null;corrAuth=null;corrPick=null;
+    setTimeout(function(){corrApplyBusy=false;},600);
+  };
+  var _corrFail=function(e){
+    console.error('corrApply: onApply failed:',e);
+    alert('Correction applied locally, but saving it failed:\n\n'+(e&&e.message?e.message:'unknown error')+'\n\nTry again, or tell your Manager/Owner this exact message.');
+    corrApplyBusy=false;
+    if(btn){btn.disabled=false;btn.style.opacity='1';}
+  };
+  var _corrResult;
   try{
-    corrCfg.onApply(sel,oldVal,newVal,reason,corrAuth);
+    _corrResult=corrCfg.onApply(sel,oldVal,newVal,reason,corrAuth);
   }catch(e){
-    console.error('corrApply: onApply threw:',e);
-    toast('Correction applied locally, but logging it failed: '+(e&&e.message?e.message:'unknown error'),true);
+    _corrFail(e);
+    return;
   }
-  document.getElementById('corrModal').classList.remove('show');
-  toast('Correction logged \u2713');
-  if(corrCfg.afterClose)corrCfg.afterClose();
-  corrCfg=null;corrAuth=null;corrPick=null;
-  setTimeout(function(){corrApplyBusy=false;},600);
+  if(_corrResult && typeof _corrResult.then==='function'){
+    _corrResult.then(_corrFinish,_corrFail);
+  } else {
+    _corrFinish();
+  }
 }
 // Pushes one applied correction into the shared day_closes.corrections array
 // (append-only under RLS + the immutable-guard trigger from Task 1 - only
@@ -11493,14 +11510,17 @@ function _correctSavedLineOpen(ds,rec){
       // live daily_sales table is the only place this figure is ever read from again (the
       // report, this same picker next time) - so the corrected lines array must be written
       // back there too, or the "correction" would silently vanish the next time anyone looks.
-      // .select() added so a zero-row match (wrong branch/date, or the row genuinely missing)
-      // surfaces as a visible error instead of PostgREST's default silent-success-on-no-match -
-      // exactly the failure mode that produced this bug report.
+      // .select() surfaces a zero-row match (wrong branch/date, or the row genuinely missing)
+      // instead of PostgREST's default silent-success-on-no-match. RETURNED (not fire-and-
+      // forget) so corrApply() actually waits for this before declaring success - see its own
+      // comment for why: a fire-and-forget toast here was getting silently overwritten by the
+      // very next toast() call (single shared toast element/timer), so a genuine failure went
+      // unnoticed twice live. A rejection here now surfaces as a blocking alert() instead.
       if(sel.section==='Daily Sales'){
-        sb.from('daily_sales').update({lines:rec.store._dailySales}).eq('branch',rec.branch).eq('date',ds).select().then(function(res2){
-          if(res2.error)toast('Correction saved locally, but could not sync to Daily Sales: '+res2.error.message,true);
-          else if(!res2.data||!res2.data.length)toast('Correction saved locally, but no matching Daily Sales record was found for '+rec.branch+' '+ds+' to update - it may not have synced',true);
-        },function(){toast('Correction saved locally, but a network error stopped it syncing to Daily Sales',true);});
+        return sb.from('daily_sales').update({lines:rec.store._dailySales}).eq('branch',rec.branch).eq('date',ds).select().then(function(res2){
+          if(res2.error)throw new Error('Daily Sales sync failed: '+res2.error.message);
+          if(!res2.data||!res2.data.length)throw new Error('No matching Daily Sales record found for '+rec.branch+' '+ds+' - nothing was updated');
+        });
       }
     },
     afterClose:function(){viewSavedDayNoAuth(ds);}
