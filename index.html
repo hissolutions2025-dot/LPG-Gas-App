@@ -12250,8 +12250,17 @@ function _nominalKg(sz){return FAULTY_NOMINAL[sz]||0;}
 function _massBalSold(openF,recvIn,refilled,faultyF,tIn,tOut,closeF){
   return openF+recvIn+refilled+tIn-tOut-closeF-faultyF;
 }
-function _massBalRecv(closeE,openE,sentOut,faultyE,tIn,tOut){
-  return closeE-openE+sentOut+faultyE+tOut-tIn;
+// Real bug, caught by the user 2026-09-16 ("full cylinders swapped out... adds to the total
+// of empty cylinder shell count"), confirmed by re-deriving this formula from scratch: a
+// refilled cylinder is drawn OUT of the Empty pool and converted to Full - it leaves the
+// empty count via a channel other than "still sitting there as a plain empty," exactly like
+// sentOut (sent back to a supplier), faultyE (pulled to the faulty register), or a transfer
+// out - all three of which this formula already adds back in for the same reason. Refilled
+// was the one channel missing - _estSold(sz)'s own refillCountBySize[sz] was already sitting
+// right next to this call, just never threaded through. Silently understated "Empties
+// returned" by exactly the refilled count on any day with refill activity.
+function _massBalRecv(closeE,openE,sentOut,refilled,faultyE,tIn,tOut){
+  return closeE-openE+sentOut+refilled+faultyE+tOut-tIn;
 }
 // Total kg of gas in FULL cylinders for one Stock Count stage ('Opening'|'Closing') - a tally
 // estimate (qty x nominal size for that size) since Count never weighs an individual cylinder,
@@ -12494,8 +12503,8 @@ function buildCountDocAsync(src){
     function _estRecvBack(sz,brand){
       var openE=brand?((counts.Opening.Empty[sz]&&counts.Opening.Empty[sz][brand])||0):totalOf(counts.Opening.Empty[sz]);
       var closeE=brand?((counts.Closing.Empty[sz]&&counts.Closing.Empty[sz][brand])||0):totalOf(counts.Closing.Empty[sz]);
-      var sentOut=(recvAgg[sz]&&recvAgg[sz].emptyOut)||0,faultyE=faultyEmptyBySize[sz]||0;
-      return _massBalRecv(closeE,openE,sentOut,faultyE,xfer.inEmptyBySize[sz]||0,xfer.outEmptyBySize[sz]||0);
+      var sentOut=(recvAgg[sz]&&recvAgg[sz].emptyOut)||0,faultyE=faultyEmptyBySize[sz]||0,refilled=refillCountBySize[sz]||0;
+      return _massBalRecv(closeE,openE,sentOut,refilled,faultyE,xfer.inEmptyBySize[sz]||0,xfer.outEmptyBySize[sz]||0);
     }
     var refillCountBySize={};
     (st.refill||[]).filter(inBr).forEach(function(r){refillCountBySize[r.size]=(refillCountBySize[r.size]||0)+1;});
@@ -13108,8 +13117,8 @@ function buildCountCSVAsync(src){
     function _estRecvBack(sz,brand){
       var openE=brand?((counts.Opening.Empty[sz]&&counts.Opening.Empty[sz][brand])||0):totalOf(counts.Opening.Empty[sz]);
       var closeE=brand?((counts.Closing.Empty[sz]&&counts.Closing.Empty[sz][brand])||0):totalOf(counts.Closing.Empty[sz]);
-      var sentOut=(recvAgg[sz]&&recvAgg[sz].emptyOut)||0,faultyE=faultyEmptyBySize[sz]||0;
-      return _massBalRecv(closeE,openE,sentOut,faultyE,xfer.inEmptyBySize[sz]||0,xfer.outEmptyBySize[sz]||0);
+      var sentOut=(recvAgg[sz]&&recvAgg[sz].emptyOut)||0,faultyE=faultyEmptyBySize[sz]||0,refilled=refillCountBySize[sz]||0;
+      return _massBalRecv(closeE,openE,sentOut,refilled,faultyE,xfer.inEmptyBySize[sz]||0,xfer.outEmptyBySize[sz]||0);
     }
     var pv=(st.private||[]).filter(inBr);
     var recvRows=(st.received||[]).filter(inBr);
