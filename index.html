@@ -12872,6 +12872,13 @@ function buildCountDocAsync(src){
     });
     if(salesSizes.length){
       var soldRowsHtml='',soldTotal=0,soldKg=0,recvBackRowsHtml='',recvBackTotal=0;
+      // Reported: "the report balances at Net cylinder exchange for today but it doesn't
+      // identify which size shells are over or under so we can compare with our count" - the
+      // total was already correct, but a manager physically reconciling shells needs it
+      // broken out per size, not just one combined number. Built from the exact same sold/
+      // received values the two tables above already compute per size - no new source of
+      // truth, just a third view of data already on the page.
+      var netRowsHtml='';
       var salesIsReal=!!dailySalesRow;
       var soldDiffFlags=[],recvDiffFlags=[];
       if(salesIsReal){
@@ -12899,6 +12906,9 @@ function buildCountDocAsync(src){
             '<td class="n" style="font-weight:800;color:'+(soldDiff===0?'#1E8449':'#C0392B')+'">'+(soldDiff>0?'+':'')+soldDiff+'</td></tr>';
           recvBackRowsHtml+='<tr><td class="sz">'+sz+'</td><td class="n"><b>'+received+'</b></td><td class="n" style="color:#8B96A3">'+estRecv+'</td>'+
             '<td class="n" style="font-weight:800;color:'+(recvDiff===0?'#1E8449':'#C0392B')+'">'+(recvDiff>0?'+':'')+recvDiff+'</td></tr>';
+          var sizeNet=received-sold;
+          netRowsHtml+='<tr><td class="sz">'+sz+'</td><td class="n">'+sold+'</td><td class="n">'+received+'</td>'+
+            '<td class="n" style="font-weight:800;color:'+(sizeNet<0?'#C0392B':(sizeNet>0?'#1E8449':'#1F3A5F'))+'">'+(sizeNet>0?'+':'')+sizeNet+'</td></tr>';
         });
       } else {
         salesSizes.forEach(function(sz){
@@ -12914,6 +12924,9 @@ function buildCountDocAsync(src){
           var received=_estRecvBack(sz);
           recvBackTotal+=received;
           recvBackRowsHtml+='<tr><td class="sz">'+sz+'</td><td class="n">'+closeE+'</td><td class="n">'+openE+'</td><td class="n">'+sentOut+'</td><td class="n">'+(tNetE>0?'+':'')+tNetE+'</td><td class="n">'+faultyE+'</td><td class="n"><b>'+received+'</b></td></tr>';
+          var sizeNet=received-sold;
+          netRowsHtml+='<tr><td class="sz">'+sz+'</td><td class="n">'+sold+'</td><td class="n">'+received+'</td>'+
+            '<td class="n" style="font-weight:800;color:'+(sizeNet<0?'#C0392B':(sizeNet>0?'#1E8449':'#1F3A5F'))+'">'+(sizeNet>0?'+':'')+sizeNet+'</td></tr>';
         });
       }
       var pvAllTot=pv.reduce(function(a,r){return a+num(r.pumped);},0); // both Us AND Supplier-filled - both are real sales, unlike the Manifold balance's Us-only filter
@@ -12950,6 +12963,11 @@ function buildCountDocAsync(src){
         '<h3 style="font-size:13px;color:#1F3A5F;margin:14px 0 4px">Empty cylinders received back'+(salesIsReal?'':' (estimate)')+'</h3>'+
         recvTableHtml+
         diffNote+partialNote+
+        '<h3 style="font-size:13px;color:#1F3A5F;margin:14px 0 4px">Cylinder Exchange by Size</h3>'+
+        '<div style="font-size:11px;color:#777;margin-bottom:4px">Net = Returned − Sold, per size - negative means that size\'s shell count went down today. Compare against your own physical count.</div>'+
+        '<table><tr><th>Size</th><th>Sold</th><th>Returned</th><th>Net</th></tr>'+netRowsHtml+
+        '<tr><td><b>Total</b></td><td class="n"><b>'+soldTotal+'</b></td><td class="n"><b>'+recvBackTotal+'</b></td>'+
+        '<td class="n" style="font-weight:800;color:'+(netExchange<0?'#C0392B':(netExchange>0?'#1E8449':'#1F3A5F'))+'">'+(netExchange>0?'+':'')+netExchange+'</td></tr></table>'+
         '<table style="margin-top:8px">'+
         '<tr><td>Estimated gas sold today</td><td class="n"><b>'+estSoldKgTotal.toFixed(2)+' kg</b></td></tr>'+
         '<tr><td style="font-size:11px;color:#777">'+soldKg.toFixed(2)+'kg from '+soldTotal+' cylinders ('+(salesIsReal?'captured':'\u2248 estimate')+') + '+pvAllTot.toFixed(2)+'kg Private Refill (exact, Us + Supplier-filled)</td><td></td></tr>'+
@@ -13381,6 +13399,11 @@ function buildCountCSVAsync(src){
       }
       blank();
       var recvBackRows=[];
+      // Reported: "the report balances at Net cylinder exchange for today but it doesn't
+      // identify which size shells are over or under so we can compare with our count" - see
+      // the HTML report's matching Cylinder Exchange by Size table's own comment. Same source
+      // data as the two tables above, just collected here for a per-size CSV section too.
+      var netRows=[];
       if(salesIsReal){
         row('Full cylinders sold');
         row('Size','Captured (Sold)','Estimated','Diff');
@@ -13406,6 +13429,8 @@ function buildCountCSVAsync(src){
           if(recvDiff!==0)recvDiffFlags.push(sz+': captured '+received+' vs estimated '+estRecv+' ('+(recvDiff>0?'+':'')+recvDiff+')');
           row(sz,sold,estSold,(soldDiff>0?'+':'')+soldDiff);
           recvBackRows.push([sz,received,estRecv,(recvDiff>0?'+':'')+recvDiff]);
+          var sizeNet=received-sold;
+          netRows.push([sz,sold,received,(sizeNet>0?'+':'')+sizeNet]);
         });
         row('Total units sold','',soldTotal,'','');
         blank();
@@ -13429,6 +13454,8 @@ function buildCountCSVAsync(src){
           var received=_estRecvBack(sz);
           recvBackTotal+=received;
           recvBackRows.push([sz,closeE,openE,sentOut,(tNetE>0?'+':'')+tNetE,faultyE,received]);
+          var sizeNet=received-sold;
+          netRows.push([sz,sold,received,(sizeNet>0?'+':'')+sizeNet]);
         });
         row('Total units sold','','','','','','',soldTotal);
         blank();
@@ -13448,6 +13475,11 @@ function buildCountCSVAsync(src){
       if(xfer.partialCount){
         row(xfer.partialCount+' cylinder(s) also moved via Stock Transfer in Used/Partial state today - not included in either table above.');
       }
+      blank();
+      row('Cylinder Exchange by Size (Net = Returned - Sold; negative = that size\'s shell count went down today)');
+      row('Size','Sold','Returned','Net');
+      netRows.forEach(function(r){row.apply(null,r);});
+      row('Total',soldTotal,recvBackTotal,(recvBackTotal-soldTotal>0?'+':'')+(recvBackTotal-soldTotal));
       var pvAllTot=pv.reduce(function(a,r){return a+num(r.pumped);},0);
       var pvUsTot=pv.filter(function(r){return r.filledBy!=='Supplier';}).reduce(function(a,r){return a+num(r.pumped);},0);
       var pvUsDisplay=(salesIsReal&&dailySalesRow.private_refill_kg!=null)?num(dailySalesRow.private_refill_kg):pvUsTot;
