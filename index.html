@@ -182,8 +182,17 @@
      else (.mField), so using it on a non-editable label was sending the wrong cue; the actual
      Sold/Returned inputs now use that same --yellow/bordered/rounded .mField look instead of a
      borderless transparent field that didn't read as tappable at a glance. */
-  .dsTable{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:10px;}
-  .dsTable th{text-align:center;color:var(--muted);font-weight:700;padding:8px 6px;border-bottom:1.5px solid var(--line);font-size:11px;text-transform:uppercase;letter-spacing:.3px;}
+  /* Sticky header, 2026-09-16 per explicit request: "Full Sold/Emp Return/Diff headings set
+     on screen and cyl size are scrollable" - the size/brand list can run to 20+ rows (every
+     size x every brand for the branch), so the column headers used to scroll away with the
+     rows, leaving you guessing which column was which partway down. #dsGrid becomes its own
+     bounded, internally-scrolling region (Branch above and Private Refill/Net Exchange/Commit
+     below stay in place, always reachable, not pushed off past a long list) - the header row
+     is pinned to the top of THAT scroll region via position:sticky, with an opaque background
+     so rows scrolling underneath don't show through it.*/
+  #dsGrid{max-height:min(58vh,460px);overflow-y:auto;-webkit-overflow-scrolling:touch;border:1.5px solid var(--line);border-radius:10px;}
+  .dsTable{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:0;}
+  .dsTable th{position:sticky;top:0;z-index:1;background:var(--card);text-align:center;color:var(--muted);font-weight:700;padding:8px 6px;border-bottom:1.5px solid var(--line);font-size:11px;text-transform:uppercase;letter-spacing:.3px;}
   .dsTable td{border-bottom:1px solid #EEF1F4;padding:7px 5px;text-align:center;}
   .dsTable tr.dsZero td{opacity:.55;}
   .dsTable td.dsSizeCell{background:var(--card);font-weight:800;color:var(--navy);text-align:left;padding-left:8px;}
