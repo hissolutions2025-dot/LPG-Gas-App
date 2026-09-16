@@ -230,6 +230,24 @@
      top of Stock Thresholds. */
   .threshFieldKg{font-size:10px;color:var(--muted);text-align:center;}
   .threshSizeTotal{margin-top:8px;padding-top:8px;border-top:1.5px solid var(--line);font-size:11.5px;color:var(--navy);font-weight:700;}
+  /* Brand Total Stock Hold Allowance (added 2026-09-17, per explicit request) - a single
+     manually-entered per-branch kg ceiling (the branch's actual storage/site licence limit),
+     checked against the sum of every configured Max Full Threshold (totalMaxKg, the same
+     number already shown in thresholdsSummary) so a manager sees at setup time - before any
+     stock is even counted - whether the per-size Max Full Thresholds they've configured add
+     up to more than the branch is licensed to hold. Thicker navy border deliberately sets it
+     apart from the per-size .threshCard rows below it. */
+  .allowanceBox{background:var(--card);border:2px solid var(--navy);border-radius:12px;padding:12px 14px;margin-bottom:14px;}
+  .allowanceBox h5{margin:0 0 8px;font-size:13px;color:var(--navy);font-weight:800;}
+  .allowanceNote{font-size:12.5px;font-weight:700;margin-top:8px;}
+  .allowanceNote.ok{color:var(--ok);}
+  .allowanceNote.over{color:var(--bad);}
+  .allowanceNote.off{color:var(--muted);font-weight:400;}
+  /* Update/Confirm button (added 2026-09-17, per explicit request) - Stock Thresholds and
+     Extra Allocation switched from push-to-Supabase-on-every-field-edit to local-only edits
+     that batch into a single sync when this is tapped, so a manager filling in many fields in
+     a row doesn't fire a network call per field. See thresholdsConfirm()/_threshMarkDirty(). */
+  .threshDirtyMsg{font-size:11.5px;margin:8px 0;font-weight:700;}
 
   /* ===== COUNT MODULE (grid -> detail) ===== */
   .cgControls{background:var(--card);border-bottom:1px solid var(--line);padding:14px 16px;position:sticky;top:66px;z-index:8;}
@@ -912,8 +930,11 @@
       <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Min Full Hold flags on the Home screen when today's Closing Full count drops below it. Max Full Threshold flags when today's Closing Full count goes OVER it - holding more stock than this branch is certified for.</div>
       <label class="mLabel">Branch</label>
       <select class="mField" id="thBranch" onchange="renderThresholds()"><option>Helderberg</option><option>Kleinmond</option></select>
+      <div id="thresholdsAllowanceBox" style="margin-top:12px"></div>
       <div id="thresholdsSummary" style="margin:10px 0"></div>
       <div id="thresholdsBody" style="margin-top:4px"></div>
+      <div id="threshDirtyMsg" class="threshDirtyMsg"></div>
+      <button class="saveBtn" onclick="thresholdsConfirm()">Update / Confirm</button>
     </div>
   </div>
 
@@ -931,6 +952,8 @@
       <select class="mField" id="eaBranch" onchange="renderExtraAlloc()"><option>Helderberg</option><option>Kleinmond</option></select>
       <div id="extraAllocSummary" style="margin:10px 0"></div>
       <div id="extraAllocBody" style="margin-top:4px"></div>
+      <div id="eaDirtyMsg" class="threshDirtyMsg"></div>
+      <button class="saveBtn" onclick="thresholdsConfirm()">Update / Confirm</button>
     </div>
   </div>
 
@@ -2663,8 +2686,11 @@ function _adminTabShow(t){
   var _tth=document.getElementById('atab-thresholds');if(_tth)_tth.classList.toggle('on',t==='thresholds');
   var _tea=document.getElementById('atab-extraalloc');if(_tea)_tea.classList.toggle('on',t==='extraalloc');
   if(t==='bsetup'){renderBsetup();_fetchAppConfig('branch_setup',bcfgSave).then(renderBsetup);}
-  if(t==='thresholds'){renderThresholds();_fetchAppConfig('stock_thresholds',thresholdsSave).then(renderThresholds);}
-  if(t==='extraalloc'){renderExtraAlloc();_fetchAppConfig('stock_thresholds',thresholdsSave).then(renderExtraAlloc);}
+  // Skip the server refetch while _threshDirty - the Update/Confirm button batches local
+  // edits now (see thresholdsSet), so pulling the server's older copy back over unconfirmed
+  // local changes here would silently wipe them out from under the manager.
+  if(t==='thresholds'){renderThresholds();if(!_threshDirty)_fetchAppConfig('stock_thresholds',thresholdsSave).then(renderThresholds);}
+  if(t==='extraalloc'){renderExtraAlloc();if(!_threshDirty)_fetchAppConfig('stock_thresholds',thresholdsSave).then(renderExtraAlloc);}
   if(t==='manifold')renderManifoldSlots();
   if(t==='clear'){var d=document.getElementById('clrDate');if(d&&!d.value)d.value=today;}
   if(t==='seals'){fillBrandPicker();renderRolls();_fetchSealLive(adminBranch).then(function(){renderRolls();renderUsedSeals();});}
@@ -2879,7 +2905,8 @@ function renderBsetup(){
 function renderThresholds(){
   var box=document.getElementById('thresholdsBody');if(!box)return;
   var sumEl=document.getElementById('thresholdsSummary');
-  if(!(role==='Owner'||perm('branch_setup'))){box.innerHTML='<div style="color:#9B2C2C;font-size:13px">You do not have Branch Setup rights.</div>';if(sumEl)sumEl.innerHTML='';return;}
+  var allowBox=document.getElementById('thresholdsAllowanceBox');
+  if(!(role==='Owner'||perm('branch_setup'))){box.innerHTML='<div style="color:#9B2C2C;font-size:13px">You do not have Branch Setup rights.</div>';if(sumEl)sumEl.innerHTML='';if(allowBox)allowBox.innerHTML='';return;}
   var br=document.getElementById('thBranch').value;
   var thItems=SECTION_ITEMS['count']||[];
   var thBrands=C_FULLBRANDS[br]||['Other'];
@@ -2907,8 +2934,8 @@ function renderThresholds(){
       var haveCls=overMax?'over':(underMin?'under':'');
       rowsHtml+='<div class="threshRow"><span class="threshBrand">'+brand+'</span>'+
         '<span class="threshHave '+haveCls+'" title="Today\'s Closing Full count">Full now<br><b>'+have+'</b>'+((overMax||underMin)?' ⚠':'')+'</span>'+
-        '<div class="threshField"><label>Min Full Hold</label><input type="number" min="0" value="'+th.minFullHold+'" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'minFullHold\',this.value)"><span class="threshFieldKg">'+minKg.toFixed(2)+' kg</span></div>'+
-        '<div class="threshField"><label>Max Full Threshold</label><input type="number" min="0" value="'+th.maxThreshold+'" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'maxThreshold\',this.value)"><span class="threshFieldKg">'+maxKg.toFixed(2)+' kg</span></div>'+
+        '<div class="threshField"><label>Min Full Hold</label><input type="number" min="0" value="'+th.minFullHold+'" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'minFullHold\',this.value);renderThresholds()"><span class="threshFieldKg">'+minKg.toFixed(2)+' kg</span></div>'+
+        '<div class="threshField"><label>Max Full Threshold</label><input type="number" min="0" value="'+th.maxThreshold+'" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'maxThreshold\',this.value);renderThresholds()"><span class="threshFieldKg">'+maxKg.toFixed(2)+' kg</span></div>'+
         '</div>';
     });
     html+='<div class="threshCard"><h5>'+it+' <span class="kg">('+kg+'kg each)</span></h5>'+rowsHtml+
@@ -2917,6 +2944,17 @@ function renderThresholds(){
   box.innerHTML=html;
   if(sumEl)sumEl.innerHTML='<div class="callout" style="font-weight:700">'+br+' totals across every configured size &amp; brand'+
     '<div style="font-weight:400;font-size:12px;margin-top:4px">Min Full Hold: <b>'+totalMinKg.toFixed(2)+' kg</b> &nbsp;&middot;&nbsp; Max Full Threshold: <b>'+totalMaxKg.toFixed(2)+' kg</b></div></div>';
+  if(allowBox){
+    var allowKg=thresholdsAllowance(br);
+    var noteHtml,noteCls;
+    if(allowKg<=0){noteCls='off';noteHtml='No allowance set for '+br+' — compliance check inactive.';}
+    else if(totalMaxKg>allowKg){noteCls='over';noteHtml='Configured Max Full Threshold total (<b>'+totalMaxKg.toFixed(2)+' kg</b>) is OVER the '+br+' allowance by <b>'+(totalMaxKg-allowKg).toFixed(2)+' kg</b>.';}
+    else{noteCls='ok';noteHtml='Configured Max Full Threshold total: <b>'+totalMaxKg.toFixed(2)+' kg</b> — OK, <b>'+(allowKg-totalMaxKg).toFixed(2)+' kg</b> headroom under the '+br+' allowance.';}
+    allowBox.innerHTML='<div class="allowanceBox"><h5>'+br+' Total Stock Hold Allowance</h5>'+
+      '<div class="threshField"><label>Allowance (kg)</label><input type="number" min="0" value="'+allowKg+'" onchange="setThresholdsAllowance(\''+br+'\',this.value)"></div>'+
+      '<div class="allowanceNote '+noteCls+'">'+noteHtml+'</div></div>';
+  }
+  _threshDirtyRefresh();
 }
 // Extra Allocation - own admin tab, per explicit request, connecting TWO replenishment
 // signals for the same underlying question ("does this branch need more cylinders allocated
@@ -2957,8 +2995,8 @@ function renderExtraAlloc(){
       var short=th.replenishBelow>0&&have<th.replenishBelow;
       rowsHtml+='<div class="threshRow"><span class="threshBrand">'+brand+'</span>'+
         '<span class="threshHave '+(short?'under':'')+'" title="Today\'s Full + Empty combined">Full+Empty now<br><b>'+have+'</b>'+(short?' ⚠':'')+'</span>'+
-        '<div class="threshField"><label>Extra Alloc. Threshold</label><input type="number" value="'+th.extraAllocThreshold+'" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'extraAllocThreshold\',this.value)"><span class="threshFieldKg">'+extraKg.toFixed(2)+' kg</span></div>'+
-        '<div class="threshField"><label>Replenish Below</label><input type="number" min="0" value="'+th.replenishBelow+'" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'replenishBelow\',this.value)"><span class="threshFieldKg">'+replenishKg.toFixed(2)+' kg</span></div>'+
+        '<div class="threshField"><label>Extra Alloc. Threshold</label><input type="number" value="'+th.extraAllocThreshold+'" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'extraAllocThreshold\',this.value);renderExtraAlloc()"><span class="threshFieldKg">'+extraKg.toFixed(2)+' kg</span></div>'+
+        '<div class="threshField"><label>Replenish Below</label><input type="number" min="0" value="'+th.replenishBelow+'" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'replenishBelow\',this.value);renderExtraAlloc()"><span class="threshFieldKg">'+replenishKg.toFixed(2)+' kg</span></div>'+
         '</div>';
     });
     html+='<div class="threshCard"><h5>'+it+' <span class="kg">('+kg+'kg each)</span></h5>'+rowsHtml+
@@ -2967,6 +3005,7 @@ function renderExtraAlloc(){
   box.innerHTML=html;
   if(sumEl)sumEl.innerHTML='<div class="callout" style="font-weight:700">'+br+' totals across every configured size &amp; brand'+
     '<div style="font-weight:400;font-size:12px;margin-top:4px">Extra Alloc. Threshold: <b>'+totalExtraKg.toFixed(2)+' kg</b> &nbsp;&middot;&nbsp; Replenish Below: <b>'+totalReplenishKg.toFixed(2)+' kg</b></div></div>';
+  _threshDirtyRefresh();
 }
 function renderManifoldSlots(){
   var box=document.getElementById('manifoldSlotsBody');if(!box)return;
@@ -3073,7 +3112,52 @@ function thresholdsSet(br,sz,brand,field,val){
   t[br][sz][brand]=t[br][sz][brand]||{minFullHold:0,extraAllocThreshold:0,maxThreshold:0,replenishBelow:0};
   t[br][sz][brand][field]=val;
   thresholdsSave(t);
-  _pushAppConfig('stock_thresholds',t);
+}
+// Brand Total Stock Hold Allowance (added 2026-09-17, per explicit request) - single
+// manually-entered per-branch kg ceiling, kept as its own top-level t.__allowance[branch] key
+// (NOT nested under t[br][sz][brand] like every other field here) so it can never collide with
+// a real cylinder size, and so it's invisible to every existing t[br]-keyed-by-size loop
+// (_minFullHoldShortages/_maxThresholdOverages/_replenishmentNeeded all do
+// Object.keys(thresholdsLoad()[br]).forEach(sz=>...) - adding a sibling non-size key there
+// would have silently fed it into those size/brand loops).
+function thresholdsAllowance(br){
+  var t=thresholdsLoad();
+  return (t.__allowance&&t.__allowance[br])||0;
+}
+function setThresholdsAllowance(br,val){
+  if(!(role==='Owner'||perm('branch_setup'))){toast('No Branch Setup rights',true);return;}
+  var n=num(val);if(n<0)n=0;
+  var t=thresholdsLoad();
+  t.__allowance=t.__allowance||{};
+  t.__allowance[br]=n;
+  thresholdsSave(t);
+  _threshMarkDirty();
+  renderThresholds();
+}
+// Update/Confirm button (added 2026-09-17, per explicit request) - Stock Thresholds and Extra
+// Allocation edits used to push to Supabase on every single field's onchange (one network call
+// per field). Now every edit only writes to localStorage (thresholdsSave, instant, no network)
+// and marks _threshDirty; nothing reaches Supabase until this is tapped, which pushes the
+// whole local thresholds blob in one call - both tabs share the one object/key
+// ('stock_thresholds'), so either tab's button covers edits made in both.
+var _threshDirty=false;
+function _threshMarkDirty(){
+  _threshDirty=true;
+  _threshDirtyRefresh();
+}
+function _threshDirtyRefresh(){
+  ['threshDirtyMsg','eaDirtyMsg'].forEach(function(id){
+    var el=document.getElementById(id);if(!el)return;
+    if(_threshDirty){el.textContent='Unsaved changes — tap Update / Confirm to sync';el.style.color='#B9761F';}
+    else{el.textContent='All changes saved';el.style.color='var(--muted)';}
+  });
+}
+function thresholdsConfirm(){
+  if(!(role==='Owner'||perm('branch_setup'))){toast('No Branch Setup rights',true);return;}
+  _pushAppConfig('stock_thresholds',thresholdsLoad());
+  _threshDirty=false;
+  _threshDirtyRefresh();
+  toast('Stock thresholds updated ✓');
 }
 function setThreshold(br,sz,brand,field,val){
   if(!(role==='Owner'||perm('branch_setup'))){toast('No Branch Setup rights',true);return;}
@@ -3081,7 +3165,7 @@ function setThreshold(br,sz,brand,field,val){
   // a stock count can't be negative; extraAllocThreshold is a negative tolerance, left as-is
   if((field==='minFullHold'||field==='maxThreshold'||field==='replenishBelow')&&n<0)n=0;
   thresholdsSet(br,sz,brand,field,n);
-  toast(sz+' ('+brand+') threshold updated');
+  _threshMarkDirty();
 }
 function doClearStockTake(){
   if(!perm('seal_edit_used') && role!=='Owner'){toast('Owner rights required',true);return;}
