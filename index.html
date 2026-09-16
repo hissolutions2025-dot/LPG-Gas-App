@@ -12865,7 +12865,18 @@ function buildCountDocAsync(src){
         salesSizes.forEach(function(sz){
           var l=_dsLinesBySize[sz]||{sold:0,returned:0};
           var sold=num(l.sold),received=num(l.returned);
-          var estSold=_estSold(sz,l.brand),estRecv=_estRecvBack(sz,l.brand);
+          // Real bug, per explicit user directive 2026-09-16: "cylinder brand full or empty
+          // does not play a role [in the day's report] - every cylinder should be accounted
+          // for... nothing must be excluded based on brand." Passing l.brand here scoped
+          // Opening/Closing Full/Empty to ONLY the Daily Sales line's own brand (Afrox),
+          // silently excluding any other brand's cylinders sitting in the same size (e.g. a
+          // stray Oryx 9kg empty) from the Estimate - confirmed live: Helderberg 9kg Closing
+          // Empty was 23 Afrox + 1 Oryx = 24 total, but the brand-scoped Estimate only ever
+          // saw 23, permanently landing 1 short of the real captured figure (9) no matter what
+          // was corrected elsewhere. Dropping the brand argument entirely - _estSold/
+          // _estRecvBack already fall back to totalOf(...) (every brand) when called without
+          // one, exactly the "units and kg's only" comparison this report is meant to be.
+          var estSold=_estSold(sz),estRecv=_estRecvBack(sz);
           var soldDiff=sold-estSold, recvDiff=received-estRecv;
           soldTotal+=sold;soldKg+=sold*_nominalKg(sz);
           recvBackTotal+=received;
@@ -13350,7 +13361,18 @@ function buildCountCSVAsync(src){
         salesSizes.forEach(function(sz){
           var l=_dsLinesBySize[sz]||{sold:0,returned:0};
           var sold=num(l.sold),received=num(l.returned);
-          var estSold=_estSold(sz,l.brand),estRecv=_estRecvBack(sz,l.brand);
+          // Real bug, per explicit user directive 2026-09-16: "cylinder brand full or empty
+          // does not play a role [in the day's report] - every cylinder should be accounted
+          // for... nothing must be excluded based on brand." Passing l.brand here scoped
+          // Opening/Closing Full/Empty to ONLY the Daily Sales line's own brand (Afrox),
+          // silently excluding any other brand's cylinders sitting in the same size (e.g. a
+          // stray Oryx 9kg empty) from the Estimate - confirmed live: Helderberg 9kg Closing
+          // Empty was 23 Afrox + 1 Oryx = 24 total, but the brand-scoped Estimate only ever
+          // saw 23, permanently landing 1 short of the real captured figure (9) no matter what
+          // was corrected elsewhere. Dropping the brand argument entirely - _estSold/
+          // _estRecvBack already fall back to totalOf(...) (every brand) when called without
+          // one, exactly the "units and kg's only" comparison this report is meant to be.
+          var estSold=_estSold(sz),estRecv=_estRecvBack(sz);
           var soldDiff=sold-estSold, recvDiff=received-estRecv;
           soldTotal+=sold;soldKg+=sold*_nominalKg(sz);
           recvBackTotal+=received;
