@@ -929,7 +929,8 @@
       <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Replenish Below flags on the Home screen when today's rotating stock (Full + Empty combined) for a size/brand drops below this target - prompting a request for extra allocation to replenish it. Extra Allocation Threshold is the separate net-cylinder-exchange creep tolerance used by the Date-Range Balance report's own "possible cylinder creep" flag.</div>
       <label class="mLabel">Branch</label>
       <select class="mField" id="eaBranch" onchange="renderExtraAlloc()"><option>Helderberg</option><option>Kleinmond</option></select>
-      <div id="extraAllocBody" style="margin-top:10px"></div>
+      <div id="extraAllocSummary" style="margin:10px 0"></div>
+      <div id="extraAllocBody" style="margin-top:4px"></div>
     </div>
   </div>
 
@@ -2927,30 +2928,45 @@ function renderThresholds(){
 //   size, not just full stock, since a shell rotates between both states - compared against a
 //   manually-set target. Drop below it and the Home screen prompts a manager to request extra
 //   allocation. Same 0-means-opted-out convention every other threshold here already uses.
+// kg totals added 2026-09-16, per explicit request ("Do the same for Extra Allocation") -
+// same three-level treatment Stock Thresholds already has (per-brand note under each field,
+// per-size card footer, per-branch grand total) - see renderThresholds' own matching comment.
+// extraAllocThreshold converts to kg the same mechanical way minFullHold/maxThreshold already
+// do (qty * nominal-kg-per-size) even though it's a rate/tolerance, not a stock level - this
+// already happened once, in this same summary, before Extra Allocation had its own tab.
 function renderExtraAlloc(){
   var box=document.getElementById('extraAllocBody');if(!box)return;
-  if(!(role==='Owner'||perm('branch_setup'))){box.innerHTML='<div style="color:#9B2C2C;font-size:13px">You do not have Branch Setup rights.</div>';return;}
+  var sumEl=document.getElementById('extraAllocSummary');
+  if(!(role==='Owner'||perm('branch_setup'))){box.innerHTML='<div style="color:#9B2C2C;font-size:13px">You do not have Branch Setup rights.</div>';if(sumEl)sumEl.innerHTML='';return;}
   var br=document.getElementById('eaBranch').value;
   var eaItems=SECTION_ITEMS['count']||[];
   var eaBrands=C_FULLBRANDS[br]||['Other'];
   var haveNow=_closingTotalBySizeBrand(br);
+  var totalExtraKg=0,totalReplenishKg=0;
   var html='';
   eaItems.forEach(function(it){
     var kg=_nominalKg(it);
-    html+='<div class="threshCard"><h5>'+it+' <span class="kg">('+kg+'kg each)</span></h5>';
+    var sizeExtraKg=0,sizeReplenishKg=0;
+    var rowsHtml='';
     eaBrands.forEach(function(brand){
       var th=thresholdFor(br,it,brand);
+      var extraKg=th.extraAllocThreshold*kg, replenishKg=th.replenishBelow*kg;
+      totalExtraKg+=extraKg;totalReplenishKg+=replenishKg;
+      sizeExtraKg+=extraKg;sizeReplenishKg+=replenishKg;
       var have=haveNow[it+'|'+brand]||0;
       var short=th.replenishBelow>0&&have<th.replenishBelow;
-      html+='<div class="threshRow"><span class="threshBrand">'+brand+'</span>'+
+      rowsHtml+='<div class="threshRow"><span class="threshBrand">'+brand+'</span>'+
         '<span class="threshHave '+(short?'under':'')+'" title="Today\'s Full + Empty combined">Full+Empty now<br><b>'+have+'</b>'+(short?' ⚠':'')+'</span>'+
-        '<div class="threshField"><label>Extra Alloc. Threshold</label><input type="number" value="'+th.extraAllocThreshold+'" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'extraAllocThreshold\',this.value)"></div>'+
-        '<div class="threshField"><label>Replenish Below</label><input type="number" min="0" value="'+th.replenishBelow+'" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'replenishBelow\',this.value)"></div>'+
+        '<div class="threshField"><label>Extra Alloc. Threshold</label><input type="number" value="'+th.extraAllocThreshold+'" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'extraAllocThreshold\',this.value)"><span class="threshFieldKg">'+extraKg.toFixed(2)+' kg</span></div>'+
+        '<div class="threshField"><label>Replenish Below</label><input type="number" min="0" value="'+th.replenishBelow+'" onchange="setThreshold(\''+br+'\',\''+it+'\',\''+brand+'\',\'replenishBelow\',this.value)"><span class="threshFieldKg">'+replenishKg.toFixed(2)+' kg</span></div>'+
         '</div>';
     });
-    html+='</div>';
+    html+='<div class="threshCard"><h5>'+it+' <span class="kg">('+kg+'kg each)</span></h5>'+rowsHtml+
+      '<div class="threshSizeTotal">'+it+' total &mdash; Extra Alloc. Threshold: <b>'+sizeExtraKg.toFixed(2)+' kg</b> &nbsp;&middot;&nbsp; Replenish Below: <b>'+sizeReplenishKg.toFixed(2)+' kg</b></div></div>';
   });
   box.innerHTML=html;
+  if(sumEl)sumEl.innerHTML='<div class="callout" style="font-weight:700">'+br+' totals across every configured size &amp; brand'+
+    '<div style="font-weight:400;font-size:12px;margin-top:4px">Extra Alloc. Threshold: <b>'+totalExtraKg.toFixed(2)+' kg</b> &nbsp;&middot;&nbsp; Replenish Below: <b>'+totalReplenishKg.toFixed(2)+' kg</b></div></div>';
 }
 function renderManifoldSlots(){
   var box=document.getElementById('manifoldSlotsBody');if(!box)return;
