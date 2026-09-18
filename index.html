@@ -10014,7 +10014,9 @@ function _renderCombinedTodayHtml(){
   if(sizesWith.length===0)html+='<div class="histEmpty">No count entered yet.</div>';
   else{
     html+='<table class="htable"><tr><th>Size</th><th>Open Full</th><th>Open Empty</th><th>Close Full</th><th>Close Empty</th></tr>';
+    var openFullTot=0,openEmptyTot=0;
     sizesWith.forEach(function(sz){
+      openFullTot+=totalOf(counts.Opening.Full[sz]);openEmptyTot+=totalOf(counts.Opening.Empty[sz]);
       html+='<tr><td><b>'+sz+'</b></td>'+
         '<td>'+brandLines(counts.Opening.Full[sz])+'</td>'+
         '<td>'+brandLines(counts.Opening.Empty[sz])+'</td>'+
@@ -10029,6 +10031,14 @@ function _renderCombinedTodayHtml(){
       '<td class="n">≈ '+_countFullKg(_histSt,null,'Closing').toFixed(2)+' kg</td>'+
       '<td class="n">≈ '+_countEmptyCapacityKg(_histSt,null,'Closing').toFixed(2)+' kg cap.</td></tr>';
     html+='</table><div style="font-size:11px;color:var(--muted);margin-top:6px">Opening and Closing are separate counts — never added together, and this is both branches summed together. Empty "kg cap." is what those shells could hold once refilled, not gas held now.</div>';
+    // Total cylinder shells (Opening), added 2026-09-18 for consistency with the single-branch
+    // PDF report's own Opening Count section (see countSection's matching comment) - Manifold
+    // (br=null, both branches combined via _manifoldOpeningSlotCount) added as a plain
+    // headcount alongside Full/Empty, same as everywhere else this figure appears; not folded
+    // into the table above (same anti-double-count reasoning).
+    function totalOf(obj){if(!obj)return 0;return Object.keys(obj).reduce(function(a,b){return a+obj[b];},0);}
+    var _combManSlots=_manifoldOpeningSlotCount(store,null);
+    html+='<div class="callout" style="margin-top:8px">Total cylinder shells (Opening, both branches): Full <b>'+openFullTot+'</b> + Empty <b>'+openEmptyTot+'</b> + Manifold <b>'+_combManSlots+'</b> = <b>'+(openFullTot+openEmptyTot+_combManSlots)+'</b><span class="note">Manifold cylinders on the manifold at Opening, counted by slot - not folded into the table above.</span></div>';
   }
   html+='</div>';
   html+='<div class="histSection"><h4>Manifold — Cylinder Weights</h4>';
