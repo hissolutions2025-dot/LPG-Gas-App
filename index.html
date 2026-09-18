@@ -9986,14 +9986,25 @@ function _openHistoryCombined(){
       // Fixed here for the combined view, and below for the single-branch view too.
       _refreshSharedCounts(br)
     ]);
-  })).then(function(){
+  // Faulty cylinders, both branches at once - added 2026-09-18 alongside the combined Net
+  // Cylinder Exchange section (_massBalSold/_massBalRecv both need faultyF/faultyE the same
+  // way the single-branch PDF report does). One apiPost('faultyListOpen',{}) call already
+  // returns every branch's open faulty rows - filtered by Status only here (no Branch filter,
+  // unlike _fetchFaultyHeld's single-branch version), stashed into _combinedFaultyRows for
+  // _renderCombinedTodayHtml (a synchronous render, same as everywhere else in this view) to
+  // read once this resolves.
+  })).then(function(){return apiPost('faultyListOpen',{});}).then(function(res){
+    _combinedFaultyRows=(res&&res.ok)?(res.rows||[]).filter(function(r){return r.Status==='Faulty-Held';}):[];
+  },function(){_combinedFaultyRows=[];}).then(function(){
     if(myToken!==_histCombinedToken)return; // a newer call (branch switch, re-open) already superseded this one
     if(histBranch!=='All'||!document.getElementById('historyView')||!document.getElementById('historyView').classList.contains('active'))return;
     document.getElementById('histBody').innerHTML=_renderCombinedTodayHtml();
   });
 }
 var _histCombinedToken=0;
+var _combinedFaultyRows=[];
 function _renderCombinedTodayHtml(){
+  function totalOf(obj){if(!obj)return 0;return Object.keys(obj).reduce(function(a,b){return a+obj[b];},0);}
   var counts=liveCounts(null);
   var man=liveManifold(null);
   var refillB=store.refill.filter(function(r){return true;}); // combined: every branch
@@ -10036,7 +10047,6 @@ function _renderCombinedTodayHtml(){
     // (br=null, both branches combined via _manifoldOpeningSlotCount) added as a plain
     // headcount alongside Full/Empty, same as everywhere else this figure appears; not folded
     // into the table above (same anti-double-count reasoning).
-    function totalOf(obj){if(!obj)return 0;return Object.keys(obj).reduce(function(a,b){return a+obj[b];},0);}
     var _combManSlots=_manifoldOpeningSlotCount(store,null);
     html+='<div class="callout" style="margin-top:8px">Total cylinder shells (Opening, both branches): Full <b>'+openFullTot+'</b> + Empty <b>'+openEmptyTot+'</b> + Manifold <b>'+_combManSlots+'</b> = <b>'+(openFullTot+openEmptyTot+_combManSlots)+'</b><span class="note">Manifold cylinders on the manifold at Opening, counted by slot - not folded into the table above.</span></div>';
   }
@@ -10101,6 +10111,55 @@ function _renderCombinedTodayHtml(){
     html+='<tr><td colspan="3"><b>Total kg pumped</b></td><td class="n"><b>'+privKg.toFixed(2)+'</b></td><td></td></tr></table>';
   }
   html+='</div>';
+  // Net Cylinder Exchange (estimate), both branches - added 2026-09-18 per explicit request
+  // ("build the combined Net Cylinder Exchange section"). Mass-balance ESTIMATE only (same
+  // _massBalSold/_massBalRecv the single-branch PDF report uses) - NOT the captured-Daily-
+  // Sales mode that report also supports, since merging two branches' Daily Sales entries and
+  // deciding what "captured" means when only one branch has entered theirs is genuinely
+  // separate scope (see _openHistoryCombined's own header comment on why this whole pipeline
+  // was deferred). Always labelled "(estimate)" so it reads the same as the single-branch
+  // report does whenever it's in estimate mode too - never presented as more authoritative
+  // than it is.
+  // No Transfer term (tIn=0/tOut=0 in both formulas below) - this app only has these two
+  // branches, so every Stock Transfer is between them; at the COMBINED level a transfer out
+  // of one branch is a transfer into the other, net zero. Unlike the single-branch report,
+  // where a transfer genuinely moves a shell in/out of what's being measured, it never affects
+  // company-wide totals here.
+  // Manifold folded into the sold-side baseline exactly like the single-branch report (see
+  // buildCountDocAsync's own matching comment) - both branches' Opening/Closing slot counts
+  // via br=null, every day, not conditioned on a swap.
+  var _neFaultyFullBySize={},_neFaultyEmptyBySize={};
+  _combinedFaultyRows.forEach(function(r){var sz=r.Size,q=num(r.Qty)||1;if(r.State==='Empty')_neFaultyEmptyBySize[sz]=(_neFaultyEmptyBySize[sz]||0)+q;else _neFaultyFullBySize[sz]=(_neFaultyFullBySize[sz]||0)+q;});
+  var _neRefillCountBySize={};
+  store.refill.forEach(function(r){_neRefillCountBySize[r.size]=(_neRefillCountBySize[r.size]||0)+1;});
+  var _neRecv=_receivedFromStore(store,null);
+  var _neSizes=ALLSIZES.filter(function(sz){return totalOf(counts.Opening.Full[sz])||totalOf(counts.Closing.Full[sz])||totalOf(counts.Opening.Empty[sz])||totalOf(counts.Closing.Empty[sz])||(_neRecv[sz]&&(_neRecv[sz].fullIn||_neRecv[sz].emptyOut))||_neRefillCountBySize[sz];});
+  if(_neSizes.length){
+    var _neSoldTotal=0,_neRecvTotal=0,_neRowsHtml='';
+    _neSizes.forEach(function(sz){
+      var openF=totalOf(counts.Opening.Full[sz]),closeF=totalOf(counts.Closing.Full[sz]);
+      var recvIn=(_neRecv[sz]&&_neRecv[sz].fullIn)||0,refilled=_neRefillCountBySize[sz]||0,faultyF=_neFaultyFullBySize[sz]||0;
+      var sold=_massBalSold(openF,recvIn,refilled,faultyF,0,0,closeF);
+      var openE=totalOf(counts.Opening.Empty[sz]),closeE=totalOf(counts.Closing.Empty[sz]);
+      var sentOut=(_neRecv[sz]&&_neRecv[sz].emptyOut)||0,faultyE=_neFaultyEmptyBySize[sz]||0;
+      var received=_massBalRecv(closeE,openE,sentOut,refilled,faultyE,0,0);
+      _neSoldTotal+=sold;_neRecvTotal+=received;
+      var sizeNet=received-sold;
+      _neRowsHtml+='<tr><td><b>'+sz+'</b></td><td class="n">'+sold+'</td><td class="n">'+received+'</td>'+
+        '<td class="n" style="font-weight:800;color:'+(sizeNet<0?'#C0392B':(sizeNet>0?'#1E8449':'#1F3A5F'))+'">'+(sizeNet>0?'+':'')+sizeNet+'</td></tr>';
+    });
+    var _neManOpen=_manifoldOpeningSlotCount(store,null),_neManClose=_manifoldClosingSlotCount(store,null);
+    var _neManAdj=_neManOpen-_neManClose;
+    _neSoldTotal+=_neManAdj;
+    var _neNet=_neRecvTotal-_neSoldTotal;
+    html+='<div class="histSection"><h4>Net Cylinder Exchange (estimate, both branches)</h4>'+
+      '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">Mass-balance estimate only - not Daily Sales captured (per-branch Daily Sales isn\'t combined here yet). No Stock Transfer adjustment: transfers only ever move shells between Helderberg and Kleinmond, so they net to zero across both branches combined.</div>'+
+      '<table class="htable"><tr><th>Size</th><th>Sold</th><th>Returned</th><th>Net</th></tr>'+_neRowsHtml+
+      '<tr><td><b>Total</b></td><td class="n"><b>'+_neSoldTotal+'</b></td><td class="n"><b>'+_neRecvTotal+'</b></td>'+
+      '<td class="n" style="font-weight:800;color:'+(_neNet<0?'#C0392B':(_neNet>0?'#1E8449':'#1F3A5F'))+'">'+(_neNet>0?'+':'')+_neNet+'</td></tr></table>'+
+      (_neManAdj?('<div style="font-size:11px;color:var(--muted);margin-top:6px">Includes Manifold in the Opening/Closing baseline: '+_neManOpen+' on the manifold at Opening − '+_neManClose+' at Closing = '+(_neManAdj>0?'+':'')+_neManAdj+' folded into Total sold above (both branches). Per-size rows do not reflect this, since manifold cylinders carry no size.</div>'):'')+
+      '<div style="font-size:11px;color:var(--muted);margin-top:6px">Net cylinder exchange: <b>'+(_neNet>0?'+':'')+_neNet+' shells</b> ('+_neRecvTotal+' received back − '+_neSoldTotal+' sold — negative means more shells left than came back today, both branches).</div></div>';
+  }
   return html;
 }
 // Print/Save-as-PDF for the Combined "All Branches" view - deliberately NOT a call into
