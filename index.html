@@ -11290,7 +11290,8 @@ function _photoQueueLoad(){
   catch(e){console.error('Photo upload queue was corrupted and could not be read:',e.message);return [];}
 }
 function _photoQueueSave(q){
-  try{localStorage.setItem(_photoQueueKey(),JSON.stringify(q));}catch(e){}
+  try{localStorage.setItem(_photoQueueKey(),JSON.stringify(q));}
+  catch(e){console.error('Could not save the photo upload queue:',e.message);}
 }
 // capType: 'manifold'|'refill'|'private'|'received'|'residual'
 // category: the same string uploadPhotoSet already takes (Manifold/Refill/Private/Received/Residual)
