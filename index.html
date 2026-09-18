@@ -11275,6 +11275,60 @@ function _updateCloseDayPendingBadge(){
     el.textContent=text;
   });
 }
+// ===== PHOTO UPLOAD QUEUE =====
+// Added 2026-09-18 - see docs/superpowers/specs/2026-09-18-photo-upload-queue-design.md.
+// Same local-queue + background-retry shape as the Close Day pending queue just above
+// (_closeDayQueueKey/_closeDayQueueLoad/_closeDayQueueSave/_closeDayFlushQueue) - not a new
+// pattern for this file, an extension of one already proven here. Holds already-resized
+// photos (see _resizeImageForCapture - resizing happens at capture time, unchanged; the
+// queue never stores an original multi-MB camera photo) for a row that has already
+// committed its actual data - a queue entry existing here never means data is at risk, only
+// that its photo(s) haven't finished uploading yet.
+function _photoQueueKey(){return 'gs_photo_upload_queue';}
+function _photoQueueLoad(){
+  try{return JSON.parse(localStorage.getItem(_photoQueueKey())||'[]');}
+  catch(e){console.error('Photo upload queue was corrupted and could not be read:',e.message);return [];}
+}
+function _photoQueueSave(q){
+  try{localStorage.setItem(_photoQueueKey(),JSON.stringify(q));}catch(e){}
+}
+// capType: 'manifold'|'refill'|'private'|'received'|'residual'
+// category: the same string uploadPhotoSet already takes (Manifold/Refill/Private/Received/Residual)
+// sheet: the sheet/tab name adjustSheetRow expects for this capType (null for residual - see
+// this plan's own "known gap" note; a null sheet means _photoQueueWriteBack skips the sheet
+// correction step and only updates the local copy, until the backend question is resolved)
+// linkField: the Sheet column name to write the joined links into (PhotoLinks/PhotoLink)
+// localField: the app-side row field the joined links go into (photoLinks/_photoLink)
+function _photoQueueAdd(entry){
+  var q=_photoQueueLoad();
+  entry.id='p'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
+  entry.attempts=0;entry.lastAttemptAt=null;entry.lastError=null;
+  q.push(entry);
+  _photoQueueSave(q);
+  _updatePhotoQueuePendingBadge();
+}
+function _photoQueueRemove(id){
+  var q=_photoQueueLoad().filter(function(e){return e.id!==id;});
+  _photoQueueSave(q);
+  _updatePhotoQueuePendingBadge();
+}
+function _photoQueueMarkAttempt(id,err){
+  var q=_photoQueueLoad();
+  var e=q.filter(function(x){return x.id===id;})[0];
+  if(!e)return;
+  e.attempts=(e.attempts||0)+1;e.lastAttemptAt=nowStamp();e.lastError=err||null;
+  _photoQueueSave(q);
+}
+function _updatePhotoQueuePendingBadge(){
+  var n=_photoQueueLoad().length;
+  var text=n?('⏳ '+n+' photo(s) waiting to upload'):'';
+  ['photoQueuePendingBadge','photoQueuePendingBadgeHistory'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(!el)return;
+    el.style.display=n?'block':'none';
+    el.textContent=text;
+  });
+}
 window.addEventListener('online',_closeDayFlushQueue);
 // Zeroes every capture area's leftover UNCOMMITTED draft for a branch+day, once Close Day is
 // done - committed rows were already cleared from store[k] (see the two call sites below),
