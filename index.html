@@ -8014,10 +8014,28 @@ function openCap(type,opts){
   // can never be saved - Private Refill gets the equivalent check at commit time instead (see
   // capCommit()), since its "Filled by: Us vs Supplier" choice only exists once the form is
   // already open, and only the Us-filled case actually needs this.
-  if(type==='refill' && !_manifoldOpeningDoneToday(_gateBr)){
-    toast('Manifold Opening hasn’t been captured yet for '+_gateBr+' today — Refill needs that first. Ask a Manager/Owner to do Manifold → Opening.',true);
-    return;
+  // Real bug, confirmed live 2026-09-18 ("app tells him Manifold is closed"): this check reads
+  // store.manifold, which only ever gets refreshed from Supabase by opening the Manifold
+  // screen itself (see the type==='manifold' fetch below) - a freshly-logged-in session (or
+  // one that never opened Manifold this session) has empty/stale local manifold data even
+  // though Manifold Opening was genuinely captured earlier today, by this operator or anyone
+  // else. Live-fetch here FIRST, then gate, instead of trusting whatever's already cached -
+  // best-effort (catch swallows a failed fetch rather than blocking the whole screen on a
+  // network hiccup, same as every other live-refresh in this file).
+  if(type==='refill'){
+    return _fetchManifoldLiveRows(_gateBr,today).catch(function(){}).then(function(){
+      if(!_manifoldOpeningDoneToday(_gateBr)){
+        toast('Manifold Opening hasn’t been captured yet for '+_gateBr+' today — Refill needs that first. Ask a Manager/Owner to do Manifold → Opening.',true);
+        return;
+      }
+      return _openCapContinue(type,opts);
+    });
   }
+  return _openCapContinue(type,opts);
+}
+// Split out of openCap() so the Refill-only Manifold-Opening gate above can run its own live
+// fetch first (async) without duplicating everything that follows - see openCap's own comment.
+function _openCapContinue(type,opts){
   // Returns its promise so a caller like _fixManifoldReading can safely chain work that
   // depends on capType/capBranch/toggleSel having actually been set, instead of racing ahead
   // of this async setup.
@@ -9687,7 +9705,7 @@ function capReviewHTML(type){
   return '<table class="htable"><tr><th></th>'+capReviewCols(type).map(function(c){return '<th>'+c.label+'</th>';}).join('')+'</tr>'+
     rows.map(function(r){
       var tag=r._committed?'<span style="color:var(--ok);font-weight:800">✓</span>':'<span style="color:var(--amber);font-weight:800">new</span>';
-      return '<tr'+(r._committed?' style="opacity:.7"':'')+'><td>'+tag+'</td>'+capReviewCols(type).map(function(c){var v=r[c.k];if(c.k==='photo'){var ph=Array.isArray(v)?v:(v?[v]:[]);return '<td>'+(ph.length?ph.map(function(s){return '<img src="'+s+'" style="max-height:40px;border-radius:4px;margin:1px">';}).join(''):'—')+'</td>';}return '<td>'+(v===undefined||v===''||v===null?'—':v)+'</td>';}).join('')+'</tr>';
+      return '<tr'+(r._committed?' style="opacity:.7"':'')+'><td>'+tag+'</td>'+capReviewCols(type).map(function(c){var v=r[c.k];if(c.photo){var ph=Array.isArray(v)?v:(v?[v]:[]);return '<td>'+(ph.length?ph.map(function(s){return '<img src="'+s+'" style="max-height:40px;border-radius:4px;margin:1px">';}).join(''):'—')+'</td>';}return '<td>'+(v===undefined||v===''||v===null?'—':v)+'</td>';}).join('')+'</tr>';
     }).join('')+
     '</table><div style="font-size:12px;color:var(--muted);margin-top:8px">'+newCount+' new entry(ies) will be committed'+(committedCount?' · '+committedCount+' already committed today':'')+'.</div>';
 }
@@ -9695,9 +9713,17 @@ function capReviewCols(type){
   // 'stage' (Opening/Added/Closing) is already on every row - capReview()'s toggle-extra
   // logic sets it from the toggle bucket key - it just was never shown in Review, so a
   // cylinder's stage was invisible right up until commit.
-  if(type==='manifold')return [{k:'stage',label:'Stage'},{k:'cyl',label:'Cylinder'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'gasLeft',label:'Gas left kg'},{k:'cylState',label:'Condition'},{k:'notes',label:'Note'},{k:'photo',label:'Photo'}];
+  if(type==='manifold')return [{k:'stage',label:'Stage'},{k:'cyl',label:'Cylinder'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'gasLeft',label:'Gas left kg'},{k:'cylState',label:'Condition'},{k:'notes',label:'Note'},{k:'photo',label:'Photo',photo:true}];
   if(type==='refill')return [{k:'size',label:'Size'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'pumped',label:'Pumped kg'},{k:'seal',label:'Seal #'},{k:'notes',label:'Notes'}];
-  if(type==='private')return [{k:'cylBrand',label:'Cyl brand'},{k:'otherBrand',label:'Other name'},{k:'gasType',label:'Gas'},{k:'pumped',label:'kg'},{k:'customer',label:'Customer / notes'},{k:'filledBy',label:'Filled by'},{k:'fillSupplier',label:'Supplier'},{k:'fillSupplierOther',label:'Other supplier'},{k:'invoiceNo',label:'Invoice #'},{k:'supplierPhoto',label:'Photo'}];
+  // Real bug, confirmed live 2026-09-18 ("pictures also don't want to load from the private
+  // refills"): the renderer below used to check c.k==='photo' specifically - Private's own
+  // photo field is keyed 'supplierPhoto' (see the popup field definition and photoKey in
+  // capCommit()'s photo-upload block, both named this deliberately to distinguish it from
+  // Manifold/Refill's plain 'photo'), so that check was always false here and its photos fell
+  // through to the generic column renderer, printing the raw array of data-URI strings as
+  // text instead of <img> tags. Now marked by a semantic photo:true flag instead of a
+  // hardcoded key name, so it works regardless of which key a capture type's photo field uses.
+  if(type==='private')return [{k:'cylBrand',label:'Cyl brand'},{k:'otherBrand',label:'Other name'},{k:'gasType',label:'Gas'},{k:'pumped',label:'kg'},{k:'customer',label:'Customer / notes'},{k:'filledBy',label:'Filled by'},{k:'fillSupplier',label:'Supplier'},{k:'fillSupplierOther',label:'Other supplier'},{k:'invoiceNo',label:'Invoice #'},{k:'supplierPhoto',label:'Photo',photo:true}];
   return [{k:'item',label:'Item'},{k:'brand',label:'Brand'}];
 }
 function capBackFromReview(){show('capView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);}
@@ -9733,14 +9759,23 @@ async function capCommit(){
   // before Opening got captured); Private Refill only when "Filled by: Us" is chosen, since a
   // Supplier-filled one never touches this branch's manifold at all. Checked here, not at
   // open time, because Private's Us/Supplier choice only exists once the form is open.
-  if((capType==='refill'||capType==='private') && !_manifoldOpeningDoneToday(capBranch)){
-    var _blockingUsLine=(capType==='refill')?true:(function(){
-      var _bucket=dataBucket();
-      return Object.keys(_bucket).some(function(item){return (_bucket[item]||[]).some(function(l){return l.filledBy!=='Supplier';});});
-    })();
-    if(_blockingUsLine){
-      toast('Manifold Opening hasn’t been captured yet for '+capBranch+' today — '+(capType==='refill'?'Refill':'a Private Refill filled by us')+' needs that first. Ask a Manager/Owner to do Manifold → Opening.',true);
-      return;
+  if(capType==='refill'||capType==='private'){
+    // Real bug, confirmed live 2026-09-18 ("app tells him Manifold is closed" on Private
+    // Refill): _manifoldOpeningDoneToday reads store.manifold, which this screen never
+    // refreshes from Supabase on its own (only openCap('manifold') does) - a freshly-logged-
+    // in session, or one that never opened Manifold this session, has empty/stale local
+    // manifold data even though Opening was genuinely captured earlier today. Live-fetch
+    // here FIRST, then gate - same fix as openCap's own Refill-at-open-time check.
+    await _fetchManifoldLiveRows(capBranch,today).catch(function(){});
+    if(!_manifoldOpeningDoneToday(capBranch)){
+      var _blockingUsLine=(capType==='refill')?true:(function(){
+        var _bucket=dataBucket();
+        return Object.keys(_bucket).some(function(item){return (_bucket[item]||[]).some(function(l){return l.filledBy!=='Supplier';});});
+      })();
+      if(_blockingUsLine){
+        toast('Manifold Opening hasn’t been captured yet for '+capBranch+' today — '+(capType==='refill'?'Refill':'a Private Refill filled by us')+' needs that first. Ask a Manager/Owner to do Manifold → Opening.',true);
+        return;
+      }
     }
   }
   if(!_checkCapTimeWarning())return; // modal shown (Manifold Opening/Closing only); it calls _capCommitReal() itself if continued
