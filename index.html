@@ -12662,6 +12662,23 @@ function _manifoldClosingSlotCount(st,br){
   });
   return Object.keys(seen).length;
 }
+// Mirrors _manifoldClosingSlotCount for the Opening stage - added 2026-09-18, per explicit
+// request ("Should Opening also include manifold shells then? Yes, because we manage shells
+// and gas separately as well"). Shells and gas ARE managed separately (see countSection's own
+// shell-count callout below, kept apart from its gas-kg callouts) - what was missing was an
+// Opening-side shell headcount to go with it, matching what Grand Totals already gives
+// Closing. Does NOT fold into the Full/Empty count table itself - that was deliberately
+// rejected 2026-09-09 (see the "Manifold cylinders, right after the count tables" comment) as
+// double-counting a cylinder that isn't sitting in regular Full/Empty stock.
+function _manifoldOpeningSlotCount(st,br){
+  var seen={};
+  (st.manifold||[]).forEach(function(r){
+    if(r.branch&&br&&r.branch!==br)return;
+    if((r.stage||'Opening')!=='Opening')return;
+    seen[r.cyl]=true;
+  });
+  return Object.keys(seen).length;
+}
 // Residual Gas rows use capitalised .Branch/.Residual (unlike every other store array's
 // lowercase .branch) - see residualSubmit()'s own row shape, this matches it exactly. Kept
 // as its own figure everywhere it's used (never folded into the main gas total) - see the
@@ -12990,8 +13007,10 @@ function buildCountDocAsync(src){
       var szs=ALLSIZES.filter(function(sz){return data.Full[sz]||data.Empty[sz];});
       if(szs.length===0)return '';
       var showPrev=(stage==='Opening')&&_hasPrevClose;
+      var stageFullTot=0,stageEmptyTot=0;
       var trs=szs.map(function(sz){
         var fullTot=totalOf(data.Full[sz]),emptyTot=totalOf(data.Empty[sz]);
+        stageFullTot+=fullTot;stageEmptyTot+=emptyTot;
         return '<tr><td class="sz">'+sz+'</td><td>'+cell(data.Full[sz])+'</td><td class="n">'+fullTot+'</td>'+
           (showPrev?_diffCell(fullTot,_prevCloseTotal(prevCloseExp,sz,'Full')):'')+
           '<td>'+cell(data.Empty[sz])+'</td><td class="n">'+emptyTot+'</td>'+
@@ -13003,9 +13022,19 @@ function buildCountDocAsync(src){
         '<th>Empty \u2014 by brand</th><th>Empty total</th>'+
         (showPrev?'<th>Prev Close (Empty)</th><th>Diff</th>':'')+
         '</tr>';
+      // Opening shell-count callout, added 2026-09-18 per explicit request - shells and gas
+      // are tracked separately (see the two gas-kg callouts just below), so Opening gets its
+      // own shell headcount here too, same as Closing already has via Grand Totals. Manifold
+      // is added as a plain headcount only, same "cylinder on the manifold isn't sitting in
+      // regular Full/Empty stock" reasoning as Grand Totals' Closing figure - it is NOT folded
+      // into the Full/Empty table above (that was deliberately rejected 2026-09-09 as
+      // double-counting).
+      var openManSlots=stage==='Opening'?_manifoldOpeningSlotCount(st,_b):0;
+      var openShellTotal=stageFullTot+stageEmptyTot+openManSlots;
       return '<h2>'+label+' Count</h2>'+
         '<table>'+head+trs+'</table>'+
         (stage==='Opening'&&!_hasPrevClose?'<p style="font-size:11px;color:#B9761F;margin:2px 0 8px">No previous day\'s Closing count found for '+_b+' \u2014 nothing to compare Opening against.</p>':'')+
+        (stage==='Opening'?('<div class="callout">Total cylinder shells (Opening): Full <b>'+stageFullTot+'</b> + Empty <b>'+stageEmptyTot+'</b> + Manifold <b>'+openManSlots+'</b> = <b>'+openShellTotal+'</b><span class="note">Manifold cylinders on the manifold at Opening, counted by slot - not folded into the Full/Empty table above.</span></div>'):'')+
         '<div class="callout">Total gas in Full cylinders ('+label+'): <b>\u2248 '+_countFullKg(st,_b,stage).toFixed(2)+' kg</b></div>'+
         '<div class="callout">Total gas capacity of Empty cylinders ('+label+'): <b>\u2248 '+_countEmptyCapacityKg(st,_b,stage).toFixed(2)+' kg</b><span class="note">What these shells could take once refilled, not gas held now.</span></div>';
     }
@@ -13587,14 +13616,26 @@ function buildCountCSVAsync(src){
       section(label+' Count');
       if(showPrev)row('Size','Full - by brand','Full total','Prev Close (Full)','Diff','Empty - by brand','Empty total','Prev Close (Empty)','Diff');
       else row('Size','Full - by brand','Full total','Empty - by brand','Empty total');
+      var stageFullTot=0,stageEmptyTot=0;
       szs.forEach(function(sz){
         var fullTot=totalOf(data.Full[sz]),emptyTot=totalOf(data.Empty[sz]);
+        stageFullTot+=fullTot;stageEmptyTot+=emptyTot;
         if(showPrev){
           var pf=_prevCloseTotal(prevCloseExp,sz,'Full'),pe=_prevCloseTotal(prevCloseExp,sz,'Empty');
           row(sz,brandStr(data.Full[sz]),fullTot,pf,fullTot-pf,brandStr(data.Empty[sz]),emptyTot,pe,emptyTot-pe);
         } else row(sz,brandStr(data.Full[sz]),fullTot,brandStr(data.Empty[sz]),emptyTot);
       });
       if(stage==='Opening'&&!hasPrevClose)row('Note','No previous day\'s Closing count found for '+_b+' - nothing to compare Opening against.');
+      // Opening shell-count row, added 2026-09-18 per explicit request - see the HTML report's
+      // matching countSection comment for the full reasoning (shells/gas tracked separately,
+      // Manifold added as a headcount only, not folded into the Full/Empty rows above).
+      if(stage==='Opening'){
+        var openManSlots=_manifoldOpeningSlotCount(st,_b);
+        row('Opening shells - Full',stageFullTot);
+        row('Opening shells - Empty',stageEmptyTot);
+        row('Opening shells - Manifold',openManSlots);
+        row('Total cylinder shells (Opening)',stageFullTot+stageEmptyTot+openManSlots);
+      }
       row('Total gas in Full cylinders ('+label+', kg)',_countFullKg(st,_b,stage).toFixed(2));
       row('Total gas capacity of Empty cylinders ('+label+', kg)',_countEmptyCapacityKg(st,_b,stage).toFixed(2));
     }
