@@ -11348,6 +11348,70 @@ function _updatePhotoQueuePendingBadge(){
     el.textContent=text;
   });
 }
+// Per-capType sheet/field mapping for photo write-back. sheet:null means "no known sheet-
+// level correction path yet" (Residual - see this plan's own "known gap" note); the write-
+// back still updates the local copy and (for the 4 with a mirror table) the live mirror, it
+// just skips the adjustSheetRow call for residual until the backend question is settled.
+var PHOTO_QUEUE_SHEET={manifold:'Manifold',refill:'Refills',private:'Private',received:'Received',residual:null};
+var PHOTO_QUEUE_LINK_FIELD={manifold:'PhotoLink',refill:'PhotoLink',private:'PhotoLinks',received:'PhotoLinks',residual:'PhotoLinks'};
+var PHOTO_QUEUE_LOCAL_FIELD={manifold:'_photoLink',refill:'_photoLink',private:'photoLinks',received:'photoLinks',residual:'photoLinks'};
+// Writes an uploaded photo link set back onto an already-committed row, three places: the
+// local copy (so Review/History shows it immediately without waiting on anything else), the
+// Sheet row in place (adjustSheetRow - same mechanism the same-day Adjust tool already uses,
+// skipped when PHOTO_QUEUE_SHEET has no entry for this capType), and the live Supabase
+// mirror (manifold_live_rows for manifold, capture_live_rows for the rest) so another device
+// sees it today too, not just after Close Day's snapshot.
+function _photoQueueWriteBack(entry,links){
+  var localField=PHOTO_QUEUE_LOCAL_FIELD[entry.capType];
+  var row=(store[entry.capType]||[]).filter(function(r){return r._rid===entry.rowRid;})[0];
+  if(row)row[localField]=links;
+  saveWorkingStore();
+  var sheet=PHOTO_QUEUE_SHEET[entry.capType];
+  if(sheet){
+    var linkField=PHOTO_QUEUE_LINK_FIELD[entry.capType];
+    var updates={};updates[linkField]=links;
+    adjustSheetRow(sheet,entry.rowRid,updates);
+  }
+  if(entry.capType==='manifold'){
+    return _updateManifoldLiveRowFields(entry.rowRid,{_photoLink:links});
+  }
+  return _updateCaptureLiveRowFields(entry.capType,entry.rowRid,{_committed:true,photoLinks:links});
+}
+// Processes one queue entry at a time (never parallel - a burst of retries hitting the same
+// flaky connection at once helps nobody). uploadPhotoSet already skips any individual photo
+// that fails and returns whatever DID succeed joined together - an empty return with photos
+// present means everything failed this attempt (kept queued, retried later); any non-empty
+// return is treated as this entry's best achievable result and the entry is removed, matching
+// the exact same "partial success is still success" behavior the old at-commit-time blocking
+// path already had (this isn't a new leniency, just preserving what existed).
+var _photoQueueBusy=false;
+function _photoQueueProcess(){
+  if(_photoQueueBusy)return;
+  var q=_photoQueueLoad();
+  if(!q.length)return;
+  var entry=q[0];
+  _photoQueueBusy=true;
+  uploadPhotoSet(entry.category,entry.branch,entry.photos).then(function(links){
+    if(!links){
+      _photoQueueMarkAttempt(entry.id,'no photo(s) uploaded this attempt');
+      _photoQueueBusy=false;
+      return;
+    }
+    return _photoQueueWriteBack(entry,links).then(function(){
+      _photoQueueRemove(entry.id);
+      _photoQueueBusy=false;
+      _photoQueueProcess(); // keep going while there's more queued
+    });
+  }).catch(function(e){
+    _photoQueueMarkAttempt(entry.id,e&&e.message);
+    _photoQueueBusy=false;
+  });
+}
+// Retry triggers - online reconnect (same event the Close Day queue already listens for),
+// and a periodic tick that only does anything while the queue is non-empty (no polling once
+// it's empty). Also called once more from doLogin()/_finishLogin() in Task 4.
+window.addEventListener('online',_photoQueueProcess);
+setInterval(function(){if(_photoQueueLoad().length)_photoQueueProcess();},45000);
 window.addEventListener('online',_closeDayFlushQueue);
 // Zeroes every capture area's leftover UNCOMMITTED draft for a branch+day, once Close Day is
 // done - committed rows were already cleared from store[k] (see the two call sites below),
