@@ -10162,27 +10162,199 @@ function _renderCombinedTodayHtml(){
   }
   return html;
 }
-// Print/Save-as-PDF for the Combined "All Branches" view - deliberately NOT a call into
-// buildCountDocAsync (that report's whole pipeline - activity log, faulty cylinders, daily
-// sales, transfers - is single-branch only and combining it properly is separate work, see
-// _renderCombinedTodayHtml's own header comment). This just takes the exact HTML already
-// rendered on screen (already verified correct) and opens it in a plain print-friendly
-// window using the app's OWN stylesheet (so .histSection/.htable etc render identically to
-// what's already visible), then hands off to the browser's native print-to-PDF - same
-// approach _openDocAsync uses for the real PDF reports, minus building a second copy of the
-// document from scratch.
+// Builds the Combined "All Branches" report as its own standalone document, in the exact
+// same visual language as the single-branch PDF report (buildCountDocAsync) - added
+// 2026-09-18, per explicit request ("look, layout and feel needs to be aligned with the
+// branch reports"). Before this, printCombinedReport() just printed whatever the live
+// History screen happened to have rendered (.histSection cards, .htable tables - the
+// in-app screen's own look, appropriate for a screen sitting next to Today/History tabs and
+// branch toggle buttons, but not what a "report" is supposed to look like next to the
+// single-branch one). This instead reuses buildCountDocAsync's own <style> block verbatim
+// (same .page/.banner/.summary/.stat tile grid/h2/h3/table/.callout rules - not "similar",
+// literally the same CSS string) and its same document shape: gradient banner header, a
+// summary tile row, then h2-titled sections with plain tables. Still deliberately NOT a call
+// into buildCountDocAsync itself (see _renderCombinedTodayHtml's own header comment - that
+// whole pipeline is genuinely single-branch: activity log, real Daily Sales, faulty
+// cylinders scoped per branch, transfers). The underlying NUMBERS are unchanged from what
+// _renderCombinedTodayHtml already computes and the live "All Branches" screen already shows
+// (Manifold folded into Net Cylinder Exchange's Opening/Closing baseline, br=null combined
+// helpers throughout) - this only changes how they're laid out for print/PDF.
+function buildCombinedReportHtml(){
+  var counts=liveCounts(null);
+  var man=liveManifold(null);
+  var bal=_manifoldBalFromStore(store,null);
+  var recv=_receivedFromStore(store,null);
+  var refillB=store.refill.slice();
+  var privateB=store.private.slice();
+  var refKg=refillB.reduce(function(a,r){return a+num(r.pumped);},0);
+  var privKg=privateB.reduce(function(a,r){return a+num(r.pumped);},0);
+  var openFullTot=0,openEmptyTot=0,closeFullTot=0,closeEmptyTot=0;
+  ALLSIZES.forEach(function(sz){
+    openFullTot+=totalOfSizeMap(counts.Opening.Full[sz]||{});openEmptyTot+=totalOfSizeMap(counts.Opening.Empty[sz]||{});
+    closeFullTot+=totalOfSizeMap(counts.Closing.Full[sz]||{});closeEmptyTot+=totalOfSizeMap(counts.Closing.Empty[sz]||{});
+  });
+  var manOpenSlots=_manifoldOpeningSlotCount(store,null),manCloseSlots=_manifoldClosingSlotCount(store,null);
+  var shellTotalOpen=openFullTot+openEmptyTot+manOpenSlots;
+  var faultyFullBySize={},faultyEmptyBySize={};
+  _combinedFaultyRows.forEach(function(r){var sz=r.Size,q=num(r.Qty)||1;if(r.State==='Empty')faultyEmptyBySize[sz]=(faultyEmptyBySize[sz]||0)+q;else faultyFullBySize[sz]=(faultyFullBySize[sz]||0)+q;});
+  var refillCountBySize={};
+  refillB.forEach(function(r){refillCountBySize[r.size]=(refillCountBySize[r.size]||0)+1;});
+  var neSizes=ALLSIZES.filter(function(sz){return totalOfSizeMap(counts.Opening.Full[sz]||{})||totalOfSizeMap(counts.Closing.Full[sz]||{})||totalOfSizeMap(counts.Opening.Empty[sz]||{})||totalOfSizeMap(counts.Closing.Empty[sz]||{})||(recv[sz]&&(recv[sz].fullIn||recv[sz].emptyOut))||refillCountBySize[sz];});
+  var netRowsHtml='',soldTotal=0,recvTotal=0;
+  neSizes.forEach(function(sz){
+    var openF=totalOfSizeMap(counts.Opening.Full[sz]||{}),closeF=totalOfSizeMap(counts.Closing.Full[sz]||{});
+    var recvIn=(recv[sz]&&recv[sz].fullIn)||0,refilled=refillCountBySize[sz]||0,faultyF=faultyFullBySize[sz]||0;
+    var sold=_massBalSold(openF,recvIn,refilled,faultyF,0,0,closeF);
+    var openE=totalOfSizeMap(counts.Opening.Empty[sz]||{}),closeE=totalOfSizeMap(counts.Closing.Empty[sz]||{});
+    var sentOut=(recv[sz]&&recv[sz].emptyOut)||0,faultyE=faultyEmptyBySize[sz]||0;
+    var received=_massBalRecv(closeE,openE,sentOut,refilled,faultyE,0,0);
+    soldTotal+=sold;recvTotal+=received;
+    var sizeNet=received-sold;
+    netRowsHtml+='<tr><td class="sz">'+sz+'</td><td class="n">'+sold+'</td><td class="n">'+received+'</td>'+
+      '<td class="n" style="font-weight:800;color:'+(sizeNet<0?'#C0392B':(sizeNet>0?'#1E8449':'#1F3A5F'))+'">'+(sizeNet>0?'+':'')+sizeNet+'</td></tr>';
+  });
+  var manAdj=manOpenSlots-manCloseSlots;
+  soldTotal+=manAdj;
+  var netExchange=recvTotal-soldTotal;
+  var summaryTiles=[
+    {label:'Total Cylinder Shells (Opening)',val:String(shellTotalOpen),cls:'',sub:'Full '+openFullTot+' + Empty '+openEmptyTot+' + Manifold '+manOpenSlots+', both branches'},
+    {label:'Net Cylinder Exchange',val:(netExchange>0?'+':'')+netExchange+' shells',cls:'',sub:recvTotal+' est. received back − '+soldTotal+' est. sold'},
+    {label:'Manifold Balance',val:bal.hasData?((bal.diff>0?'+':'')+bal.diff.toFixed(2)+' kg'):'—',cls:bal.hasData?(bal.balanced?'ok':'bad'):'',sub:bal.hasData?(bal.balanced?'Balanced':'Needs review'):'No manifold activity'},
+    {label:'Total Gas Capacity — Empty Cylinders',val:_countEmptyCapacityKg({count:store.count},null,'Closing').toFixed(2)+' kg',cls:'',sub:'Closing — what these shells could take once refilled'},
+    {label:'Stock Received Today',val:_receivedFullInKg({count:store.count,received:store.received},null).toFixed(2)+' kg',cls:'',sub:store.received.length+' line(s)'},
+    {label:'Total Refills',val:refKg.toFixed(2)+' kg',cls:'',sub:refillB.length+' cylinder(s) pumped'},
+    {label:'Total Private Refill',val:privKg.toFixed(2)+' kg',cls:'',sub:privateB.length+' line(s)'},
+    {label:'Faulty Cylinders',val:String(_combinedFaultyRows.length),cls:_combinedFaultyRows.length?'warn':'ok',sub:'Both branches, currently held'}
+  ];
+  var summaryHtml='<div class="summary">'+summaryTiles.map(function(t){
+    return '<div class="stat'+(t.cls?(' '+t.cls):'')+'"><div class="lbl">'+t.label+'</div><div class="val">'+t.val+'</div><div class="sub">'+t.sub+'</div></div>';
+  }).join('')+'</div>';
+  var rows='';
+  var sizesWith=ALLSIZES.filter(function(sz){return counts.Opening.Full[sz]||counts.Opening.Empty[sz]||counts.Closing.Full[sz]||counts.Closing.Empty[sz];});
+  rows+='<h2>Cylinder Count — Opening &amp; Closing (both branches)</h2>';
+  if(!sizesWith.length)rows+='<p style="font-size:12px;color:#777">No count entered yet.</p>';
+  else{
+    rows+='<table><tr><th>Size</th><th>Open Full</th><th>Open Empty</th><th>Close Full</th><th>Close Empty</th></tr>';
+    sizesWith.forEach(function(sz){
+      rows+='<tr><td class="sz">'+sz+'</td>'+
+        '<td>'+brandLines(counts.Opening.Full[sz])+'</td>'+
+        '<td>'+brandLines(counts.Opening.Empty[sz])+'</td>'+
+        '<td>'+brandLines(counts.Closing.Full[sz])+'</td>'+
+        '<td>'+brandLines(counts.Closing.Empty[sz])+'</td></tr>';
+    });
+    rows+='<tr><td><b>Total</b></td><td class="n"><b>'+openFullTot+'</b></td><td class="n"><b>'+openEmptyTot+'</b></td><td class="n"><b>'+closeFullTot+'</b></td><td class="n"><b>'+closeEmptyTot+'</b></td></tr></table>';
+    rows+='<div class="callout">Total cylinder shells (Opening): Full <b>'+openFullTot+'</b> + Empty <b>'+openEmptyTot+'</b> + Manifold <b>'+manOpenSlots+'</b> = <b>'+shellTotalOpen+'</b><span class="note">Manifold cylinders on the manifold at Opening, counted by slot - not folded into the table above. Opening and Closing are separate counts, never added together.</span></div>';
+  }
+  rows+='<h2>Manifold — Cylinder Weights (both branches)</h2>';
+  if(!man.length)rows+='<p style="font-size:12px;color:#777">No manifold readings.</p>';
+  else{
+    rows+='<table><tr><th>Branch</th><th>Stage</th><th>Cyl</th><th>Gas</th><th>Scale</th><th>Tare</th><th>Left</th></tr>';
+    ['Opening','Removed','Added','Closing'].forEach(function(stg){
+      man.filter(function(m){return (m.stage||'Opening')===stg;}).forEach(function(m){
+        rows+='<tr><td>'+(m.branch||'—')+'</td><td><b>'+stg+'</b></td><td>'+m.cyl+'</td><td>'+(m.gasType||'')+'</td>'+
+          '<td class="n">'+(+m.scale).toFixed(2)+'</td><td class="n">'+(+m.tare).toFixed(2)+'</td><td class="n">'+(+m.gasLeft).toFixed(2)+'</td></tr>';
+      });
+    });
+    rows+='</table>';
+    if(bal.hasData){
+      rows+='<table><tr><th>Cross-reference</th><th>kg</th></tr>'+
+        '<tr><td>Pumped from manifold (gas out)</td><td class="n">'+bal.gasOut.toFixed(2)+'</td></tr>'+
+        '<tr><td>Into Refills</td><td class="n">'+bal.refKg.toFixed(2)+'</td></tr>'+
+        '<tr><td>Into Private refills</td><td class="n">'+bal.privKg.toFixed(2)+'</td></tr>'+
+        '<tr><td><b>Total pumped into cylinders</b></td><td class="n"><b>'+bal.pumped.toFixed(2)+'</b></td></tr>'+
+        '<tr><td><b>Balance (manifold − pumped)</b></td><td class="n"><b style="color:'+(bal.balanced?'#1E8449':'#C0392B')+'">'+(bal.diff>0?'+':'')+bal.diff.toFixed(2)+' kg '+(bal.balanced?'✓ balanced':'⚠ off')+'</b></td></tr></table>';
+    }
+  }
+  rows+='<h2>Refills — Pumped Today (both branches)</h2>';
+  if(!refillB.length)rows+='<p style="font-size:12px;color:#777">No refills.</p>';
+  else{
+    rows+='<table><tr><th>Branch</th><th>Size</th><th>Brand</th><th>Gas</th><th>Pumped</th><th>Seal #</th></tr>';
+    refillB.forEach(function(r){rows+='<tr><td>'+(r.branch||'—')+'</td><td class="sz">'+r.size+'</td><td>'+r.brand+'</td><td>'+r.gasType+'</td><td class="n">'+(+r.pumped).toFixed(2)+'</td><td>'+(r.seal||'—')+'</td></tr>';});
+    rows+='<tr><td colspan="4"><b>Total pumped</b></td><td class="n"><b>'+refKg.toFixed(2)+'</b></td><td></td></tr></table>';
+  }
+  rows+='<h2>Stock Received — Full In / Empty Out (both branches)</h2>';
+  var recvSizes=ALLSIZES.filter(function(sz){return recv[sz];});
+  if(!recvSizes.length)rows+='<p style="font-size:12px;color:#777">No stock received.</p>';
+  else{
+    rows+='<table><tr><th>Size</th><th>Full in</th><th>Empty out</th><th>Diff</th></tr>';
+    var tf=0,te=0;
+    recvSizes.forEach(function(sz){var f=recv[sz].fullIn,e=recv[sz].emptyOut,diff=f-e;tf+=f;te+=e;
+      rows+='<tr><td class="sz">'+sz+'</td><td class="n">'+f+'</td><td class="n">'+e+'</td><td class="n" style="'+(diff!==0?'color:#C0392B':'')+'">'+(diff>0?'+':'')+diff+'</td></tr>';});
+    rows+='<tr><td><b>Total</b></td><td class="n"><b>'+tf+'</b></td><td class="n"><b>'+te+'</b></td><td class="n"><b>'+((tf-te)>0?'+':'')+(tf-te)+'</b></td></tr></table>';
+  }
+  rows+='<h2>Private Refills (both branches)</h2>';
+  if(!privateB.length)rows+='<p style="font-size:12px;color:#777">No private refills.</p>';
+  else{
+    rows+='<table><tr><th>Branch</th><th>Cyl brand</th><th>Gas</th><th>Pumped</th><th>Customer / notes</th></tr>';
+    privateB.forEach(function(r){var cb=(r.cylBrand==='Other'&&r.otherBrand)?('Other: '+r.otherBrand):(r.cylBrand||'—');rows+='<tr><td>'+(r.branch||'—')+'</td><td>'+cb+'</td><td>'+(r.gasType||'')+'</td><td class="n">'+(+r.pumped).toFixed(2)+'</td><td>'+(r.customer||'—')+'</td></tr>';});
+    rows+='<tr><td colspan="3"><b>Total kg pumped</b></td><td class="n"><b>'+privKg.toFixed(2)+'</b></td><td></td></tr></table>';
+  }
+  rows+='<h2>Net Cylinder Exchange (estimate, both branches)</h2>'+
+    '<p style="font-size:11px;color:#777">Mass-balance estimate only - not Daily Sales captured (per-branch Daily Sales isn\'t combined here yet). No Stock Transfer adjustment: transfers only ever move shells between Helderberg and Kleinmond, so they net to zero across both branches combined.</p>';
+  if(!neSizes.length)rows+='<p style="font-size:12px;color:#777">No sold/received activity yet.</p>';
+  else{
+    rows+='<table><tr><th>Size</th><th>Sold</th><th>Returned</th><th>Net</th></tr>'+netRowsHtml+
+      '<tr><td><b>Total</b></td><td class="n"><b>'+soldTotal+'</b></td><td class="n"><b>'+recvTotal+'</b></td>'+
+      '<td class="n" style="font-weight:800;color:'+(netExchange<0?'#C0392B':(netExchange>0?'#1E8449':'#1F3A5F'))+'">'+(netExchange>0?'+':'')+netExchange+'</td></tr></table>'+
+      (manAdj?('<div class="callout">Includes Manifold in the Opening/Closing baseline: '+manOpenSlots+' on the manifold at Opening − '+manCloseSlots+' at Closing = '+(manAdj>0?'+':'')+manAdj+' folded into Total sold above. Per-size rows do not reflect this, since manifold cylinders carry no size.</div>'):'')+
+      '<div class="callout">Net cylinder exchange: <b>'+(netExchange>0?'+':'')+netExchange+' shells</b><span class="note">'+recvTotal+' received back − '+soldTotal+' sold — negative means more shells left than came back today, both branches.</span></div>';
+  }
+  var docTitle='All Branches - Stock Count - '+today;
+  return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>'+docTitle+'</title><style>'+
+    '*{box-sizing:border-box}'+
+    'body{font-family:Arial,Helvetica,sans-serif;color:#16202B;background:#EEF1F4;margin:0;padding:20px 0;}'+
+    '.page{max-width:840px;margin:0 auto;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);}'+
+    '.banner{background:linear-gradient(135deg,#1F3A5F 0%,#2E6DA4 100%);color:#fff;padding:26px 26px 20px;border-radius:0 0 18px 18px;}'+
+    '.banner h1{margin:0;font-size:21px;letter-spacing:.2px;}'+
+    '.banner .tag{font-size:11.5px;opacity:.85;margin-top:3px;text-transform:uppercase;letter-spacing:.6px;font-weight:700;}'+
+    '.metaRow{display:flex;flex-wrap:wrap;gap:22px;margin-top:16px;}'+
+    '.metaItem .k{font-size:10px;text-transform:uppercase;opacity:.75;letter-spacing:.4px;}'+
+    '.metaItem .v{font-size:14px;font-weight:700;margin-top:1px;}'+
+    '.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:18px 22px;background:#F7F9FB;border-bottom:1px solid #E4E8EC;}'+
+    '.stat{background:#fff;border-radius:8px;padding:11px 12px;border-left:4px solid #2E6DA4;box-shadow:0 1px 2px rgba(0,0,0,.05);}'+
+    '.stat.ok{border-left-color:#1E8449;}.stat.bad{border-left-color:#C0392B;}.stat.warn{border-left-color:#B9761F;}'+
+    '.stat .lbl{font-size:9.5px;text-transform:uppercase;letter-spacing:.4px;color:#6B7684;font-weight:800;}'+
+    '.stat .val{font-size:18px;font-weight:800;color:#1F3A5F;margin-top:3px;line-height:1.15;}'+
+    '.stat .sub{font-size:9.5px;color:#8B96A3;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}'+
+    '.content{padding:4px 22px 26px;}'+
+    '.content h2:first-child{margin-top:6px;}'+
+    'h2{font-size:14.5px;color:#1F3A5F;margin:26px 0 10px;padding-bottom:8px;border-bottom:2px solid #1F3A5F;}'+
+    'h3{font-size:12.5px;color:#2E6DA4;margin:16px 0 6px;font-weight:800;}'+
+    'table{width:100%;border-collapse:collapse;font-size:12.5px;margin-bottom:6px;}'+
+    'th{background:#1F3A5F;color:#fff;text-align:left;padding:9px 10px;font-size:10.5px;letter-spacing:.2px;text-transform:uppercase;}'+
+    'td{padding:8px 10px;border-bottom:1px solid #EAEDF0;vertical-align:top;}'+
+    'tbody tr:nth-child(even) td{background:#FAFBFC;}'+
+    'td.sz{font-weight:800;color:#1F3A5F;}td.n{text-align:center;font-weight:700;}'+
+    '.callout{font-size:13px;color:#1F3A5F;margin:6px 0;padding:9px 12px;background:#F0F4F8;border-left:3px solid #2E6DA4;border-radius:0 6px 6px 0;}'+
+    '.callout b{font-weight:800;}.callout .note{display:block;font-size:10.5px;font-weight:400;color:#8B96A3;margin-top:2px;}'+
+    '.actions{padding:16px 22px 26px;display:flex;gap:10px;flex-wrap:wrap;}'+
+    '.actions button{padding:12px 20px;border:none;border-radius:8px;font-size:14px;cursor:pointer;font-weight:700;}'+
+    '.btnPrint{background:#1F3A5F;color:#fff;}'+
+    '@media print{body{background:#fff;padding:0}.page{box-shadow:none;border-radius:0;max-width:none}.actions{display:none}h2{page-break-after:avoid}table{page-break-inside:avoid}.summary{page-break-inside:avoid}}'+
+    '@media (max-width:520px){.summary{grid-template-columns:repeat(2,1fr)}}'+
+    '</style></head><body><div class="page">'+
+    '<div class="banner"><h1>Gas Sales — Daily Stock Count</h1>'+
+    '<div class="tag">All Branches Combined — Live Preview, numbers only</div>'+
+    '<div class="metaRow">'+
+      '<div class="metaItem"><div class="k">Branches</div><div class="v">Helderberg + Kleinmond</div></div>'+
+      '<div class="metaItem"><div class="k">Date</div><div class="v">'+today+'</div></div>'+
+    '</div></div>'+
+    summaryHtml+
+    '<div class="content">'+rows+
+    '<div style="font-size:11px;color:#777;margin-top:8px">Sign-off and Close Day are per branch - see the Helderberg or Kleinmond tab for those.</div>'+
+    '</div>'+
+    '<div class="actions"><button class="btnPrint" onclick="window.print()">Print / Save as PDF</button></div>'+
+    '</div></body></html>';
+}
+// Print/Save-as-PDF for the Combined "All Branches" view - opens buildCombinedReportHtml()'s
+// standalone document (same visual language as the single-branch PDF report, see that
+// function's own header comment) and hands off to the browser's native print-to-PDF, same
+// approach _openDocAsync uses for the real PDF reports.
 function printCombinedReport(){
   if(histBranch!=='All'){toast('Not available for this branch',true);return;}
-  var body=document.getElementById('histBody');
-  if(!body||!body.innerHTML.trim()){toast('Nothing to print yet',true);return;}
   var w=window.open('','_blank');
   if(!w){toast('Allow popups to print',true);return;}
-  var styleTags=Array.prototype.map.call(document.querySelectorAll('style'),function(s){return s.outerHTML;}).join('');
-  w.document.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>All Branches - Stock Count - '+today+'</title>'+styleTags+
-    '<style>body{background:#fff;padding:24px;max-width:820px;margin:0 auto}.exportBtn{display:none}</style></head><body>'+
-    '<h2 style="color:var(--navy);margin:0 0 4px">Gas Sales — Daily Stock Count</h2>'+
-    '<div style="font-size:12px;color:var(--muted);margin-bottom:18px">All Branches (Helderberg + Kleinmond combined) · '+today+' · Live preview — read-only, numbers only</div>'+
-    body.innerHTML+'</body></html>');
+  w.document.write(buildCombinedReportHtml());
   w.document.close();
   w.focus();
   setTimeout(function(){w.print();},400);
