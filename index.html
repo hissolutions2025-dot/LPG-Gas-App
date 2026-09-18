@@ -2278,6 +2278,24 @@ function _updateManifoldLiveRowFields(rowRid,fields){
     }));
   },function(e){console.error('_updateManifoldLiveRowFields rejected:',e&&e.message);});
 }
+// Generic capture_live_rows mirror updater, added 2026-09-18 for the photo upload queue -
+// mirrors _updateManifoldLiveRowFields exactly (match by row_id, merge fields into the row
+// JSON blob) but for the shared refill/private/received/residual table instead of Manifold's
+// own dedicated one. kind must be passed since row_id alone isn't guaranteed unique across
+// different capture types.
+function _updateCaptureLiveRowFields(kind,rowRid,fields){
+  if(!rowRid)return Promise.resolve();
+  return sb.from('capture_live_rows').select('id,row').eq('kind',kind).eq('row_id',rowRid).then(function(res){
+    if(res.error){console.error('_updateCaptureLiveRowFields select failed:',res.error.message);return;}
+    if(!res.data||!res.data.length){console.error('_updateCaptureLiveRowFields: no capture_live_rows match for kind',kind,'row_id',rowRid,'- mirror row not updated (may not have finished syncing yet)');return;}
+    return Promise.all(res.data.map(function(rec){
+      var updatedRow=Object.assign({},rec.row,fields);
+      return sb.from('capture_live_rows').update({row:updatedRow}).eq('id',rec.id).then(function(ures){
+        if(ures.error)console.error('_updateCaptureLiveRowFields update failed:',ures.error.message);
+      });
+    }));
+  },function(e){console.error('_updateCaptureLiveRowFields rejected:',e&&e.message);});
+}
 function resolvePendingOverride(id,decision){
   if(!(role==='Manager'||role==='Owner')){toast('Manager or Owner only',true);return;}
   var item=_manifoldPendingOverrides.filter(function(x){return x.id===id;})[0];
