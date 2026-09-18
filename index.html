@@ -12907,6 +12907,21 @@ function buildCountDocAsync(src){
     var _sumPvUsTot=_sumPv.filter(function(r){return r.filledBy!=='Supplier';}).reduce(function(a,r){return a+num(r.pumped);},0);
     var _sumSoldTotal=0,_sumRecvBackTotal=0;
     ALLSIZES.forEach(function(sz){_sumSoldTotal+=_estSold(sz);_sumRecvBackTotal+=_estRecvBack(sz);});
+    // Manifold swap exclusion (added 2026-09-18, per explicit request/confirmation) - a donor
+    // cylinder swap (Added: fresh one taken FROM stock onto the manifold; Removed: depleted
+    // one taken OFF the manifold back INTO stock as empty) moves a shell between regular
+    // Full/Empty stock and the manifold, but is NOT a customer transaction - left uncorrected
+    // it would silently read as a phantom sale (Added) or phantom return (Removed) in the
+    // mass-balance ESTIMATE below, the same class of distortion sentOut/refilled/faultyF/
+    // transfers already exist to prevent (see _massBalSold/_massBalRecv). Manifold cylinders
+    // carry no size field at all (see _manifoldOpeningSlotCount's own comment), so this can
+    // only be applied at the branch-wide total here, not threaded into the per-size formula/
+    // table further down. Deliberately skipped when real Daily Sales is captured below - a
+    // manager's own typed sold/returned figures are authoritative, not a derived estimate to
+    // adjust.
+    var _sumManAdded=(st.manifold||[]).filter(inBr).filter(function(m){return m.stage==='Added';}).length;
+    var _sumManRemoved=(st.manifold||[]).filter(inBr).filter(function(m){return m.stage==='Removed';}).length;
+    if(!dailySalesRow){_sumSoldTotal-=_sumManAdded;_sumRecvBackTotal-=_sumManRemoved;}
     if(dailySalesRow){
       var _sumCapturedSold=0,_sumCapturedRecv=0;
       (dailySalesRow.lines||[]).forEach(function(l){_sumCapturedSold+=num(l.sold);_sumCapturedRecv+=num(l.returned);});
@@ -13309,6 +13324,25 @@ function buildCountDocAsync(src){
             '<td class="n" style="font-weight:800;color:'+(sizeNet<0?'#C0392B':(sizeNet>0?'#1E8449':'#1F3A5F'))+'">'+(sizeNet>0?'+':'')+sizeNet+'</td></tr>';
         });
       }
+      // Manifold swap exclusion (added 2026-09-18, per explicit request/confirmation) - see
+      // the At-a-Glance summary's matching comment (near _sumManAdded) for the full
+      // reasoning: an Added/Removed donor-cylinder swap moves a shell between regular stock
+      // and the manifold, not a customer transaction, and would otherwise silently read as a
+      // phantom sale/return here. Applied to the shared soldTotal/recvBackTotal - not just
+      // the final "Net cylinder exchange" line below - so every Total row in this section
+      // (Sold, Received, Cylinder Exchange by Size, and the headline) keeps agreeing with
+      // each other; only the per-size rows feeding into each Total are left as the pure,
+      // unadjusted per-size mass balance, since manifold cylinders carry no size to attribute
+      // the adjustment to. Skipped when real Daily Sales is captured - a manager's own typed
+      // figures are authoritative, not a derived estimate to adjust.
+      var manAddedToday=0,manRemovedToday=0;
+      if(!salesIsReal){
+        manAddedToday=(st.manifold||[]).filter(inBr).filter(function(m){return m.stage==='Added';}).length;
+        manRemovedToday=(st.manifold||[]).filter(inBr).filter(function(m){return m.stage==='Removed';}).length;
+        soldTotal-=manAddedToday;recvBackTotal-=manRemovedToday;
+      }
+      var manSwapNote=(manAddedToday||manRemovedToday)?
+        ('<p style="font-size:11px;color:#777">Excludes '+manAddedToday+' cylinder(s) added to the manifold and '+manRemovedToday+' removed from it today (donor swaps - moved between stock and the manifold, not sold/returned by a customer). Totals above already reflect this; the per-size rows do not, since manifold cylinders carry no size.</p>'):'';
       var pvAllTot=pv.reduce(function(a,r){return a+num(r.pumped);},0); // both Us AND Supplier-filled - both are real sales, unlike the Manifold balance's Us-only filter
       var pvUsTot=pv.filter(function(r){return r.filledBy!=='Supplier';}).reduce(function(a,r){return a+num(r.pumped);},0);
       // The Sales section's own displayed figure prefers whatever the Manager confirmed/
@@ -13354,6 +13388,7 @@ function buildCountDocAsync(src){
         '<tr><td>Private Refill (in-house, part of Sales)</td><td class="n">'+pvUsDisplay.toFixed(2)+' kg</td></tr>'+
         '<tr><td>Net cylinder exchange</td><td class="n"><b>'+(netExchange>0?'+':'')+netExchange+' shells</b></td></tr>'+
         '<tr><td style="font-size:11px;color:#777">'+recvBackTotal+' received back \u2212 '+soldTotal+' sold \u2014 negative means more shells left than came back today</td><td></td></tr></table>'+
+        manSwapNote+
         '<p style="font-size:11px;color:#777">Refill\'s own pumped-kg isn\'t added again here - a refilled cylinder becomes one Full unit and is already counted through the mass-balance above, whether it sold today or is still sitting in Closing stock.</p>';
     }
 
@@ -13849,12 +13884,21 @@ function buildCountCSVAsync(src){
           var sizeNet=received-sold;
           netRows.push([sz,sold,received,(sizeNet>0?'+':'')+sizeNet]);
         });
+        // Manifold swap exclusion - see the HTML report's matching comment (near
+        // manAddedToday, buildCountDocAsync) for the full reasoning. Applied before every
+        // Total row below (not just Net Cylinder Exchange at the bottom) so they all keep
+        // agreeing with each other; per-size rows above are left unadjusted, since manifold
+        // cylinders carry no size to attribute this to.
+        var manAddedToday=(st.manifold||[]).filter(inBr).filter(function(m){return m.stage==='Added';}).length;
+        var manRemovedToday=(st.manifold||[]).filter(inBr).filter(function(m){return m.stage==='Removed';}).length;
+        soldTotal-=manAddedToday;recvBackTotal-=manRemovedToday;
         row('Total units sold','','','','','','',soldTotal);
         blank();
         row('Empty cylinders received back (estimate)');
         row('Size','Closing','- Opening','+ Sent to supplier','+/- Transfer','+ Faulty (Empty)','= Est. received');
         recvBackRows.forEach(function(r){row.apply(null,r);});
         row('Total units received','','','','','',recvBackTotal);
+        if(manAddedToday||manRemovedToday)row('Excludes '+manAddedToday+' cylinder(s) added to the manifold and '+manRemovedToday+' removed from it today (donor swaps, not customer sales/returns) - totals above reflect this, per-size rows do not.');
       }
       if(soldDiffFlags.length||recvDiffFlags.length){
         blank();
