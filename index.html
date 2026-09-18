@@ -4528,9 +4528,21 @@ async function uploadPhotoSet(category, br, photos){
     var m=/^data:([^;]+);base64,(.*)$/.exec(photos[i]||'');
     if(!m) continue;
     try{
-      var res=await apiPost('photoUpload',{branch:br,date:today,category:category,mimeType:m[1],dataBase64:m[2]});
+      // 25s cap per photo, added 2026-09-18 alongside _capCommitReal's new catch block (same
+      // "Coenie... app did not want to accept them" investigation) - apiPost's underlying
+      // fetch has no timeout of its own, and this is awaited one photo at a time inside the
+      // capture commit's own try block, so a genuinely stalled upload (weak signal, large
+      // base64 payload, slow proxy) could hang the whole commit indefinitely - no error, no
+      // toast, the button just never re-enables. Promise.race gives up on THAT photo after
+      // 25s and moves on, same "skip this one, keep the commit going" philosophy the catch
+      // below already has for an outright failure - a late-resolving background fetch is
+      // simply ignored, not cancelled (apiPost has no abort signal to pass through).
+      var res=await Promise.race([
+        apiPost('photoUpload',{branch:br,date:today,category:category,mimeType:m[1],dataBase64:m[2]}),
+        new Promise(function(_,rej){setTimeout(function(){rej(new Error('photo upload timed out'));},25000);})
+      ]);
       if(res && res.ok && res.url) links.push(res.url);
-    }catch(e){ /* offline / backend error - skip this one, keep the commit going */ }
+    }catch(e){ /* offline / backend error / timeout - skip this one, keep the commit going */ }
   }
   return links.join(', ');
 }
@@ -9855,6 +9867,19 @@ async function _capCommitReal(){
       else toast('⚠ This count is incorrect — see Count History. A manager must review.',true);
     } else toast(c.title+' committed ✓');
     goHome();
+  } catch(e){
+    // Real bug, confirmed live 2026-09-18 ("Coenie... not one of the Private refills he
+    // wanted to load, the app did not want to accept them") - this whole function had NO
+    // catch block. Any exception thrown between here and the auditLog/toast/goHome above
+    // (a bad photo upload response, a malformed row, anything) failed completely silently:
+    // no error toast, screen just never advances, freshRows never get marked _committed -
+    // indistinguishable from "the app doesn't want to accept it" with nothing to go on. Rows
+    // are deliberately NOT rolled back to _committed=false here even though freshRows.forEach
+    // already stamped _committed=true above (a partial photo-upload or push may have already
+    // gone out for some of them) - surfacing the real error is the priority; an operator
+    // stuck after this can still use Review to check what actually made it through.
+    console.error('_capCommitReal failed:',e&&e.message,e);
+    toast('Could not commit '+c.title+': '+(e&&e.message?e.message:'unknown error')+' — try again, or tell a Manager/Owner if it keeps happening.',true);
   } finally {
     // Deliberately NOT reset synchronously: when there's nothing to photo-upload (e.g. a
     // Manifold/Private commit with no photo, or any Refill commit), this whole function
