@@ -230,7 +230,13 @@ function _photoQueueProcess(startIndex){
 // Retry triggers - online reconnect (same event the Close Day queue already listens for),
 // and a periodic tick that only does anything while the queue is non-empty (no polling once
 // it's empty). Called once more from doLogin()/_finishLogin() in Task 4 below.
-window.addEventListener('online',_photoQueueProcess);
+// Wrapped, not passed directly - found in code review: _photoQueueProcess now takes an
+// optional startIndex (the head-of-line-blocking fix above), and addEventListener calls its
+// handler with the Event object as the first argument - passed directly, 'online' would hand
+// that Event to _photoQueueProcess as startIndex, `idx=startIndex||0` would hold the Event
+// object (truthy), and q[idx] would resolve to undefined, throwing on entry.category. The
+// 45s setInterval trigger below was never affected (it already calls with no arguments).
+window.addEventListener('online',function(){_photoQueueProcess();});
 setInterval(function(){if(_photoQueueLoad().length)_photoQueueProcess();},45000);
 ```
 
