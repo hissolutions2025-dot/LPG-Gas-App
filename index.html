@@ -7933,8 +7933,19 @@ async function rCommit(){
 // existing "back to a fresh grid" reset (rBackFromReview) rather than duplicating its
 // state-reset logic - rData[rBranch]/rSupplierState[rBranch] are already cleared by rCommit
 // itself before this runs, so the grid it shows is already correctly empty.
+// rBackFromReview() alone is NOT enough, though: recvGridView also owns the supplier bar
+// (#rSupplierSelect, #rSupplierOtherRow/#rSupplierOther, #rDeliveryNote, #rInvoiceNo) and
+// the photo picker (#rSupplierPhotoBtn/#rSupplierPhotoThumb), none of which rBackFromReview
+// touches - it was only ever built for the Review screen's Back button, a flow that never
+// touches rSupplierState. Without resyncing that DOM too, the fields/thumbnails would keep
+// visually showing the just-committed delivery even though rSupplierState[rBranch] is now
+// empty, blocking the next delivery with a confusing "select supplier" error. So this also
+// calls rRenderSupplierSelect()+rRestoreSupplierFields() - the same pairing already used to
+// reset this exact UI in rLoadSuppliers()'s success callback and rSetBranch().
 function _rCommitStayOrHome(){
   rBackFromReview();
+  rRenderSupplierSelect();
+  rRestoreSupplierFields();
   if(typeof _rUpdateSessionCounter==='function')_rUpdateSessionCounter();
 }
 
