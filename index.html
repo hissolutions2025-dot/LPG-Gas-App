@@ -11337,6 +11337,16 @@ function _photoQueueSave(q){
 // linkField: the Sheet column name to write the joined links into (PhotoLinks/PhotoLink)
 // localField: the app-side row field the joined links go into (photoLinks/_photoLink)
 function _photoQueueAdd(entry){
+  // Row-key uses rowRids when present, falling back to [rowRid] - fixed during Task 6's code
+  // review: comparing entry.rowRid directly broke for Received (Task 6), which only ever
+  // sets rowRids (plural), never rowRid - every Received queue entry had rowRid===undefined,
+  // so ANY two Received entries queued before the first one drained (e.g. two deliveries
+  // committed back-to-back) matched each other on that shared undefined and silently evicted
+  // one another, permanently losing whichever delivery's photos got evicted (no error, no
+  // retry - the entry was just gone). JSON.stringify-ing the normalized rowRids array instead
+  // means two DIFFERENT deliveries (different _rid()-generated ids, no overlap) never match,
+  // while a genuine same-row recommit (identical id or identical array) still correctly
+  // replaces rather than duplicates.
   // De-dupes by capType+rowRid before adding - fixed during Task 5's code review: a Refill
   // row whose seal turns out already-used gets _committed reset to false and stays in
   // store.refill as a draft for the operator to fix and recommit; without this, the SAME
@@ -11344,7 +11354,9 @@ function _photoQueueAdd(entry){
   // independently retrying/uploading/write-back-ing for the same row. Removing any existing
   // entry for the same row before adding the new one makes a recommit replace, not duplicate -
   // the newest capture of a row's photos is always the one that matters.
-  var q=_photoQueueLoad().filter(function(e){return !(e.capType===entry.capType && e.rowRid===entry.rowRid);});
+  var _rowKey=function(e){return JSON.stringify(e.rowRids||[e.rowRid]);};
+  var newKey=_rowKey(entry);
+  var q=_photoQueueLoad().filter(function(e){return !(e.capType===entry.capType && _rowKey(e)===newKey);});
   entry.id='p'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
   entry.attempts=0;entry.lastAttemptAt=null;entry.lastError=null;
   q.push(entry);
