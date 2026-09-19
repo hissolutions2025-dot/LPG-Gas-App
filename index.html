@@ -3672,26 +3672,32 @@ async function residualSubmit(){
   try{
     // Photos are per-cylinder here (each has its own scale/tare weigh-in), same pattern as
     // Manifold's per-row photo - upload each cylinder's own set right before submitting.
-    var rowsWithPhotos=residualList.filter(function(r){return (r.photos||[]).length;});
-    if(rowsWithPhotos.length){
-      toast('Uploading photo(s)…');
-      for(var i=0;i<rowsWithPhotos.length;i++){
-        var pr=rowsWithPhotos[i];
-        pr.photoLinks=await uploadPhotoSet('Residual',pr.Branch,pr.photos);
-      }
-    }
+    // Decoupled 2026-09-18 - photos queue in the background same as every other section (see
+    // Task 1-3); residualLog's own row submission below no longer waits on them. Write-back
+    // for Residual specifically only updates the local copy and the capture_live_rows mirror
+    // right now (PHOTO_QUEUE_SHEET.residual is null) - it does NOT correct anything server-
+    // side on whatever sheet/tab residualLog writes to, since no row-level correction path is
+    // confirmed to exist there yet (see this plan's own header note). Until that's confirmed,
+    // a residual row's photo can still be added/retried manually (Task 12) even if the
+    // background queue's write-back can't reach the sheet.
+    var _queuedPhotoCount=0;
+    residualList.filter(function(r){return (r.photos||[]).length;}).forEach(function(r){
+      r._rid=r._rid||_rid();
+      _photoQueueAdd({capType:'residual',branch:r.Branch,date:today,rowRid:r._rid,category:'Residual',photos:r.photos});
+      _queuedPhotoCount++;
+    });
     var rows=residualList.map(function(r){
       return {Branch:r.Branch,Operator:operator,Role:role,Brand:r.Brand,Size:r.Size,GasType:r.GasType,CylScale:r.CylScale,CylTare:r.CylTare,Note:r.Note,PhotoLinks:(r.photoLinks||'')};
     });
     var res=await apiPost('residualLog',{rows:rows});
     if(!res||!res.ok){toast((res&&res.msg)||'Could not submit residual gas',true);return;}
-    toast('Residual gas submitted ('+(res.wrote!==undefined?res.wrote:rows.length)+')');
+    toast('Residual gas submitted ('+(res.wrote!==undefined?res.wrote:rows.length)+')'+(_queuedPhotoCount?(' · '+_queuedPhotoCount+' photo(s) uploading in background'):''));
     // Keep a local, persisted copy of what was just sent so the operator can see it under
     // "Already logged today" - this app has no way to read the backend sheet back, so this is
     // "what this device sent today", cleared naturally the same way every other section's
     // working-day data is (new day/branch working-store key).
     var committedRows=residualList.map(function(r){
-      return {Branch:r.Branch,Brand:r.Brand,Size:r.Size,GasType:r.GasType,CylScale:r.CylScale,CylTare:r.CylTare,Residual:r.Residual,Note:r.Note,_operator:operator,_date:today,_committed:true,_rid:_rid()};
+      return {Branch:r.Branch,Brand:r.Brand,Size:r.Size,GasType:r.GasType,CylScale:r.CylScale,CylTare:r.CylTare,Residual:r.Residual,Note:r.Note,_operator:operator,_date:today,_committed:true,_rid:(r._rid||_rid())};
     });
     store.residual=(store.residual||[]).concat(committedRows);
     _pushCaptureLiveRows('residual',committedRows,committedRows[0]&&committedRows[0].Branch);
