@@ -393,6 +393,7 @@
   <div class="wrap">
     <div class="datebar"><label>Stock-take date</label><div class="val" id="dateVal">—</div></div>
     <div id="closeDayPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
+    <div id="photoQueuePendingBadge" style="display:none;background:#FDF3F2;color:#9B2C2C;border-radius:8px;padding:8px 12px;font-size:12px;font-weight:700;margin-bottom:6px;text-align:center"></div>
     <div id="countPendingBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div id="minFullHoldBadge" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
     <div id="maxThresholdBadge" style="display:none;background:#FDF3F2;color:#9B2C2C;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
@@ -722,6 +723,7 @@
 <!-- COUNT HISTORY -->
 <div id="historyView" class="view"><div class="wrap">
   <div id="closeDayPendingBadgeHistory" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
+  <div id="photoQueuePendingBadgeHistory" style="display:none;background:#FDF3F2;color:#9B2C2C;border-radius:8px;padding:8px 12px;font-size:12px;font-weight:700;margin-bottom:6px;text-align:center"></div>
   <div id="countPendingBadgeHistory" style="display:none;background:#FDECC8;color:#8a5a00;font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px"></div>
   <div class="ctxbar" id="hCtx" style="margin-bottom:12px;"></div>
   <div class="histTabs">
@@ -4934,6 +4936,8 @@ function _finishLogin(u,b){
   _fetchManifoldPendingOverrides();
   _closeDayFlushQueue();
   _updateCloseDayPendingBadge();
+  _photoQueueProcess();
+  _updatePhotoQueuePendingBadge();
   _countFlushQueue();
   _updateCountPendingBadge();
   _updateMinFullHoldBadge();
