@@ -175,36 +175,56 @@ function _photoQueueWriteBack(entry,links){
   if(entry.capType==='manifold'){
     return _updateManifoldLiveRowFields(entry.rowRid,{_photoLink:links});
   }
-  return _updateCaptureLiveRowFields(entry.capType,entry.rowRid,{_committed:true,photoLinks:links});
+  // Uses localField (already computed above), NOT a hardcoded 'photoLinks' - Refill's own
+  // local/mirror field is '_photoLink', not 'photoLinks' (confirmed via syncRowsRefill,
+  // PhotoLinks:(r._photoLink||'')). Hardcoding 'photoLinks' here silently wrote an unused key
+  // onto Refill's mirror row while its real field stayed stale - the same class of bug as the
+  // Sheet-column PhotoLink/PhotoLinks mismatch caught earlier in this same task, just in the
+  // mirror-write path instead of the sheet-write path. Found in code review, not by inspection
+  // alone - worth being extra careful re-reading this exact function once more before Task 5+
+  // start feeding it real entries.
+  var mf={_committed:true};mf[localField]=links;
+  return _updateCaptureLiveRowFields(entry.capType,entry.rowRid,mf);
 }
-// Processes one queue entry at a time (never parallel - a burst of retries hitting the same
-// flaky connection at once helps nobody). uploadPhotoSet already skips any individual photo
-// that fails and returns whatever DID succeed joined together - an empty return with photos
-// present means everything failed this attempt (kept queued, retried later); any non-empty
-// return is treated as this entry's best achievable result and the entry is removed, matching
-// the exact same "partial success is still success" behavior the old at-commit-time blocking
-// path already had (this isn't a new leniency, just preserving what existed).
+// Processes queue entries one at a time (never parallel - a burst of retries hitting the same
+// flaky connection at once helps nobody), but does NOT get stuck on a permanently-failing
+// entry - found in code review: an earlier version always read q[0], so an entry that keeps
+// failing (corrupted data, a category the backend rejects, anything) blocked every OTHER
+// queued entry forever, silently, no matter how healthy the connection otherwise was. On a
+// failure this now advances to the NEXT index within the same pass instead of stopping, so
+// every entry gets one attempt per trigger (online reconnect / the 45s tick / login) even
+// when an earlier entry is stuck - the stuck entry stays queued and gets retried on the next
+// trigger, it just doesn't gate anything behind it anymore. uploadPhotoSet already skips any
+// individual photo that fails and returns whatever DID succeed joined together - an empty
+// return with photos present means everything failed this attempt (kept queued, retried
+// later); any non-empty return is treated as this entry's best achievable result and the
+// entry is removed, matching the exact same "partial success is still success" behavior the
+// old at-commit-time blocking path already had (this isn't a new leniency, just preserving
+// what existed).
 var _photoQueueBusy=false;
-function _photoQueueProcess(){
+function _photoQueueProcess(startIndex){
   if(_photoQueueBusy)return;
   var q=_photoQueueLoad();
-  if(!q.length)return;
-  var entry=q[0];
+  var idx=startIndex||0;
+  if(idx>=q.length)return;
+  var entry=q[idx];
   _photoQueueBusy=true;
   uploadPhotoSet(entry.category,entry.branch,entry.photos).then(function(links){
     if(!links){
       _photoQueueMarkAttempt(entry.id,'no photo(s) uploaded this attempt');
       _photoQueueBusy=false;
+      _photoQueueProcess(idx+1); // move on to the next entry instead of retrying this one immediately
       return;
     }
     return _photoQueueWriteBack(entry,links).then(function(){
       _photoQueueRemove(entry.id);
       _photoQueueBusy=false;
-      _photoQueueProcess(); // keep going while there's more queued
+      _photoQueueProcess(); // queue shrank - restart from 0 rather than reasoning about shifted indices
     });
   }).catch(function(e){
     _photoQueueMarkAttempt(entry.id,e&&e.message);
     _photoQueueBusy=false;
+    _photoQueueProcess(idx+1);
   });
 }
 // Retry triggers - online reconnect (same event the Close Day queue already listens for),
