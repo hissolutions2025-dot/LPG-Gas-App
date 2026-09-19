@@ -7917,7 +7917,7 @@ async function rCommit(){
     delete rData[rBranch];
     delete rSupplierState[rBranch];
     rSaveDraft();
-    updateBadges();toast('Received committed'+(mm.length?' ('+mm.length+' override'+(mm.length>1?'s':'')+' logged)':'')+' ✓'+(_queuedPhotoCount?(' · '+_queuedPhotoCount+' photo(s) uploading in background'):''));goHome();
+    updateBadges();toast('Received committed'+(mm.length?' ('+mm.length+' override'+(mm.length>1?'s':'')+' logged)':'')+' ✓'+(_queuedPhotoCount?(' · '+_queuedPhotoCount+' photo(s) uploading in background'):''));_rCommitStayOrHome();
   } finally {
     // Deliberately NOT reset synchronously here: when there's no photo to upload, this
     // whole function runs with no await at all, so an immediate reset would clear the
@@ -7926,6 +7926,16 @@ async function rCommit(){
     // cooldown closes that gap regardless of whether an async gap actually occurred.
     setTimeout(function(){rCommitBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}},600);
   }
+}
+// Stay-on-screen after commit, added 2026-09-18 - same rationale as _capCommitStayOrHome
+// (Manifold/Refill/Private, added earlier this session): an operator doing several
+// deliveries in a row shouldn't be bounced to Home after each one. Reuses Received's own
+// existing "back to a fresh grid" reset (rBackFromReview) rather than duplicating its
+// state-reset logic - rData[rBranch]/rSupplierState[rBranch] are already cleared by rCommit
+// itself before this runs, so the grid it shows is already correctly empty.
+function _rCommitStayOrHome(){
+  rBackFromReview();
+  if(typeof _rUpdateSessionCounter==='function')_rUpdateSessionCounter();
 }
 
 /* ============ GENERIC CAPTURE ENGINE ============
