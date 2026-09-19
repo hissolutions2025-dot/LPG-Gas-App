@@ -9902,7 +9902,7 @@ async function _capCommitReal(){
     } else {
       toast(c.title+' committed ✓'+(_queuedThisCommit?(' · '+_queuedThisCommit+' photo(s) uploading in background'):''));
     }
-    goHome();
+    _capCommitStayOrHome();
   } catch(e){
     // Real bug, confirmed live 2026-09-18 ("Coenie... not one of the Private refills he
     // wanted to load, the app did not want to accept them") - this whole function had NO
@@ -9924,6 +9924,25 @@ async function _capCommitReal(){
     // testing. A short cooldown closes that gap regardless of whether an async gap occurred.
     setTimeout(function(){capCommitBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}},600);
   }
+}
+// Stay-on-screen after commit, added 2026-09-18 per explicit request ("if they are busy in a
+// section wanting to go to the next refill then this would waste time") - Manifold/Refill/
+// Private already worked this way for adding MULTIPLE lines before one commit; this just
+// stops the commit itself from also ending the whole capture session. Faulty Cylinders/
+// Residual Gas/Stock Transfer dispatch already do the equivalent (their own submit functions
+// were never wired to goHome() in the first place) - this brings Manifold/Refill/Private in
+// line with that existing, already-proven pattern instead of inventing a new one. Stock
+// Count/Verified Stock Take are deliberately NOT touched - each of those commits IS the
+// whole day's task, there's no "next item" to stay ready for.
+function _capCommitStayOrHome(){
+  var c=CAP[capType];
+  capData={_type:capType};
+  toggleSel={};
+  if(c.toggles){c.toggles.forEach(function(t){toggleSel[t.key]=t.states[0];});}
+  buildHeader(c);
+  renderGrid();
+  if(typeof _capUpdateSessionCounter==='function')_capUpdateSessionCounter();
+  window.scrollTo(0,0);
 }
 // Manifold OPENING weights vs previous CLOSE weights, per cylinder, ±0.2kg tolerance
 function computeManifoldMismatches(br){
