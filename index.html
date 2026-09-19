@@ -11353,7 +11353,7 @@ function _updatePhotoQueuePendingBadge(){
 // back still updates the local copy and (for the 4 with a mirror table) the live mirror, it
 // just skips the adjustSheetRow call for residual until the backend question is settled.
 var PHOTO_QUEUE_SHEET={manifold:'Manifold',refill:'Refills',private:'Private',received:'Received',residual:null};
-var PHOTO_QUEUE_LINK_FIELD={manifold:'PhotoLink',refill:'PhotoLink',private:'PhotoLinks',received:'PhotoLinks',residual:'PhotoLinks'};
+var PHOTO_QUEUE_LINK_FIELD={manifold:'PhotoLink',refill:'PhotoLinks',private:'PhotoLinks',received:'PhotoLinks',residual:'PhotoLinks'};
 var PHOTO_QUEUE_LOCAL_FIELD={manifold:'_photoLink',refill:'_photoLink',private:'photoLinks',received:'photoLinks',residual:'photoLinks'};
 // Writes an uploaded photo link set back onto an already-committed row, three places: the
 // local copy (so Review/History shows it immediately without waiting on anything else), the
