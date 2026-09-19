@@ -685,7 +685,20 @@ git commit -m "feat: stay on capture screen after commit for Manifold/Refill/Pri
 
 - [ ] **Step 1: Replace Received's `goHome()` with an equivalent in-place reset**
 
-Find Received's own success path (search the `toast('Received committed'...)+' ✓');goHome();` line from Task 6). Replace `goHome();` with a call to a new `_rCommitStayOrHome()` function, built the same way as Task 7's `_capCommitStayOrHome` but reusing whatever Received's own "reset the form" helper already is (Received has its own `rData`/`rSupplierState`/`rRenderGrid` - reuse the exact reset logic already used when switching branches on this screen, rather than duplicating it; find and call that existing reset path plus `_rUpdateSessionCounter()` from Task 10).
+Find Received's own success path (search the `toast('Received committed'...)+' ✓');goHome();` line from Task 6). Replace `goHome();` with a call to a new `_rCommitStayOrHome()` function.
+
+**CORRECTED 2026-09-19 (code-quality review of the first implementation, commit `c1e734c`) - the function MUST resync the supplier bar, not just the size grid:**
+
+```js
+function _rCommitStayOrHome(){
+  rBackFromReview();
+  rRenderSupplierSelect();
+  rRestoreSupplierFields();
+  if(typeof _rUpdateSessionCounter==='function')_rUpdateSessionCounter();
+}
+```
+
+Why: `rCommit()` deletes `rData[rBranch]` AND `rSupplierState[rBranch]` before this runs (so a new delivery doesn't inherit the old one's supplier/delivery note/invoice/photos - see `rCommit`'s own comment). `rBackFromReview()` only resets the size grid + header text - it was only ever built for the Review screen's Back button, a flow that never touches `rSupplierState`, so it never needed to resync the supplier bar. But `recvGridView` ALSO owns persistent DOM for the supplier bar (`#rSupplierSelect`, `#rSupplierOtherRow`/`#rSupplierOther`, `#rDeliveryNote`, `#rInvoiceNo`) and the photo picker (`#rSupplierPhotoBtn`/`#rSupplierPhotoThumb`), none of which `rShow()`/`rRenderGrid()` touch. Without the resync, those fields keep showing the JUST-COMMITTED delivery's values even though the underlying state is empty - the operator can't tell the form needs re-filling, `rOpenDetail()`'s `rSupplierComplete()` check then blocks them with a confusing "Select the supplier..." error, and a maxed-out photo count (e.g. "2/2") stays disabled, blocking new photos. `rRenderSupplierSelect()+rRestoreSupplierFields()` is the exact pairing already used everywhere else this reset is needed (`rLoadSuppliers`'s success callback, `rSetBranch`) - reuse it here too, don't duplicate it a third time.
 
 - [ ] **Step 2: Syntax-check** (same command as Task 1 Step 2)
 
