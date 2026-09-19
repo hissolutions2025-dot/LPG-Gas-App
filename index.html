@@ -11414,7 +11414,7 @@ function _photoQueueProcess(startIndex){
 // Retry triggers - online reconnect (same event the Close Day queue already listens for),
 // and a periodic tick that only does anything while the queue is non-empty (no polling once
 // it's empty). Also called once more from doLogin()/_finishLogin() in Task 4.
-window.addEventListener('online',_photoQueueProcess);
+window.addEventListener('online',function(){_photoQueueProcess();});
 setInterval(function(){if(_photoQueueLoad().length)_photoQueueProcess();},45000);
 window.addEventListener('online',_closeDayFlushQueue);
 // Zeroes every capture area's leftover UNCOMMITTED draft for a branch+day, once Close Day is
