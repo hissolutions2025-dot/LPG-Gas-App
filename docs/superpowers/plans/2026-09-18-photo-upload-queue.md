@@ -47,7 +47,14 @@ function _photoQueueSave(q){
 // linkField: the Sheet column name to write the joined links into (PhotoLinks/PhotoLink)
 // localField: the app-side row field the joined links go into (photoLinks/_photoLink)
 function _photoQueueAdd(entry){
-  var q=_photoQueueLoad();
+  // De-dupes by capType+rowRid before adding - fixed during Task 5's code review: a Refill
+  // row whose seal turns out already-used gets _committed reset to false and stays in
+  // store.refill as a draft for the operator to fix and recommit; without this, the SAME
+  // row's photos (same _rid) would get queued a second time on that recommit, each copy
+  // independently retrying/uploading/write-back-ing for the same row. Removing any existing
+  // entry for the same row before adding the new one makes a recommit replace, not duplicate -
+  // the newest capture of a row's photos is always the one that matters.
+  var q=_photoQueueLoad().filter(function(e){return !(e.capType===entry.capType && e.rowRid===entry.rowRid);});
   entry.id='p'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
   entry.attempts=0;entry.lastAttemptAt=null;entry.lastError=null;
   q.push(entry);
@@ -313,7 +320,7 @@ git commit -m "feat: wire photo queue flush into login, add pending badges to Ho
 
 - [ ] **Step 1: Replace the blocking photo-upload loop with an enqueue**
 
-Find this exact block inside `_capCommitReal` (added 2026-09-18 in the earlier stopgap fix - the `Promise.race`/25s-timeout version):
+Find this exact block inside `_capCommitReal` (confirmed against the actual file immediately before writing this task - the 25s timeout from the earlier stopgap fix lives INSIDE `uploadPhotoSet` itself, not duplicated at this call site, so this loop is a plain `await`, not a `Promise.race`):
 
 ```js
     if(capType==='manifold' || capType==='private' || capType==='refill'){
@@ -324,16 +331,11 @@ Find this exact block inside `_capCommitReal` (added 2026-09-18 in the earlier s
         toast('Uploading photo(s)…');
         for(var pi=0;pi<rowsWithPhotos.length;pi++){
           var pr=rowsWithPhotos[pi];
-          pr[linkKey]=await Promise.race([
-            apiPost('photoUpload',{branch:br,date:today,category:category,mimeType:m[1],dataBase64:m[2]}),
-            new Promise(function(_,rej){setTimeout(function(){rej(new Error('photo upload timed out'));},25000);})
-          ]);
+          pr[linkKey]=await uploadPhotoSet(capType==='manifold'?'Manifold':(capType==='refill'?'Refill':'Private'), capBranch, pr[photoKey]);
         }
       }
     }
 ```
-
-(Note: the exact text above may differ slightly if Task order in the actual file has the 2026-09-18 stopgap version verbatim - match against what's actually in `_capCommitReal` at the point named by the comment "Photos here are per-row... upload per-row right before syncing".)
 
 Replace it with:
 
@@ -344,11 +346,19 @@ Replace it with:
     // regardless of upload outcome. photoKey/linkKey unchanged from before (Private's fields
     // are still named supplierPhoto/photoLinks, Manifold/Refill still photo/_photoLink -
     // only WHEN the upload happens changed, not the field names anything else reads).
+    // _queuedThisCommit counts only what THIS commit just queued - fixed during code review:
+    // _photoQueueLoad().length (used further down for the toast) is the ENTIRE persistent
+    // backlog, every unprocessed entry from every prior commit/capType/branch, not "how many
+    // this commit added." Reading that raw total in the toast either over-counts (stale
+    // entries from earlier commits inflate it) or misleads (shows a nonzero count when THIS
+    // commit queued nothing at all).
+    var _queuedThisCommit=0;
     if(capType==='manifold' || capType==='private' || capType==='refill'){
       var photoKey = capType==='private' ? 'supplierPhoto' : 'photo';
       var category = capType==='manifold'?'Manifold':(capType==='refill'?'Refill':'Private');
       freshRows.filter(function(r){return (r[photoKey]||[]).length;}).forEach(function(r){
         _photoQueueAdd({capType:capType,branch:capBranch,date:today,rowRid:r._rid,category:category,photos:r[photoKey]});
+        _queuedThisCommit++;
       });
     }
 ```
@@ -362,8 +372,7 @@ Find:
 Replace with:
 ```js
     } else {
-      var _qLen=_photoQueueLoad().length;
-      toast(c.title+' committed ✓'+(_qLen?(' · '+_qLen+' photo(s) uploading in background'):''));
+      toast(c.title+' committed ✓'+(_queuedThisCommit?(' · '+_queuedThisCommit+' photo(s) uploading in background'):''));
     }
 ```
 
