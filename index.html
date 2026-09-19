@@ -9845,9 +9845,9 @@ async function _capCommitReal(){
     // are still named supplierPhoto/photoLinks, Manifold/Refill still photo/_photoLink -
     // only WHEN the upload happens changed, not the field names anything else reads).
     var _queuedThisCommit=0;
-    if(capType==='manifold' || capType==='private' || capType==='refill'){
+    if(capType==='manifold' || capType==='private'){
       var photoKey = capType==='private' ? 'supplierPhoto' : 'photo';
-      var category = capType==='manifold'?'Manifold':(capType==='refill'?'Refill':'Private');
+      var category = capType==='manifold'?'Manifold':'Private';
       freshRows.filter(function(r){return (r[photoKey]||[]).length;}).forEach(function(r){
         _photoQueueAdd({capType:capType,branch:capBranch,date:today,rowRid:r._rid,category:category,photos:r[photoKey]});
         _queuedThisCommit++;
@@ -9878,6 +9878,10 @@ async function _capCommitReal(){
         syncPush('Refills',syncRowsRefill(okRows,capBranch));
         _pushCaptureLiveRows('refill',okRows,capBranch);
       }
+      okRows.filter(function(r){return (r.photo||[]).length;}).forEach(function(r){
+        _photoQueueAdd({capType:'refill',branch:capBranch,date:today,rowRid:r._rid,category:'Refill',photos:r.photo});
+        _queuedThisCommit++;
+      });
     }
     else if(capType==='private'){
       syncPush('Private',syncRowsPrivate(freshRows,capBranch));
