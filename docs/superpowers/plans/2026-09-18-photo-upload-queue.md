@@ -352,12 +352,44 @@ Replace it with:
     // this commit added." Reading that raw total in the toast either over-counts (stale
     // entries from earlier commits inflate it) or misleads (shows a nonzero count when THIS
     // commit queued nothing at all).
+    // Refill deliberately excluded here (unlike Manifold/Private, which enqueue right below) -
+    // fixed during a second round of code review: Refill's own seal-rejection check runs
+    // AFTER this point (a row whose seal is already used elsewhere gets _committed reset to
+    // false and never actually reaches the Sheet/mirror). Enqueueing a rejected row's photos
+    // here anyway meant a queued upload could finish and write _committed:true onto that
+    // row's live mirror even though the row itself was never really committed - a rejected
+    // Refill row could briefly appear "committed" on another device, purely because its photo
+    // upload happened to land before anyone caught the rejection. Refill's own enqueue moves
+    // to inside the refill branch below, scoped to okRows only (the seal-check survivors) -
+    // Manifold and Private have no equivalent after-the-fact rejection path, so enqueueing
+    // them immediately here is still correct and unchanged.
     var _queuedThisCommit=0;
-    if(capType==='manifold' || capType==='private' || capType==='refill'){
+    if(capType==='manifold' || capType==='private'){
       var photoKey = capType==='private' ? 'supplierPhoto' : 'photo';
-      var category = capType==='manifold'?'Manifold':(capType==='refill'?'Refill':'Private');
+      var category = capType==='manifold'?'Manifold':'Private';
       freshRows.filter(function(r){return (r[photoKey]||[]).length;}).forEach(function(r){
         _photoQueueAdd({capType:capType,branch:capBranch,date:today,rowRid:r._rid,category:category,photos:r[photoKey]});
+        _queuedThisCommit++;
+      });
+    }
+```
+
+Also find this exact block, further down in the same function (inside the `else if(capType==='refill'){...}` branch):
+```js
+      if(okRows.length){
+        syncPush('Refills',syncRowsRefill(okRows,capBranch));
+        _pushCaptureLiveRows('refill',okRows,capBranch);
+      }
+    }
+```
+Replace with (adds the Refill-specific enqueue, scoped to `okRows` - the rows that actually survived the seal check):
+```js
+      if(okRows.length){
+        syncPush('Refills',syncRowsRefill(okRows,capBranch));
+        _pushCaptureLiveRows('refill',okRows,capBranch);
+      }
+      okRows.filter(function(r){return (r.photo||[]).length;}).forEach(function(r){
+        _photoQueueAdd({capType:'refill',branch:capBranch,date:today,rowRid:r._rid,category:'Refill',photos:r.photo});
         _queuedThisCommit++;
       });
     }
