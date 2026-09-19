@@ -9838,17 +9838,18 @@ async function _capCommitReal(){
     // can re-run and re-flush store[capType] (would mean re-uploading pointlessly). Only
     // freshRows need this - an already-_committed row already has its _photoLink/photoLinks
     // set from its own commit and must not be re-uploaded.
+    // Decoupled 2026-09-18 - see docs/superpowers/specs/2026-09-18-photo-upload-queue-design.md.
+    // Photos no longer block commit at all: each row's already-resized photos go straight
+    // into the background upload queue (Task 1-3) and the data commits immediately below,
+    // regardless of upload outcome. photoKey/linkKey unchanged from before (Private's fields
+    // are still named supplierPhoto/photoLinks, Manifold/Refill still photo/_photoLink -
+    // only WHEN the upload happens changed, not the field names anything else reads).
     if(capType==='manifold' || capType==='private' || capType==='refill'){
-      var photoKey = capType==='private' ? 'supplierPhoto' : 'photo'; // manifold and refill both use the plain 'photo' key
-      var linkKey = capType==='private' ? 'photoLinks' : '_photoLink';
-      var rowsWithPhotos = freshRows.filter(function(r){return (r[photoKey]||[]).length;});
-      if(rowsWithPhotos.length){
-        toast('Uploading photo(s)…');
-        for(var pi=0;pi<rowsWithPhotos.length;pi++){
-          var pr=rowsWithPhotos[pi];
-          pr[linkKey]=await uploadPhotoSet(capType==='manifold'?'Manifold':(capType==='refill'?'Refill':'Private'), capBranch, pr[photoKey]);
-        }
-      }
+      var photoKey = capType==='private' ? 'supplierPhoto' : 'photo';
+      var category = capType==='manifold'?'Manifold':(capType==='refill'?'Refill':'Private');
+      freshRows.filter(function(r){return (r[photoKey]||[]).length;}).forEach(function(r){
+        _photoQueueAdd({capType:capType,branch:capBranch,date:today,rowRid:r._rid,category:category,photos:r[photoKey]});
+      });
     }
     // Mark these rows synced so a later Review-with-nothing-new (or this whole function
     // re-running) never re-sends them - see the freshRows guard above and capReview()'s
@@ -9887,7 +9888,10 @@ async function _capCommitReal(){
     if(mmM.length){
       if(perm('adjust'))toast('⚠ '+mmM.length+' manifold weight(s) differ from previous close — see Count History',true);
       else toast('⚠ This count is incorrect — see Count History. A manager must review.',true);
-    } else toast(c.title+' committed ✓');
+    } else {
+      var _qLen=_photoQueueLoad().length;
+      toast(c.title+' committed ✓'+(_qLen?(' · '+_qLen+' photo(s) uploading in background'):''));
+    }
     goHome();
   } catch(e){
     // Real bug, confirmed live 2026-09-18 ("Coenie... not one of the Private refills he
