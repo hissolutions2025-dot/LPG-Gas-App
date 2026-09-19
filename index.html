@@ -7866,13 +7866,13 @@ async function rCommit(){
   var btn=document.getElementById('rCommitBtn');
   if(btn){btn.disabled=true;btn.style.opacity='.6';}
   try{
-    // Photos are session-level (one set per supplier delivery, not per size/line) - upload
-    // once here, then stamp the same joined link string onto every row pushed below.
-    var photoLinks='';
-    if((sup.photos||[]).length){
-      toast('Uploading photo(s)…');
-      photoLinks=await uploadPhotoSet('Received',rBranch,sup.photos);
-    }
+    // Decoupled 2026-09-18 - see docs/superpowers/specs/2026-09-18-photo-upload-queue-design.md.
+    // Photos no longer block commit - every row commits immediately (each starts with
+    // photoLinks:'', same as any not-yet-uploaded row elsewhere), then the delivery's one
+    // photo set (still uploaded ONCE, not per-row) queues in the background and fans its
+    // result out to every row via _photoQueueWriteBack's rowRids support (Step 1 above) once
+    // it finishes - preserving the exact "one upload, shared across every line" behavior the
+    // old blocking code already had.
     // Build only THIS delivery's new rows and append them onto store.received - was
     // `store.received=[]` (wiped EVERY branch's already-committed delivery, not just this
     // one) then rebuilt purely from this branch's current grid. Since a normal delivery isn't
@@ -7895,13 +7895,18 @@ async function rCommit(){
       // _rid: see flush()'s note above - same client-generated id + RowId-column matching
       // scheme, so a same-day Adjustment can update the exact sheet row instead of only
       // logging to Adjustments.
-      b[sz].recv.forEach(function(l){if(num(l.qty)>0)newRows.push({size:sz,brand:l.brand,fullIn:num(l.qty),emptyOut:0,_side:'recv',_rid:_rid(),note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
-      b[sz].ret.forEach(function(l){if(num(l.qty)>0)newRows.push({size:sz,brand:l.brand,fullIn:0,emptyOut:num(l.qty),_side:'ret',_rid:_rid(),note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
+      b[sz].recv.forEach(function(l){if(num(l.qty)>0)newRows.push({size:sz,brand:l.brand,fullIn:num(l.qty),emptyOut:0,_side:'recv',_rid:_rid(),note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:'',branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
+      b[sz].ret.forEach(function(l){if(num(l.qty)>0)newRows.push({size:sz,brand:l.brand,fullIn:0,emptyOut:num(l.qty),_side:'ret',_rid:_rid(),note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:'',branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
     });
     if(newRows.length===0){toast('Nothing to commit',true);return;}
     store.received=(store.received||[]).concat(newRows);
     syncPush('Received',syncRowsReceived(newRows,rBranch));
     _pushCaptureLiveRows('received',newRows,rBranch);
+    var _queuedPhotoCount=0;
+    if((sup.photos||[]).length){
+      _photoQueueAdd({capType:'received',branch:rBranch,date:today,rowRids:newRows.map(function(r){return r._rid;}),category:'Received',photos:sup.photos});
+      _queuedPhotoCount=sup.photos.length;
+    }
     saveWorkingStore();auditLog('Received committed',newRows.length+' line(s) — '+rBranch+(mm.length?' · '+mm.length+' override(s)':''),null,mm.length?rOverrides:null);
     // Same class of bug as Refill/Private: rData[rBranch] (the grid's Full In/Empty Out
     // lines) and rSupplierState[rBranch] (supplier/delivery note/invoice/photos) were never
@@ -7912,7 +7917,7 @@ async function rCommit(){
     delete rData[rBranch];
     delete rSupplierState[rBranch];
     rSaveDraft();
-    updateBadges();toast('Received committed'+(mm.length?' ('+mm.length+' override'+(mm.length>1?'s':'')+' logged)':'')+' ✓');goHome();
+    updateBadges();toast('Received committed'+(mm.length?' ('+mm.length+' override'+(mm.length>1?'s':'')+' logged)':'')+' ✓'+(_queuedPhotoCount?(' · '+_queuedPhotoCount+' photo(s) uploading in background'):''));goHome();
   } finally {
     // Deliberately NOT reset synchronously here: when there's no photo to upload, this
     // whole function runs with no await at all, so an immediate reset would clear the
@@ -11381,22 +11386,31 @@ var PHOTO_QUEUE_LOCAL_FIELD={manifold:'_photoLink',refill:'_photoLink',private:'
 // skipped when PHOTO_QUEUE_SHEET has no entry for this capType), and the live Supabase
 // mirror (manifold_live_rows for manifold, capture_live_rows for the rest) so another device
 // sees it today too, not just after Close Day's snapshot.
+// Generalized 2026-09-18 for Received (Task 6) - Manifold/Refill/Private each queue one
+// entry per row (entry.rowRid, singular), but Received uploads its whole delivery's photo
+// set ONCE and shares the same resulting link across every row in that delivery, exactly as
+// the old blocking code already did (see rCommit's own "session-level" comment) - this now
+// accepts EITHER entry.rowRid (singular, unchanged for the other three capTypes) OR
+// entry.rowRids (plural, an array - Received's shape), writing the same link to all of them.
 function _photoQueueWriteBack(entry,links){
+  var rowRids=entry.rowRids||(entry.rowRid?[entry.rowRid]:[]);
   var localField=PHOTO_QUEUE_LOCAL_FIELD[entry.capType];
-  var row=(store[entry.capType]||[]).filter(function(r){return r._rid===entry.rowRid;})[0];
-  if(row)row[localField]=links;
+  rowRids.forEach(function(rid){
+    var row=(store[entry.capType]||[]).filter(function(r){return r._rid===rid;})[0];
+    if(row)row[localField]=links;
+  });
   saveWorkingStore();
   var sheet=PHOTO_QUEUE_SHEET[entry.capType];
   if(sheet){
     var linkField=PHOTO_QUEUE_LINK_FIELD[entry.capType];
     var updates={};updates[linkField]=links;
-    adjustSheetRow(sheet,entry.rowRid,updates);
+    rowRids.forEach(function(rid){adjustSheetRow(sheet,rid,updates);});
   }
   if(entry.capType==='manifold'){
     return _updateManifoldLiveRowFields(entry.rowRid,{_photoLink:links});
   }
   var mf={_committed:true};mf[localField]=links;
-  return _updateCaptureLiveRowFields(entry.capType,entry.rowRid,mf);
+  return Promise.all(rowRids.map(function(rid){return _updateCaptureLiveRowFields(entry.capType,rid,mf);}));
 }
 // Processes one queue entry at a time (never parallel - a burst of retries hitting the same
 // flaky connection at once helps nobody). uploadPhotoSet already skips any individual photo
