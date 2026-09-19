@@ -426,23 +426,181 @@ git commit -m "feat: decouple photo upload from Manifold/Refill/Private commit"
 ### Task 6: Decouple photo upload from Received commit (`rCommit`)
 
 **Files:**
-- Modify: `index.html` (Received's own commit function - search `function rCommit`, find its own `uploadPhotoSet` call, same shape as Task 5 but Received's photos are session-level, not per-row - see `rPhoto`/`st.photos` in the surrounding code before this edit to confirm the exact local variable names in place at the time of implementation)
+- Modify: `index.html` (`_photoQueueWriteBack`, Task 3's function - needs a small, deliberate generalization first; then `rCommit` itself)
 
-- [ ] **Step 1: Find Received's current blocking photo-upload call**
+Received's photos are genuinely different in shape from Manifold/Refill/Private, confirmed by reading `rCommit` in full: ONE photo set per delivery (`sup.photos`), uploaded ONCE, with the SAME resulting link string then stamped onto EVERY row this commit produces (one delivery can span several size/full-in/empty-out lines, all sharing one set of invoice/delivery-note photos) - this is existing, deliberate behavior (see the pre-existing comment directly above the upload call: "Photos are session-level... upload once here, then stamp the same joined link string onto every row"), not something to change. `_photoQueueWriteBack` as built in Task 3 only knows how to write a link back to ONE row (`entry.rowRid`) - it needs to optionally handle SEVERAL rows sharing one upload instead.
 
-Read the function fully first (`function rCommit(){` through its own closing `}`) to find exactly where it awaits `uploadPhotoSet` for Received's session-level photo set, and what row(s) that upload's link is meant to attach to (Received's rows are per-size lines within one delivery session, sharing one photo set per the session, based on this plan's spec discussion of "session-level" photos - confirm the precise linkage before editing, since Received's shape differs from the other three's strictly-per-row photos).
+- [ ] **Step 1: Generalize `_photoQueueWriteBack` to support multiple rows sharing one upload**
 
-- [ ] **Step 2: Replace the blocking call with an enqueue per committed row that should carry the link**
+Find this exact function in `index.html`:
+```js
+function _photoQueueWriteBack(entry,links){
+  var localField=PHOTO_QUEUE_LOCAL_FIELD[entry.capType];
+  var row=(store[entry.capType]||[]).filter(function(r){return r._rid===entry.rowRid;})[0];
+  if(row)row[localField]=links;
+  saveWorkingStore();
+  var sheet=PHOTO_QUEUE_SHEET[entry.capType];
+  if(sheet){
+    var linkField=PHOTO_QUEUE_LINK_FIELD[entry.capType];
+    var updates={};updates[linkField]=links;
+    adjustSheetRow(sheet,entry.rowRid,updates);
+  }
+  if(entry.capType==='manifold'){
+    return _updateManifoldLiveRowFields(entry.rowRid,{_photoLink:links});
+  }
+  var mf={_committed:true};mf[localField]=links;
+  return _updateCaptureLiveRowFields(entry.capType,entry.rowRid,mf);
+}
+```
+Replace with:
+```js
+// Generalized 2026-09-18 for Received (Task 6) - Manifold/Refill/Private each queue one
+// entry per row (entry.rowRid, singular), but Received uploads its whole delivery's photo
+// set ONCE and shares the same resulting link across every row in that delivery, exactly as
+// the old blocking code already did (see rCommit's own "session-level" comment) - this now
+// accepts EITHER entry.rowRid (singular, unchanged for the other three capTypes) OR
+// entry.rowRids (plural, an array - Received's shape), writing the same link to all of them.
+function _photoQueueWriteBack(entry,links){
+  var rowRids=entry.rowRids||(entry.rowRid?[entry.rowRid]:[]);
+  var localField=PHOTO_QUEUE_LOCAL_FIELD[entry.capType];
+  rowRids.forEach(function(rid){
+    var row=(store[entry.capType]||[]).filter(function(r){return r._rid===rid;})[0];
+    if(row)row[localField]=links;
+  });
+  saveWorkingStore();
+  var sheet=PHOTO_QUEUE_SHEET[entry.capType];
+  if(sheet){
+    var linkField=PHOTO_QUEUE_LINK_FIELD[entry.capType];
+    var updates={};updates[linkField]=links;
+    rowRids.forEach(function(rid){adjustSheetRow(sheet,rid,updates);});
+  }
+  if(entry.capType==='manifold'){
+    return _updateManifoldLiveRowFields(entry.rowRid,{_photoLink:links});
+  }
+  var mf={_committed:true};mf[localField]=links;
+  return Promise.all(rowRids.map(function(rid){return _updateCaptureLiveRowFields(entry.capType,rid,mf);}));
+}
+```
 
-Mirror Task 5 Step 1's transformation exactly: remove the `await uploadPhotoSet(...)` / `await Promise.race([...])` call, replace with a loop over the rows this commit is about to sync that calls `_photoQueueAdd({capType:'received',branch:rBranch,date:today,rowRid:r._rid,category:'Received',photos:<the session's photo array>})` for each row that should receive the link (or once, on the first/primary row, if Received's backend model attaches one link to one row per session rather than duplicating it across every line - confirm against `syncRowsReceived`'s own field mapping before deciding).
+- [ ] **Step 2: Replace Received's blocking upload with an immediate commit + one fan-out enqueue**
 
-- [ ] **Step 3: Update the post-commit toast** (same pattern as Task 5 Step 2, using Received's own existing toast line: `toast('Received committed'+(mm.length?...)+' ✓');`)
+Find this exact block inside `rCommit`:
+```js
+  try{
+    // Photos are session-level (one set per supplier delivery, not per size/line) - upload
+    // once here, then stamp the same joined link string onto every row pushed below.
+    var photoLinks='';
+    if((sup.photos||[]).length){
+      toast('Uploading photo(s)…');
+      photoLinks=await uploadPhotoSet('Received',rBranch,sup.photos);
+    }
+    // Build only THIS delivery's new rows and append them onto store.received - was
+    // `store.received=[]` (wiped EVERY branch's already-committed delivery, not just this
+    // one) then rebuilt purely from this branch's current grid. Since a normal delivery isn't
+    // re-committed (rData[rBranch] is deleted below on success, so a later commit for this
+    // branch starts from a genuinely fresh, empty grid), there's no risk of resending an old
+    // row here - the wipe was pure unnecessary data loss, erasing every earlier delivery
+    // (this branch's or the other branch's) from local memory the moment ANY delivery was
+    // committed, which is exactly why Count History's "Stock Received" section only ever
+    // showed the latest delivery instead of the whole day.
+    var newRows=[];
+    var b=rBkt();
+    R_SIZES.forEach(function(sz){
+      if(!b[sz])return;
+      var reason=rOverrides[sz]||'';
+      // _side records which field this row actually represents, independent of its current
+      // value - a row is always fundamentally either a Full-in record or an Empty-out record
+      // (never both), but without this tag, correcting a value down to 0 would make it
+      // indistinguishable from "never had anything on this side" and vanish from the
+      // Adjustment picker (see corrLines' Received branch below).
+      // _rid: see flush()'s note above - same client-generated id + RowId-column matching
+      // scheme, so a same-day Adjustment can update the exact sheet row instead of only
+      // logging to Adjustments.
+      b[sz].recv.forEach(function(l){if(num(l.qty)>0)newRows.push({size:sz,brand:l.brand,fullIn:num(l.qty),emptyOut:0,_side:'recv',_rid:_rid(),note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
+      b[sz].ret.forEach(function(l){if(num(l.qty)>0)newRows.push({size:sz,brand:l.brand,fullIn:0,emptyOut:num(l.qty),_side:'ret',_rid:_rid(),note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:photoLinks,branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
+    });
+    if(newRows.length===0){toast('Nothing to commit',true);return;}
+    store.received=(store.received||[]).concat(newRows);
+    syncPush('Received',syncRowsReceived(newRows,rBranch));
+    _pushCaptureLiveRows('received',newRows,rBranch);
+    saveWorkingStore();auditLog('Received committed',newRows.length+' line(s) — '+rBranch+(mm.length?' · '+mm.length+' override(s)':''),null,mm.length?rOverrides:null);
+    // Same class of bug as Refill/Private: rData[rBranch] (the grid's Full In/Empty Out
+    // lines) and rSupplierState[rBranch] (supplier/delivery note/invoice/photos) were never
+    // cleared after a successful commit, so re-opening Received for this branch still showed
+    // the just-committed delivery's lines - any new quantities typed in got added ON TOP of
+    // the old ones, and a second commit re-sent both. A new delivery also has no business
+    // inheriting the previous one's supplier/delivery note/invoice/photos, so both are reset.
+    delete rData[rBranch];
+    delete rSupplierState[rBranch];
+    rSaveDraft();
+    updateBadges();toast('Received committed'+(mm.length?' ('+mm.length+' override'+(mm.length>1?'s':'')+' logged)':'')+' ✓');goHome();
+  } finally {
+```
+Replace with:
+```js
+  try{
+    // Decoupled 2026-09-18 - see docs/superpowers/specs/2026-09-18-photo-upload-queue-design.md.
+    // Photos no longer block commit - every row commits immediately (each starts with
+    // photoLinks:'', same as any not-yet-uploaded row elsewhere), then the delivery's one
+    // photo set (still uploaded ONCE, not per-row) queues in the background and fans its
+    // result out to every row via _photoQueueWriteBack's rowRids support (Step 1 above) once
+    // it finishes - preserving the exact "one upload, shared across every line" behavior the
+    // old blocking code already had.
+    // Build only THIS delivery's new rows and append them onto store.received - was
+    // `store.received=[]` (wiped EVERY branch's already-committed delivery, not just this
+    // one) then rebuilt purely from this branch's current grid. Since a normal delivery isn't
+    // re-committed (rData[rBranch] is deleted below on success, so a later commit for this
+    // branch starts from a genuinely fresh, empty grid), there's no risk of resending an old
+    // row here - the wipe was pure unnecessary data loss, erasing every earlier delivery
+    // (this branch's or the other branch's) from local memory the moment ANY delivery was
+    // committed, which is exactly why Count History's "Stock Received" section only ever
+    // showed the latest delivery instead of the whole day.
+    var newRows=[];
+    var b=rBkt();
+    R_SIZES.forEach(function(sz){
+      if(!b[sz])return;
+      var reason=rOverrides[sz]||'';
+      // _side records which field this row actually represents, independent of its current
+      // value - a row is always fundamentally either a Full-in record or an Empty-out record
+      // (never both), but without this tag, correcting a value down to 0 would make it
+      // indistinguishable from "never had anything on this side" and vanish from the
+      // Adjustment picker (see corrLines' Received branch below).
+      // _rid: see flush()'s note above - same client-generated id + RowId-column matching
+      // scheme, so a same-day Adjustment can update the exact sheet row instead of only
+      // logging to Adjustments.
+      b[sz].recv.forEach(function(l){if(num(l.qty)>0)newRows.push({size:sz,brand:l.brand,fullIn:num(l.qty),emptyOut:0,_side:'recv',_rid:_rid(),note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:'',branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
+      b[sz].ret.forEach(function(l){if(num(l.qty)>0)newRows.push({size:sz,brand:l.brand,fullIn:0,emptyOut:num(l.qty),_side:'ret',_rid:_rid(),note:l.note||'',overrideReason:reason,supplier:sup.supplier||'',deliveryNote:sup.deliveryNote||'',invoiceNo:sup.invoiceNo||'',photos:(sup.photos||[]).slice(),photoLinks:'',branch:rBranch,_date:today,_time:l._ts||nowStamp(),_operator:operator,_role:role});});
+    });
+    if(newRows.length===0){toast('Nothing to commit',true);return;}
+    store.received=(store.received||[]).concat(newRows);
+    syncPush('Received',syncRowsReceived(newRows,rBranch));
+    _pushCaptureLiveRows('received',newRows,rBranch);
+    var _queuedPhotoCount=0;
+    if((sup.photos||[]).length){
+      _photoQueueAdd({capType:'received',branch:rBranch,date:today,rowRids:newRows.map(function(r){return r._rid;}),category:'Received',photos:sup.photos});
+      _queuedPhotoCount=sup.photos.length;
+    }
+    saveWorkingStore();auditLog('Received committed',newRows.length+' line(s) — '+rBranch+(mm.length?' · '+mm.length+' override(s)':''),null,mm.length?rOverrides:null);
+    // Same class of bug as Refill/Private: rData[rBranch] (the grid's Full In/Empty Out
+    // lines) and rSupplierState[rBranch] (supplier/delivery note/invoice/photos) were never
+    // cleared after a successful commit, so re-opening Received for this branch still showed
+    // the just-committed delivery's lines - any new quantities typed in got added ON TOP of
+    // the old ones, and a second commit re-sent both. A new delivery also has no business
+    // inheriting the previous one's supplier/delivery note/invoice/photos, so both are reset.
+    delete rData[rBranch];
+    delete rSupplierState[rBranch];
+    rSaveDraft();
+    updateBadges();toast('Received committed'+(mm.length?' ('+mm.length+' override'+(mm.length>1?'s':'')+' logged)':'')+' ✓'+(_queuedPhotoCount?(' · '+_queuedPhotoCount+' photo(s) uploading in background'):''));goHome();
+  } finally {
+```
 
-- [ ] **Step 4: Syntax-check** (same command as Task 1 Step 2)
+- [ ] **Step 3: Syntax-check** (same command as Task 1 Step 2)
 
-- [ ] **Step 5: Verify live** (same approach as Task 5 Step 4, seeded for Received's own draft shape)
+- [ ] **Step 4: Verify live**
 
-- [ ] **Step 6: Commit**
+Deploy, then in the browser console on the live app: seed `rData`/`rSupplierState` for a branch with at least one Full-in or Empty-out line and a fake `photos` array on the supplier state, call `rCommit()`, confirm: the commit completes without waiting on the fake photo, `_photoQueueLoad()` gains exactly one entry with a `rowRids` array matching every row just committed (not one entry per row), and the toast mentions "photo(s) uploading in background". Also confirm the Manifold/Refill/Private path from Task 5 still works unaffected by the `_photoQueueWriteBack` generalization (re-run Task 5's own verification steps once more, since Step 1 above touches the same function Task 5 depends on).
+
+- [ ] **Step 5: Commit**
 
 ```bash
 git add index.html
