@@ -9844,11 +9844,13 @@ async function _capCommitReal(){
     // regardless of upload outcome. photoKey/linkKey unchanged from before (Private's fields
     // are still named supplierPhoto/photoLinks, Manifold/Refill still photo/_photoLink -
     // only WHEN the upload happens changed, not the field names anything else reads).
+    var _queuedThisCommit=0;
     if(capType==='manifold' || capType==='private' || capType==='refill'){
       var photoKey = capType==='private' ? 'supplierPhoto' : 'photo';
       var category = capType==='manifold'?'Manifold':(capType==='refill'?'Refill':'Private');
       freshRows.filter(function(r){return (r[photoKey]||[]).length;}).forEach(function(r){
         _photoQueueAdd({capType:capType,branch:capBranch,date:today,rowRid:r._rid,category:category,photos:r[photoKey]});
+        _queuedThisCommit++;
       });
     }
     // Mark these rows synced so a later Review-with-nothing-new (or this whole function
@@ -9889,8 +9891,7 @@ async function _capCommitReal(){
       if(perm('adjust'))toast('⚠ '+mmM.length+' manifold weight(s) differ from previous close — see Count History',true);
       else toast('⚠ This count is incorrect — see Count History. A manager must review.',true);
     } else {
-      var _qLen=_photoQueueLoad().length;
-      toast(c.title+' committed ✓'+(_qLen?(' · '+_qLen+' photo(s) uploading in background'):''));
+      toast(c.title+' committed ✓'+(_queuedThisCommit?(' · '+_queuedThisCommit+' photo(s) uploading in background'):''));
     }
     goHome();
   } catch(e){
@@ -11327,7 +11328,14 @@ function _photoQueueSave(q){
 // linkField: the Sheet column name to write the joined links into (PhotoLinks/PhotoLink)
 // localField: the app-side row field the joined links go into (photoLinks/_photoLink)
 function _photoQueueAdd(entry){
-  var q=_photoQueueLoad();
+  // De-dupes by capType+rowRid before adding - fixed during Task 5's code review: a Refill
+  // row whose seal turns out already-used gets _committed reset to false and stays in
+  // store.refill as a draft for the operator to fix and recommit; without this, the SAME
+  // row's photos (same _rid) would get queued a second time on that recommit, each copy
+  // independently retrying/uploading/write-back-ing for the same row. Removing any existing
+  // entry for the same row before adding the new one makes a recommit replace, not duplicate -
+  // the newest capture of a row's photos is always the one that matters.
+  var q=_photoQueueLoad().filter(function(e){return !(e.capType===entry.capType && e.rowRid===entry.rowRid);});
   entry.id='p'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
   entry.attempts=0;entry.lastAttemptAt=null;entry.lastError=null;
   q.push(entry);
