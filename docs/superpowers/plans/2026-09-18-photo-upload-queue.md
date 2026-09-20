@@ -912,6 +912,19 @@ Scope check done during planning: the "48-hour window" in this app is measured f
 - **This task** covers TODAY's rows only (the day hasn't closed yet) - no time gate needed at all, same as the existing same-day Adjust tool, which is available any time before Close Day.
 - **Task 11b below** covers rows from an already-closed day, within 48 hours of that close - genuinely separate work, wired into `corrLines`/`openCorrection` instead.
 
+- [ ] **Step 0: Add the missing photo column to Refill's own `capReviewCols` (RESOLVED 2026-09-20, found during pre-dispatch investigation)**
+
+Real, pre-existing gap unrelated to Steps 1-2's own work, but it blocks them: Refill DOES capture a photo field (`{k:'photo',label:'Photo',type:'photo',max:2,opt:true}` in `CAP.refill`'s field list, and `_capCommitReal` already queues `r.photo` for upload at commit time) - but `capReviewCols('refill')` (currently index.html:9805) has NO `photo` column at all, unlike Manifold (line 9804) and Private (line ~9814). Since Step 1 below only extends the CELL that already exists for a `photo:true`-flagged column, without this fix the "+ Add photo" button would simply never render anywhere for Refill rows - Refill would be silently excluded from this whole task despite being explicitly in scope.
+
+Find:
+```js
+  if(type==='refill')return [{k:'size',label:'Size'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'pumped',label:'Pumped kg'},{k:'seal',label:'Seal #'},{k:'notes',label:'Notes'}];
+```
+Replace with:
+```js
+  if(type==='refill')return [{k:'size',label:'Size'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'pumped',label:'Pumped kg'},{k:'seal',label:'Seal #'},{k:'notes',label:'Notes'},{k:'photo',label:'Photo',photo:true}];
+```
+
 - [ ] **Step 1: Add a button next to the photo cell on today's Review rows**
 
 In the row renderer that already handles `if(c.photo){...}` (fixed earlier today - search `if(c.photo){var ph=Array.isArray(v)...`), extend it to add a button after the existing thumbnails. No extra eligibility gate needed here - this renderer only ever shows TODAY's still-open rows already, matching every other action already available on this same screen (correcting a value via the same-day Adjust tool has no time gate either, for the same reason):
@@ -955,7 +968,60 @@ function _openAddPhotoFor(capType,rid){
 }
 ```
 
-- [ ] **Step 3: Apply the same button to Received's own review row renderer** (mirror Step 1's `photo:true`-gated cell, using Received's own `_rid`-bearing row shape)
+- [ ] **Step 3: Add an equivalent action to Received's own review screen (RESOLVED 2026-09-20, found during pre-dispatch investigation - genuinely NOT a mirror of Step 1, do not attempt to reuse `capReviewCols`/`capReviewHTML` for Received)**
+
+Received has no per-row, column-based renderer to extend the way Manifold/Refill/Private do - `rReview()`'s "✓ Already committed today" table (index.html ~7807-7816) is built from custom string concatenation, grouped and SUMMED BY SIZE across every delivery committed today for the branch (via `rCommittedSummary()`), not rendered one row at a time. There is no existing per-row photo cell here to extend.
+
+More fundamentally, Received's photo model is already per-DELIVERY, not per-row (confirmed in Task 6): one supplier photo set is captured once per delivery and shared across every size/brand line in that delivery via `_photoQueueAdd`'s `rowRids` array. So the right grain for a manual add/retry action here is "one delivery", not "one row" - which also means it must enqueue against EVERY row `_rid` in that delivery (via `rowRids`), not just one, or sibling rows in the same delivery would end up with inconsistent `photoLinks` after a manual retry.
+
+**Grouping key**: group today's `store.received` rows for this branch by `deliveryNote+'|'+invoiceNo+'|'+supplier` only - do NOT include `_time`/`_ts` in the key. `_time` is stamped per LINE ITEM (`l._ts||nowStamp()` in `rCommit`), not per delivery, so individual rows of the SAME delivery can have different `_time` values - including it would wrongly split one delivery into several bogus single-row groups, defeating the entire point of a per-delivery action.
+
+Add this grouping helper near `rCommittedSummary()`:
+```js
+function _rTodaysDeliveryGroups(br){
+  var rows=store.received.filter(function(r){return r.branch===br&&(r._date||today)===today;});
+  var groups={};
+  rows.forEach(function(r){
+    var key=(r.deliveryNote||'')+'|'+(r.invoiceNo||'')+'|'+(r.supplier||'');
+    if(!groups[key])groups[key]={supplier:r.supplier||'(no supplier)',invoiceNo:r.invoiceNo||'',rowRids:[],photoLinks:''};
+    groups[key].rowRids.push(r._rid);
+    if(r.photoLinks)groups[key].photoLinks=r.photoLinks;
+  });
+  return Object.keys(groups).map(function(k){return groups[k];});
+}
+```
+
+Add a dedicated add/retry handler (parallel to `_openAddPhotoFor` from Step 2, but taking a `rowRids` array instead of a single `rid`, since `_photoQueueAdd` already supports this - built in Task 6, nothing new needed there):
+```js
+function _openAddPhotoForReceivedGroup(rowRids){
+  var input=document.createElement('input');
+  input.type='file';input.accept='image/*';input.style.display='none';
+  document.body.appendChild(input);
+  input.onchange=function(){
+    var f=input.files&&input.files[0];
+    document.body.removeChild(input);
+    if(!f)return;
+    _resizeImageForCapture(f).then(function(dataUri){
+      if(dataUri.length>PHOTO_HARD_LIMIT){toast('Photo still too large after resizing — try a different photo',true);return;}
+      _photoQueueAdd({capType:'received',branch:rBranch,date:today,rowRids:rowRids,category:'Received',photos:[dataUri]});
+      toast('Photo queued — uploading in background');
+    }).catch(function(){toast('Could not read that photo',true);});
+  };
+  input.click();
+}
+```
+
+Render one row per delivery group directly below the existing "✓ Already committed today" size table in `rReview()` (inside the same `if(committedSizes.length){...}` block, after that table's closing `html+='</table>';`) - do NOT try to parse/split `g.photoLinks` into a clickable link (it's a plain `', '`-joined string from `uploadPhotoSet`, not a delimiter-safe list), just show a has/hasn't indicator:
+```js
+    var groups=_rTodaysDeliveryGroups(rBranch);
+    if(groups.length){
+      html+='<div style="font-size:12px;color:var(--muted);margin:10px 0 4px">Today\'s deliveries — photos</div>';
+      html+=groups.map(function(g){
+        var status=g.photoLinks?'✓ photo on file':'— no photo';
+        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #EEF1F4;font-size:12px"><span>'+(g.supplier)+(g.invoiceNo?' · Inv '+g.invoiceNo:'')+' — '+status+'</span><button type="button" class="sigClear" style="padding:3px 8px;font-size:10px" onclick=\'_openAddPhotoForReceivedGroup('+JSON.stringify(g.rowRids)+')\'>'+(g.photoLinks?'+ Retry photo':'+ Add photo')+'</button></div>';
+      }).join('');
+    }
+```
 
 - [ ] **Step 4: Syntax-check** (same command as Task 1 Step 2)
 
