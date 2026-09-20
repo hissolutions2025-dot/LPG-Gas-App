@@ -664,6 +664,7 @@
   <div class="wrap">
     <div class="ctxbar" id="rCtx" style="margin-bottom:10px;"></div>
     <div class="capHint" id="rHint" style="margin-bottom:12px;"></div>
+    <div id="rSessionCounter" style="font-size:11px;color:var(--muted);margin-top:4px"></div>
     <button type="button" id="rAdjustLink" class="adjustTab" style="display:none" onclick="openReceivedAdjust()">✎ Adjust an already-committed entry (today only)</button>
     <div class="cGrid" id="rGrid"></div>
   </div>
@@ -705,6 +706,7 @@
     <div id="capPumpWarnBanner" style="display:none;background:var(--yellow);border:2px solid var(--amber);border-radius:10px;padding:8px 12px;font-size:12px;color:#8a5a00;font-weight:800;margin-bottom:10px"></div>
     <button type="button" id="capAdjustLink" class="adjustTab" style="display:none" onclick="openCapAdjust()">✎ Adjust an already-committed entry (today only)</button>
     <div class="capHint" id="capHint"></div>
+    <div id="capSessionCounter" style="font-size:11px;color:var(--muted);margin-top:4px"></div>
     <div class="csizegrid" id="capGrid"></div>
     <button class="saveBtn" onclick="capReview()">Review &amp; commit &rarr;</button>
   </div>
@@ -7625,6 +7627,7 @@ function openReceived(){
     document.getElementById('hSub').textContent='Full received vs empty returned';
     document.getElementById('backBtn').style.display='block';
     rShow('recvGridView');rRenderGrid();rLoadSuppliers();window.scrollTo(0,0);
+    _rUpdateSessionCounter();
     _saveCurrentSection('received');
     (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&rBranch===br)rRenderGrid();});})(rBranch);
     (function(br){_fetchCaptureLiveRows('received','received',br,today).then(function(){if(rBranch===br)rRenderGrid();});})(rBranch);
@@ -7954,6 +7957,22 @@ function _rCommitStayOrHome(){
   rRestoreSupplierFields();
   if(typeof _rUpdateSessionCounter==='function')_rUpdateSessionCounter();
 }
+// Dual counter, added 2026-09-18 per explicit request - "committed today" (this branch,
+// today - same data rCommittedSummary() already reads, no new tracking) and "photos
+// uploading" (this branch's share of the photo queue). Called from _rCommitStayOrHome
+// above after every commit, and once when Received's own capture view first opens.
+// IMPORTANT: unlike the Manifold/Refill/Private version, this deliberately does NOT filter
+// on r._committed - rCommit() never stamps that field on rows it pushes into store.received
+// (that field doesn't exist there), and store.received only ever holds already-committed
+// rows for a branch/day in the first place (drafts live separately in rData/rSupplierState,
+// never in store.received). Filtering by r._committed here would silently and permanently
+// show "0 committed today". This mirrors the exact filter rCommittedSummary() already uses.
+function _rUpdateSessionCounter(){
+  var el=document.getElementById('rSessionCounter');if(!el)return;
+  var committedToday=(store.received||[]).filter(function(r){return r.branch===rBranch&&(r._date||today)===today;}).length;
+  var queuedForBranch=_photoQueueLoad().filter(function(e){return e.capType==='received'&&e.branch===rBranch;}).length;
+  el.textContent=committedToday+' committed today'+(queuedForBranch?(' · '+queuedForBranch+' photo(s) uploading'):'');
+}
 
 /* ============ GENERIC CAPTURE ENGINE ============
    Each capture type is configured with:
@@ -8138,6 +8157,7 @@ function _openCapContinue(type,opts){
   (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&capBranch===br)renderGrid();});})(capBranch);
   renderGrid();
   if(type==='private')loadPrivateSuppliers(); // populate the Supplier/redistributor dropdown
+  _capUpdateSessionCounter();
   show('capView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);
   _saveCurrentSection(type);
   return true;
@@ -9970,6 +9990,16 @@ function _capCommitStayOrHome(){
   renderGrid();
   if(typeof _capUpdateSessionCounter==='function')_capUpdateSessionCounter();
   window.scrollTo(0,0);
+}
+// Dual counter, added 2026-09-18 per explicit request - "committed today" (this section,
+// this branch, today - same data Review/History already reads, no new tracking) and "photos
+// uploading" (this branch's share of the photo queue). Called from _capCommitStayOrHome
+// above after every commit, and once when the screen first opens.
+function _capUpdateSessionCounter(){
+  var el=document.getElementById('capSessionCounter');if(!el)return;
+  var committedToday=(store[capType]||[]).filter(function(r){return r.branch===capBranch&&(r._date||today)===today&&r._committed;}).length;
+  var queuedForBranch=_photoQueueLoad().filter(function(e){return e.capType===capType&&e.branch===capBranch;}).length;
+  el.textContent=committedToday+' committed today'+(queuedForBranch?(' · '+queuedForBranch+' photo(s) uploading'):'');
 }
 // Manifold OPENING weights vs previous CLOSE weights, per cylinder, ±0.2kg tolerance
 function computeManifoldMismatches(br){
