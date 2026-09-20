@@ -858,6 +858,24 @@
     <button class="htab" id="atab-faulty" onclick="adminTab('faulty')">Faulty Cylinders</button>
     <button class="htab" id="atab-suppliersmgmt" onclick="adminTab('suppliersmgmt')">Manage Suppliers</button>
     <button class="htab" id="atab-counttimes" onclick="adminTab('counttimes')">Count Times</button>
+    <button class="htab" id="atab-backdate" onclick="adminTab('backdate')">Backdate Stock Take</button>
+  </div>
+
+  <!-- BACKDATE STOCK TAKE PANE -->
+  <div id="adminBackdate" style="display:none">
+    <div class="histSection">
+      <h4>Backdate a missed day</h4>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">For a day nothing was captured for and Close Day was never done. Enter what actually happened from your paper records - this creates that day's closed record directly, the same as a normal Close Day.</div>
+      <div class="cgRow" style="margin-bottom:10px"><label>Branch</label><div class="cgToggle">
+        <button class="cgTg on" id="bdbr-Helderberg" onclick="bdSetBranch('Helderberg')">Helderberg</button>
+        <button class="cgTg" id="bdbr-Kleinmond" onclick="bdSetBranch('Kleinmond')">Kleinmond</button></div></div>
+      <div class="adminRow">
+        <div class="grow"><label class="mLabel" style="font-size:11px">Date</label>
+          <input type="date" class="mField" id="bdDate" onchange="bdCheckDate()"></div>
+      </div>
+      <div id="bdDateStatus" style="font-size:12px;margin:6px 0"></div>
+      <div id="bdFormBody" style="display:none"></div>
+    </div>
   </div>
 
   <!-- SEAL REGISTER PANE -->
@@ -2654,11 +2672,11 @@ function openAdmin(){
   show('adminView');window.scrollTo(0,0);
 }
 var _adminUnlocked={}; // per Admin session: which tabs unlocked
-var ADMIN_TAB_PERM={seals:'seal_admin',suppliers:'seal_admin',clear:'seal_edit_used',bsetup:'branch_setup',suppliersmgmt:'manageSuppliers',counttimes:'branch_setup',thresholds:'branch_setup',extraalloc:'branch_setup'};
-var ADMIN_TAB_NAME={seals:'Seal Register',suppliers:'Brands',clear:'Clear Stock Take',bsetup:'Branch Setup',faulty:'Faulty Cylinders',suppliersmgmt:'Manage Suppliers',counttimes:'Count Times',manifold:'Manifold Slots',thresholds:'Stock Thresholds',extraalloc:'Extra Allocation'};
+var ADMIN_TAB_PERM={seals:'seal_admin',suppliers:'seal_admin',clear:'seal_edit_used',bsetup:'branch_setup',suppliersmgmt:'manageSuppliers',counttimes:'branch_setup',thresholds:'branch_setup',extraalloc:'branch_setup',backdate:'backdateStock'};
+var ADMIN_TAB_NAME={seals:'Seal Register',suppliers:'Brands',clear:'Clear Stock Take',bsetup:'Branch Setup',faulty:'Faulty Cylinders',suppliersmgmt:'Manage Suppliers',counttimes:'Count Times',manifold:'Manifold Slots',thresholds:'Stock Thresholds',extraalloc:'Extra Allocation',backdate:'Backdate Stock Take'};
 function adminShowTabsOnly(){
-  ['adminSeals','adminSuppliers','adminClear','adminBsetup','adminManifold','adminFaulty','adminSuppliersMgmt','adminCountTimes'].forEach(function(id){var e=document.getElementById(id);if(e)e.style.display='none';});
-  ['atab-seals','atab-suppliers','atab-clear','atab-bsetup','atab-manifold','atab-faulty','atab-suppliersmgmt','atab-counttimes'].forEach(function(id){var e=document.getElementById(id);if(e)e.classList.remove('on');});
+  ['adminSeals','adminSuppliers','adminClear','adminBsetup','adminManifold','adminFaulty','adminSuppliersMgmt','adminCountTimes','adminBackdate'].forEach(function(id){var e=document.getElementById(id);if(e)e.style.display='none';});
+  ['atab-seals','atab-suppliers','atab-clear','atab-bsetup','atab-manifold','atab-faulty','atab-suppliersmgmt','atab-counttimes','atab-backdate'].forEach(function(id){var e=document.getElementById(id);if(e)e.classList.remove('on');});
   _adminUnlocked={}; // reset on each Admin entry
 }
 function adminTab(t){
@@ -2697,6 +2715,7 @@ function _adminTabShow(t){
   var _act=document.getElementById('adminCountTimes');if(_act)_act.style.display=(t==='counttimes')?'block':'none';
   var _ath=document.getElementById('adminThresholds');if(_ath)_ath.style.display=(t==='thresholds')?'block':'none';
   var _aea=document.getElementById('adminExtraAlloc');if(_aea)_aea.style.display=(t==='extraalloc')?'block':'none';
+  var _abd=document.getElementById('adminBackdate');if(_abd)_abd.style.display=(t==='backdate')?'block':'none';
   document.getElementById('atab-seals').classList.toggle('on',t==='seals');
   document.getElementById('atab-suppliers').classList.toggle('on',t==='suppliers');
   var _tc=document.getElementById('atab-clear');if(_tc)_tc.classList.toggle('on',t==='clear');
@@ -2707,6 +2726,8 @@ function _adminTabShow(t){
   var _tct=document.getElementById('atab-counttimes');if(_tct)_tct.classList.toggle('on',t==='counttimes');
   var _tth=document.getElementById('atab-thresholds');if(_tth)_tth.classList.toggle('on',t==='thresholds');
   var _tea=document.getElementById('atab-extraalloc');if(_tea)_tea.classList.toggle('on',t==='extraalloc');
+  var _tbd=document.getElementById('atab-backdate');if(_tbd)_tbd.classList.toggle('on',t==='backdate');
+  if(t==='backdate')bdInit();
   if(t==='bsetup'){renderBsetup();_fetchAppConfig('branch_setup',bcfgSave).then(renderBsetup);}
   // Skip the server refetch while _threshDirty - the Update/Confirm button batches local
   // edits now (see thresholdsSet), so pulling the server's older copy back over unconfirmed
@@ -2725,6 +2746,235 @@ function adminSetBranch(b){
   if(role==='Manager' && (_curUser().branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
   adminBranch=b;applyBranchLock('asbr-',b);renderRolls();
   _fetchSealLive(adminBranch).then(function(){renderRolls();renderUsedSeals();});
+}
+// ===== BACKDATE STOCK TAKE (Admin tab) =====
+// Built 2026-09-20 after a real missed day (2026-09-19, both branches, nothing captured,
+// Close Day never run) - the old "Test Date" mechanism (shiftTestDate/resetTestDate) that
+// could have covered this was already dead (its own UI button was removed from the template
+// at some point, only the JS was left behind, silently no-op'ing via refreshTestDateUI's
+// `if(!box)return;` guard). This is a dedicated, isolated replacement: pick a branch+past
+// date that has no existing day_closes row, fill in one plain form covering every section
+// (Opening/Closing count, Manifold, Refill, Private Refill, Received, Residual), submit once.
+// Deliberately NOT built on the live capture screens/popups (no shared mutable state with
+// today's real in-progress work, nothing to forget to "reset" afterward) - trades away live
+// mismatch-as-you-go feedback and the full popup UX for that isolation, which is the point.
+var bdBranch='Helderberg', bdData=null, bdSubmitBusy=false;
+// Built lazily (function, not a top-level array literal) - RESIDUAL_SIZES and R_SIZES are
+// declared much further down the file (lines ~3471/~7410), so evaluating this at load time
+// (module order) would reference them before assignment; calling it only when the Backdate
+// tab is actually opened means the whole script has already finished loading by then.
+function _bdSectionsList(){return [
+  {key:'opening',label:'Opening Count',photo:false,fields:[
+    {k:'state',label:'State',type:'select',options:['Full','Empty']},
+    {k:'size',label:'Size',type:'select',options:ALLSIZES},
+    {k:'brand',label:'Brand',type:'select',options:BRANDS},
+    {k:'qty',label:'Qty',type:'number'}]},
+  {key:'closing',label:'Closing Count',photo:false,fields:[
+    {k:'state',label:'State',type:'select',options:['Full','Empty']},
+    {k:'size',label:'Size',type:'select',options:ALLSIZES},
+    {k:'brand',label:'Brand',type:'select',options:BRANDS},
+    {k:'qty',label:'Qty',type:'number'}]},
+  {key:'manifold',label:'Manifold',photo:true,fields:[
+    {k:'stage',label:'Stage',type:'select',options:['Opening','Closing']},
+    {k:'cyl',label:'Cylinder',type:'text',placeholder:'Cyl 1'},
+    {k:'brand',label:'Brand',type:'select',options:BRANDS},
+    {k:'gasType',label:'Gas',type:'select',options:['LPG','Propane']},
+    {k:'scale',label:'Scale kg',type:'number'},
+    {k:'tare',label:'Tare kg',type:'number'},
+    {k:'notes',label:'Note',type:'text'}]},
+  {key:'refill',label:'Refill',photo:true,fields:[
+    {k:'size',label:'Size',type:'select',options:FILLSIZES},
+    {k:'brand',label:'Brand',type:'select',options:BRANDS},
+    {k:'gasType',label:'Gas',type:'select',options:['LPG','Propane']},
+    {k:'pumped',label:'Pumped kg',type:'number'},
+    {k:'seal',label:'Seal #',type:'text'},
+    {k:'notes',label:'Notes',type:'text'}]},
+  {key:'private',label:'Private Refill',photo:true,fields:[
+    {k:'cylBrand',label:'Cyl brand',type:'select',options:PRIVBRANDS},
+    {k:'otherBrand',label:'Other name',type:'text'},
+    {k:'gasType',label:'Gas',type:'select',options:['LPG','Propane']},
+    {k:'pumped',label:'kg',type:'number'},
+    {k:'customer',label:'Customer',type:'text'},
+    {k:'filledBy',label:'Filled by',type:'select',options:['Us','Supplier']},
+    {k:'fillSupplier',label:'Supplier',type:'text'},
+    {k:'invoiceNo',label:'Invoice #',type:'text'}]},
+  {key:'received',label:'Received',photo:true,fields:[
+    {k:'size',label:'Size',type:'select',options:R_SIZES},
+    {k:'brand',label:'Brand',type:'select',options:BRANDS},
+    {k:'fullIn',label:'Full in',type:'number'},
+    {k:'emptyOut',label:'Empty out',type:'number'},
+    {k:'supplier',label:'Supplier',type:'text'},
+    {k:'deliveryNote',label:'DN #',type:'text'},
+    {k:'invoiceNo',label:'Invoice #',type:'text'}]},
+  {key:'residual',label:'Residual Gas',photo:true,fields:[
+    {k:'Brand',label:'Brand',type:'select',options:BRANDS},
+    {k:'Size',label:'Size',type:'select',options:[].concat.apply([],RESIDUAL_SIZES.map(function(g){return g.items;}))},
+    {k:'CylScale',label:'Scale kg',type:'number'},
+    {k:'CylTare',label:'Tare kg',type:'number'},
+    {k:'Note',label:'Note',type:'text'}]}
+];}
+function _bdSection(key){return _bdSectionsList().filter(function(s){return s.key===key;})[0];}
+function bdInit(){
+  bdBranch=branch||'Helderberg';applyBranchLock('bdbr-',bdBranch);
+  var d=document.getElementById('bdDate');if(d){d.max=today;d.value='';}
+  var st=document.getElementById('bdDateStatus');if(st){st.textContent='';}
+  var fb=document.getElementById('bdFormBody');if(fb){fb.style.display='none';fb.innerHTML='';}
+  bdData=null;
+}
+function bdSetBranch(b){
+  if(role==='Manager' && (_curUser().branches||[]).indexOf(b)===-1){toast('Not your branch',true);return;}
+  bdBranch=b;applyBranchLock('bdbr-',b);
+  bdData=null;
+  var fb=document.getElementById('bdFormBody');if(fb){fb.style.display='none';fb.innerHTML='';}
+  var st=document.getElementById('bdDateStatus');if(st)st.textContent='';
+}
+function bdCheckDate(){
+  var dateVal=document.getElementById('bdDate').value;
+  var statusEl=document.getElementById('bdDateStatus');
+  var fb=document.getElementById('bdFormBody');fb.style.display='none';fb.innerHTML='';
+  bdData=null;
+  if(!dateVal){statusEl.textContent='';return;}
+  if(dateVal>=today){statusEl.textContent='Pick a date before today.';statusEl.style.color='#C0392B';return;}
+  statusEl.textContent='Checking…';statusEl.style.color='var(--muted)';
+  sb.from('day_closes').select('branch,date,authoriser_name').eq('branch',bdBranch).eq('date',dateVal).maybeSingle().then(function(res){
+    if(res.data){
+      statusEl.textContent='Already closed for '+bdBranch+' on '+dateVal+' by '+(res.data.authoriser_name||'?')+' — use the historical correction tool (Count History) instead of backdating over it.';
+      statusEl.style.color='#C0392B';
+      return;
+    }
+    statusEl.textContent='No record found for '+bdBranch+' '+dateVal+' — safe to enter below.';
+    statusEl.style.color='var(--ok)';
+    bdData={date:dateVal,branch:bdBranch,opening:[],closing:[],manifold:[],refill:[],private:[],received:[],residual:[]};
+    bdRenderForm();
+  },function(){
+    statusEl.textContent='Could not check (network error) — try again.';
+    statusEl.style.color='#C0392B';
+  });
+}
+function bdRenderForm(){
+  var body=document.getElementById('bdFormBody');
+  var html='';
+  _bdSectionsList().forEach(function(sec){
+    html+='<div class="histSection"><h4>'+sec.label+'</h4><div id="bdTable-'+sec.key+'"></div>'+
+      '<button type="button" class="sigClear" onclick="bdAddRow(\''+sec.key+'\')">+ Add '+sec.label+' line</button></div>';
+  });
+  html+='<button class="saveBtn" id="bdSubmitBtn" onclick="bdSubmit()">Submit backdated day</button>';
+  body.innerHTML=html;
+  body.style.display='block';
+  _bdSectionsList().forEach(function(sec){bdRenderRows(sec.key);});
+}
+function bdAddRow(key){
+  var sec=_bdSection(key);
+  var row={};
+  sec.fields.forEach(function(f){row[f.k]=(f.type==='select')?f.options[0]:'';});
+  if(sec.photo)row._photos=[];
+  bdData[key].push(row);
+  bdRenderRows(key);
+}
+function bdRemoveRow(key,i){bdData[key].splice(i,1);bdRenderRows(key);}
+function bdSetField(key,i,k,val){if(bdData&&bdData[key]&&bdData[key][i])bdData[key][i][k]=val;}
+function bdPickPhoto(key,i){
+  _pickPhotoFile(function(dataUri){
+    if(dataUri.length>PHOTO_HARD_LIMIT){toast('Photo still too large after resizing — try a different photo',true);return;}
+    var row=bdData[key][i];if(!row)return;
+    row._photos=row._photos||[];row._photos.push(dataUri);
+    bdRenderRows(key);
+  });
+}
+function bdRenderRows(key){
+  var sec=_bdSection(key);
+  var el=document.getElementById('bdTable-'+key);if(!el)return;
+  var rows=bdData[key];
+  if(!rows.length){el.innerHTML='<div class="histEmpty">No lines yet.</div>';return;}
+  var html='';
+  rows.forEach(function(r,i){
+    html+='<div class="adminRow" style="flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:8px">';
+    sec.fields.forEach(function(f){
+      var id='bdf-'+key+'-'+i+'-'+f.k;
+      if(f.type==='select'){
+        html+='<div class="grow"><label class="mLabel" style="font-size:10px">'+f.label+'</label><select class="mField" id="'+id+'" onchange="bdSetField(\''+key+'\','+i+',\''+f.k+'\',this.value)">'+
+          f.options.map(function(o){return '<option value="'+o+'"'+(r[f.k]===o?' selected':'')+'>'+o+'</option>';}).join('')+'</select></div>';
+      } else {
+        html+='<div class="grow"><label class="mLabel" style="font-size:10px">'+f.label+'</label><input class="mField" type="'+(f.type==='number'?'number':'text')+'" id="'+id+'" value="'+(r[f.k]!==undefined?r[f.k]:'')+'" placeholder="'+(f.placeholder||'')+'" oninput="bdSetField(\''+key+'\','+i+',\''+f.k+'\',this.value)"></div>';
+      }
+    });
+    if(sec.photo){
+      html+='<div class="grow"><label class="mLabel" style="font-size:10px">Photo</label>'+
+        '<button type="button" class="sigClear" style="font-size:10px" onclick="bdPickPhoto(\''+key+'\','+i+')">'+((r._photos&&r._photos.length)?('📷 '+r._photos.length+' added'):'+ Add photo')+'</button></div>';
+    }
+    html+='<div class="grow" style="align-self:flex-end"><button type="button" class="sigClear" style="color:#C0392B;font-size:10px" onclick="bdRemoveRow(\''+key+'\','+i+')">Remove</button></div>';
+    html+='</div>';
+  });
+  el.innerHTML=html;
+}
+function bdSubmit(){
+  if(!bdData){toast('Pick a valid date first',true);return;}
+  if(bdSubmitBusy)return;
+  var totalLines=bdData.opening.length+bdData.closing.length+bdData.manifold.length+bdData.refill.length+bdData.private.length+bdData.received.length+bdData.residual.length;
+  if(!totalLines){toast('Nothing entered',true);return;}
+  askPassword('Confirm backdate','Enter your password to submit this backdated day for '+bdData.branch+' '+bdData.date+':').then(function(pw){
+    if(pw===null)return;
+    _verifyPersonPassword(operator,pw,null).then(function(me){
+      if(!me){toast('Wrong password',true);return;}
+      bdSubmitBusy=true;
+      var btn=document.getElementById('bdSubmitBtn');if(btn){btn.disabled=true;btn.style.opacity='.6';}
+      bdDoSubmit(me,totalLines);
+      bdSubmitBusy=false;
+      if(btn){btn.disabled=false;btn.style.opacity='1';}
+    });
+  });
+}
+function bdDoSubmit(auth,totalLines){
+  var d=bdData.date, br=bdData.branch;
+  var snap={count:[],manifold:[],refill:[],private:[],received:[],residual:[]};
+  var queuedPhotos=0;
+  function pushCount(rows,countType){
+    rows.forEach(function(r){snap.count.push({countType:countType,state:r.state,size:r.size,brand:r.brand,qty:num(r.qty),branch:br,_date:d});});
+  }
+  pushCount(bdData.opening,'Opening');
+  pushCount(bdData.closing,'Closing');
+  bdData.manifold.forEach(function(r){
+    var rid=_rid();var scale=num(r.scale),tare=num(r.tare);
+    snap.manifold.push({branch:br,cyl:r.cyl,stage:r.stage,brand:r.brand,gasType:r.gasType,scale:scale,tare:tare,gasLeft:scale-tare,notes:r.notes||'',_date:d,_rid:rid,_committed:true,_photoLink:''});
+    if(r._photos&&r._photos.length){_photoQueueAdd({capType:'manifold',branch:br,date:d,rowRid:rid,category:'Manifold',photos:r._photos});queuedPhotos+=r._photos.length;}
+  });
+  bdData.refill.forEach(function(r){
+    var rid=_rid();
+    snap.refill.push({branch:br,size:r.size,brand:r.brand,gasType:r.gasType,pumped:num(r.pumped),seal:r.seal||'',notes:r.notes||'',_date:d,_rid:rid,_committed:true,_photoLink:''});
+    if(r._photos&&r._photos.length){_photoQueueAdd({capType:'refill',branch:br,date:d,rowRid:rid,category:'Refill',photos:r._photos});queuedPhotos+=r._photos.length;}
+  });
+  bdData.private.forEach(function(r){
+    var rid=_rid();
+    snap.private.push({branch:br,cylBrand:r.cylBrand,otherBrand:r.otherBrand||'',gasType:r.gasType,pumped:num(r.pumped),customer:r.customer||'',filledBy:r.filledBy,fillSupplier:r.fillSupplier||'',fillSupplierOther:'',invoiceNo:r.invoiceNo||'',_date:d,_rid:rid,_committed:true,photoLinks:''});
+    if(r._photos&&r._photos.length){_photoQueueAdd({capType:'private',branch:br,date:d,rowRid:rid,category:'Private',photos:r._photos});queuedPhotos+=r._photos.length;}
+  });
+  bdData.received.forEach(function(r){
+    var rid=_rid();var fullIn=num(r.fullIn),emptyOut=num(r.emptyOut);
+    snap.received.push({branch:br,size:r.size,brand:r.brand,fullIn:fullIn,emptyOut:emptyOut,_side:(fullIn>0?'recv':'ret'),supplier:r.supplier||'',deliveryNote:r.deliveryNote||'',invoiceNo:r.invoiceNo||'',_date:d,_rid:rid,_committed:true,photoLinks:''});
+    if(r._photos&&r._photos.length){_photoQueueAdd({capType:'received',branch:br,date:d,rowRid:rid,category:'Received',photos:r._photos});queuedPhotos+=r._photos.length;}
+  });
+  bdData.residual.forEach(function(r){
+    var rid=_rid();var cylScale=num(r.CylScale),cylTare=num(r.CylTare);
+    snap.residual.push({Branch:br,Brand:r.Brand,Size:r.Size,GasType:RESIDUAL_GASTYPE[r.Size]||'',CylScale:cylScale,CylTare:cylTare,Residual:cylScale-cylTare,Note:r.Note||'',_operator:operator,_date:d,_committed:true,_rid:rid});
+    if(r._photos&&r._photos.length){_photoQueueAdd({capType:'residual',branch:br,date:d,rowRid:rid,category:'Residual',photos:r._photos});queuedPhotos+=r._photos.length;}
+  });
+  var record={branch:br,date:d,closed_by:currentProfile.id,authoriser_name:auth.name+' (Backdated '+today+')',authoriser_level:auth.level,store_snapshot:snap,manifold_balance:null};
+  _closeDaySend(record);
+  function withDate(rows){return rows.map(function(x){x.date=d;return x;});}
+  if(snap.count.length)syncPush('Counts',withDate(syncRowsCount(snap.count,br)).map(function(x){x._replaceKey=(x.date+'|'+x.branch);return x;}));
+  if(snap.manifold.length)syncPush('Manifold',withDate(syncRowsManifold(snap.manifold,br)));
+  if(snap.refill.length)syncPush('Refills',withDate(syncRowsRefill(snap.refill,br)));
+  if(snap.private.length)syncPush('Private',withDate(syncRowsPrivate(snap.private,br)));
+  if(snap.received.length)syncPush('Received',withDate(syncRowsReceived(snap.received,br)));
+  // Residual is deliberately NOT pushed to its Sheet tab here (matches the same known gap as
+  // live Residual capture, see Task 9 of the photo-upload-queue plan) - residualLog's backend
+  // has no confirmed way to accept a client-supplied date the way every other type's syncRows*
+  // function does (they all stamp `date` per row; residualLog's payload never included one),
+  // so pushing it here risks silently misdating it in the Sheet instead of just leaving a gap.
+  // The day_closes snapshot and any photos are still saved correctly either way.
+  auditLog('Backdated day submitted',br+' '+d+' — '+totalLines+' line(s), '+queuedPhotos+' photo(s) queued, by '+auth.name+' ('+auth.level+')');
+  toast('Backdated day saved for '+br+' '+d+(queuedPhotos?(' · '+queuedPhotos+' photo(s) uploading in background'):'')+(snap.residual.length?' · Residual not pushed to Sheet (see note)':''));
+  bdInit();
 }
 function fillBrandPicker(){
   var sel=document.getElementById('nrBrand');if(!sel)return;
@@ -3830,19 +4080,19 @@ function suppliersMgmtRemove(name){
 // ===== USER STORE (demo, localStorage) =====
 // user = {name, level:'Owner|Manager|Operator', branches:[...], pw, perms:{...}}
 // Granular permissions. Levels are PRESETS that pre-tick these; Owner can override per user.
-var PERM_KEYS=['view','capture','edit','closeday','history','users','audit','adjust','seal_admin','seal_create','seal_void_open','seal_edit_used','seal_boundary','branch_setup','faultyCapture','faultyRegister','residualGas','manageSuppliers','verifiedCount','dailySales'];
-var PERM_LABELS={view:'View counts',capture:'Capture counts',edit:'Edit / correct',closeday:'Close day',history:'Open history',users:'Manage users',audit:'View audit log',adjust:'Adjust mismatches',seal_admin:'Seal: open Admin area',seal_create:'Seal: create/edit roll (unused)',seal_void_open:'Seal: void seal (open day)',seal_edit_used:'Seal: edit used roll / void closed day',seal_boundary:'Seal: pump boundary override',branch_setup:'Branch Setup: activate/deactivate sections & items',faultyCapture:'Faulty — capture',faultyRegister:'Faulty — manage register',residualGas:'Residual Gas — capture',manageSuppliers:'Manage Suppliers (Received)',verifiedCount:'Verified Stock Take — capture',dailySales:'Daily Sales — capture'};
+var PERM_KEYS=['view','capture','edit','closeday','history','users','audit','adjust','seal_admin','seal_create','seal_void_open','seal_edit_used','seal_boundary','branch_setup','faultyCapture','faultyRegister','residualGas','manageSuppliers','verifiedCount','dailySales','backdateStock'];
+var PERM_LABELS={view:'View counts',capture:'Capture counts',edit:'Edit / correct',closeday:'Close day',history:'Open history',users:'Manage users',audit:'View audit log',adjust:'Adjust mismatches',seal_admin:'Seal: open Admin area',seal_create:'Seal: create/edit roll (unused)',seal_void_open:'Seal: void seal (open day)',seal_edit_used:'Seal: edit used roll / void closed day',seal_boundary:'Seal: pump boundary override',branch_setup:'Branch Setup: activate/deactivate sections & items',faultyCapture:'Faulty — capture',faultyRegister:'Faulty — manage register',residualGas:'Residual Gas — capture',manageSuppliers:'Manage Suppliers (Received)',verifiedCount:'Verified Stock Take — capture',dailySales:'Daily Sales — capture',backdateStock:'Admin: backdate a missed stock take'};
 function permPreset(level){
-  if(level==='Owner')   return {view:1,capture:1,edit:1,closeday:1,history:1,users:1,audit:1,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:1,seal_boundary:1,branch_setup:1,faultyCapture:1,faultyRegister:1,residualGas:1,manageSuppliers:1};
-  if(level==='Manager') return {view:1,capture:1,edit:1,closeday:1,history:1,users:0,audit:0,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:0,seal_boundary:0,branch_setup:1,faultyCapture:1,faultyRegister:1,residualGas:1,manageSuppliers:1,dailySales:1};
+  if(level==='Owner')   return {view:1,capture:1,edit:1,closeday:1,history:1,users:1,audit:1,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:1,seal_boundary:1,branch_setup:1,faultyCapture:1,faultyRegister:1,residualGas:1,manageSuppliers:1,backdateStock:1};
+  if(level==='Manager') return {view:1,capture:1,edit:1,closeday:1,history:1,users:0,audit:0,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:0,seal_boundary:0,branch_setup:1,faultyCapture:1,faultyRegister:1,residualGas:1,manageSuppliers:1,dailySales:1,backdateStock:1};
   if(level==='Auditor') return {view:1,verifiedCount:1};
-  return                       {view:1,capture:1,edit:1,closeday:0,history:0,users:0,audit:0,adjust:0,seal_admin:0,seal_create:0,seal_void_open:0,seal_edit_used:0,seal_boundary:0,faultyCapture:1,faultyRegister:0,residualGas:1,manageSuppliers:0,dailySales:0}; // Operator - off by default, toggle per-user in Manage Users
+  return                       {view:1,capture:1,edit:1,closeday:0,history:0,users:0,audit:0,adjust:0,seal_admin:0,seal_create:0,seal_void_open:0,seal_edit_used:0,seal_boundary:0,faultyCapture:1,faultyRegister:0,residualGas:1,manageSuppliers:0,dailySales:0,backdateStock:0}; // Operator - off by default, toggle per-user in Manage Users
 }
 function userPerms(u){
   if(!u)return {};
   var base=permPreset(u.level);
   if(u.perms){PERM_KEYS.forEach(function(k){if(u.perms[k]!==undefined)base[k]=u.perms[k]?1:0;});}
-  if(u.level==='Owner'){base.users=1;base.audit=1;base.faultyCapture=1;base.faultyRegister=1;base.manageSuppliers=1;} // Owner can never lock self out of these
+  if(u.level==='Owner'){base.users=1;base.audit=1;base.faultyCapture=1;base.faultyRegister=1;base.manageSuppliers=1;base.backdateStock=1;} // Owner can never lock self out of these
   return base;
 }
 var currentPerms={};
