@@ -939,7 +939,14 @@ if(c.photo){
 
 - [ ] **Step 2: Add the `_openAddPhotoFor` handler**
 
-Reuses the existing photo-capture UI (`onPhotoPick`/`_pickPhotoOrFallback`/resize) via a small dedicated popup rather than a new capture surface - a single `<input type="file" accept="image/*">` (no `capture` attribute - see this task's own cross-device note below) triggered directly:
+Reuses the existing photo-capture UI (`onPhotoPick`/`_pickPhotoOrFallback`/resize) via a small dedicated popup rather than a new capture surface - a single `<input type="file" accept="image/*">` (no `capture` attribute - see this task's own cross-device note below) triggered directly.
+
+**CORRECTED 2026-09-20 (code-quality review of the first implementation, commit `11fc281`) - three real bugs found, all fixed below, do not implement the version originally shown here:**
+1. **Wrong branch attribution (Critical)**: the original code used `branch:(histBranch||branch)`. `histBranch` belongs to the separate History screen and is hardcoded to `'Helderberg'` at init, so it's always truthy - `branch` (the fallback) is never actually reached. `capReviewHTML` (where this button lives) is only ever called from `capReview()`, scoped entirely to `capBranch` (`var rows=store[type].filter(function(r){return r.branch===capBranch;})`). Result: every "+ Add photo" tap for ANY branch other than Helderberg silently tagged the queued photo with `branch:'Helderberg'` - wrong upload folder server-side, and the branch-scoped session counter (Task 10) could never count it. Fix: use `capBranch` directly, not `histBranch||branch`.
+2. **File `<input>` element leak on picker cancel (Important)**: a cancelled file-picker dialog does not fire `onchange` in mainstream browsers (there's no reliable cross-browser "cancel" event), so every cancelled tap left a permanent, invisible, empty `<input>` appended to `document.body` for the rest of the session. Fixed by adding a `window.addEventListener('focus', ...)` fallback that cleans up shortly after the OS picker closes if no file was chosen.
+3. **Session counter never refreshed after a manual add (Important)**: neither new handler called back into Task 10's counter functions, so a "photos uploading" count could stay stale after tapping "+ Add photo" until the next commit/branch-switch/upload-completion. Fixed by calling the relevant counter function right after `_photoQueueAdd`.
+
+While fixing #2, the near-identical boilerplate between this function and Received's `_openAddPhotoForReceivedGroup` (Step 3 below) is factored into one shared helper, `_pickPhotoFile(onDataUri)`, so the leak-fix only has to exist in one place:
 
 ```js
 // Reuses the plain <input type="file" accept="image/*"> pattern already used for live
@@ -949,24 +956,47 @@ Reuses the existing photo-capture UI (`onPhotoPick`/`_pickPhotoOrFallback`/resiz
 // taking a brand new one; the browser still offers "take photo" as one of the options on a
 // phone/tablet, it just isn't forced to camera-first. On a PC/laptop/desktop this opens the
 // normal file browser either way - no behavior difference to preserve there.
-function _openAddPhotoFor(capType,rid){
+// Shared by _openAddPhotoFor and _openAddPhotoForReceivedGroup - owns the whole picker
+// lifecycle, including cleanup when the user cancels without choosing a file (the `change`
+// event never fires on cancel in mainstream browsers, so without the focus-based fallback
+// below, every cancelled tap would leave a permanent, invisible <input> in the DOM).
+function _pickPhotoFile(onDataUri){
   var input=document.createElement('input');
   input.type='file';input.accept='image/*';input.style.display='none';
   document.body.appendChild(input);
+  var done=false;
+  function cleanup(){
+    if(done)return;done=true;
+    window.removeEventListener('focus',onFocus);
+    if(input.parentNode)document.body.removeChild(input);
+  }
+  function onFocus(){
+    setTimeout(function(){if(!done && (!input.files || !input.files.length))cleanup();},300);
+  }
+  window.addEventListener('focus',onFocus);
   input.onchange=function(){
+    if(done)return;done=true;
+    window.removeEventListener('focus',onFocus);
     var f=input.files&&input.files[0];
-    document.body.removeChild(input);
+    if(input.parentNode)document.body.removeChild(input);
     if(!f)return;
     _resizeImageForCapture(f).then(function(dataUri){
       if(dataUri.length>PHOTO_HARD_LIMIT){toast('Photo still too large after resizing — try a different photo',true);return;}
-      var category=(capType==='manifold'?'Manifold':capType==='refill'?'Refill':capType==='private'?'Private':capType==='received'?'Received':'Residual');
-      _photoQueueAdd({capType:capType,branch:(histBranch||branch),date:today,rowRid:rid,category:category,photos:[dataUri]});
-      toast('Photo queued — uploading in background');
+      onDataUri(dataUri);
     }).catch(function(){toast('Could not read that photo',true);});
   };
   input.click();
 }
+function _openAddPhotoFor(capType,rid){
+  _pickPhotoFile(function(dataUri){
+    var category=(capType==='manifold'?'Manifold':capType==='refill'?'Refill':'Private');
+    _photoQueueAdd({capType:capType,branch:capBranch,date:today,rowRid:rid,category:category,photos:[dataUri]});
+    toast('Photo queued — uploading in background');
+    _capUpdateSessionCounter();
+  });
+}
 ```
+(The category ternary is trimmed to the 3 reachable cases - this button only ever renders for `manifold`/`refill`/`private` rows, since `capReviewCols` never sets `photo:true` for `residual`, and Received uses its own entirely separate path below. `_capUpdateSessionCounter` is called directly, not `typeof`-guarded, since Task 10 already landed before this task runs - no forward-reference risk here, unlike Tasks 7/8's guards which existed for a genuinely temporary staged rollout.)
 
 - [ ] **Step 3: Add an equivalent action to Received's own review screen (RESOLVED 2026-09-20, found during pre-dispatch investigation - genuinely NOT a mirror of Step 1, do not attempt to reuse `capReviewCols`/`capReviewHTML` for Received)**
 
@@ -991,23 +1021,16 @@ function _rTodaysDeliveryGroups(br){
 }
 ```
 
-Add a dedicated add/retry handler (parallel to `_openAddPhotoFor` from Step 2, but taking a `rowRids` array instead of a single `rid`, since `_photoQueueAdd` already supports this - built in Task 6, nothing new needed there):
+Add a dedicated add/retry handler (parallel to `_openAddPhotoFor` from Step 2, but taking a `rowRids` array instead of a single `rid`, since `_photoQueueAdd` already supports this - built in Task 6, nothing new needed there).
+
+**CORRECTED 2026-09-20 (same review as Step 2) - reuse the shared `_pickPhotoFile` helper from Step 2 instead of duplicating the input-picker boilerplate (which also fixes the same cancel-leak for this button), and refresh the Received session counter after a successful add:**
 ```js
 function _openAddPhotoForReceivedGroup(rowRids){
-  var input=document.createElement('input');
-  input.type='file';input.accept='image/*';input.style.display='none';
-  document.body.appendChild(input);
-  input.onchange=function(){
-    var f=input.files&&input.files[0];
-    document.body.removeChild(input);
-    if(!f)return;
-    _resizeImageForCapture(f).then(function(dataUri){
-      if(dataUri.length>PHOTO_HARD_LIMIT){toast('Photo still too large after resizing — try a different photo',true);return;}
-      _photoQueueAdd({capType:'received',branch:rBranch,date:today,rowRids:rowRids,category:'Received',photos:[dataUri]});
-      toast('Photo queued — uploading in background');
-    }).catch(function(){toast('Could not read that photo',true);});
-  };
-  input.click();
+  _pickPhotoFile(function(dataUri){
+    _photoQueueAdd({capType:'received',branch:rBranch,date:today,rowRids:rowRids,category:'Received',photos:[dataUri]});
+    toast('Photo queued — uploading in background');
+    _rUpdateSessionCounter();
+  });
 }
 ```
 
