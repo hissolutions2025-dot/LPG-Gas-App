@@ -1068,21 +1068,185 @@ git commit -m "feat: manual add/retry photo on Review/History rows, all capture 
 
 This is genuinely separate work from Task 11, not a copy-paste of it: the historical tool operates on `rec.store` - a FROZEN snapshot of a CLOSED day (`loadSavedDay`/`loadSavedDayShared`'s result), not the live `store[capType]` array Task 11's screen reads. A photo added here can't just push into `store[capType]` the way `_photoQueueWriteBack` (Task 3) does - it needs to update the frozen snapshot's own copy (so reopening the historical view shows it) in addition to going through the same `_photoQueueAdd`/background-upload/`adjustSheetRow`/mirror-update path Task 3 already built (that part IS reusable as-is, since it operates on the Sheet row and Supabase mirror by `_rid`, neither of which cares whether the local caller is `store[capType]` or a `rec.store` snapshot).
 
-- [ ] **Step 1: Read `corrLines()`, `openCorrection()`, and `corrApply()` in full**
+**RESOLVED 2026-09-20 - full investigation done, fully specified below, do not re-derive. Summary of what was found:**
+- `corrLines(st,section,br)` pushes `row:r` (a direct reference into `st`'s own array, not a clone) for every section including Manifold/Refill/Private/Received - so mutating `l.row.photo`/`l.row.supplierPhoto`/`l.row.photos` in place is safe and visible everywhere else that reads the same object.
+- `openCorrection(cfg)` is SHARED by both the same-day Adjust tools (`openCapAdjust`/`openReceivedAdjust`/`openCountAdjust`, where `cfg.store` is the LIVE `store`) and the 48-hour historical tool (`_correctSavedLineOpen`, where `cfg.store` is `rec.store`, a frozen, already-diverged snapshot). Task 11 already covers the same-day case via its own Review-screen button - this task must NOT also render inside the same-day Adjust tools, or there'd be two redundant "add photo" entry points for the same not-yet-closed day. The two contexts share the exact same rendering functions (`corrStepLines`/`corrStepManifoldList`/`corrStepReceivedGroups`), so they need an explicit marker to tell them apart.
+- `corrApply()`/`corrApplyManifoldEdit()`/`corrApplyCountGroup()` all funnel through `corrCfg.onApply(sel,...)`, and for the historical case that's `_correctSavedLineOpen`'s own `onApply`, which (among other things) does `localStorage.setItem(histKey(ds,rec.branch),JSON.stringify(rec));` - this is how a VALUE correction actually gets persisted for the historical tool. A photo add isn't a value correction and doesn't go through `onApply` at all, so it needs to call this same persistence step explicitly itself, or the addition would only live in memory and vanish on next reload/reopen. (`corrApplyReceivedGroup()` is the one exception that bypasses `onApply` entirely for its own reasons - not relevant here, not something this task touches or needs to match.)
+- The historical view's own report rendering (confirmed at index.html ~13803-13818, the shared report-table builder used for both live and historical days) reads `r.photo`/`r.supplierPhoto`/`r.photos` DIRECTLY off the row objects to render thumbnails - so pushing the newly-picked photo's data URI onto that exact field, in place, on the `rec.store` row, is what "the historical view reflects it without waiting for the queue" means in practice - not something abstract, a concrete field to mutate.
+- The background queue's own write-back (`_photoQueueWriteBack`, already built) is completely unaware of any of this - it always targets `store[capType]` (live) plus the Sheet/mirror by `_rid`. The Sheet/mirror part works fine regardless of where the `rowRid` "came from" (nothing about it cares). Its LOCAL live-store write may or may not find a matching row (depends on whether that old row still sits in the live `store[capType]` array) - either way, this task's own explicit `rec.store` mutation is what actually makes the HISTORICAL view correct; the queue's write-back was never going to reach `rec.store` on its own, by design, and does not need to be modified for this task.
 
-Understand exactly how `sel.row` is populated for a Manifold/Refill/Private/Received line within this tool (mirrors the shape `openCapAdjust`'s own `sel.row` already has - confirmed reused at index.html ~8389 `if(sel.row){...}` for value corrections), and how `onApply`'s callback receives enough context (`sel`, the historical record `rec`) to know which snapshot to also update.
+- [ ] **Step 1: Mark `corrCfg` with the historical record, so shared rendering code can tell the two contexts apart**
 
-- [ ] **Step 2: Add a photo button to this tool's own line-rendering, gated on the real 48-hour-from-close check already enforced by `correctSavedLine`** (that function already refuses to open past 48 hours - Step 2 does not need its own separate time check, only needs to render inside a screen that's already gated)
+In `_correctSavedLineOpen(ds,rec)` (currently index.html ~12482), add `histRec:rec, histDs:ds` to the `openCorrection({...})` call:
+```js
+function _correctSavedLineOpen(ds,rec){
+  openCorrection({
+    title:'Correct '+ds+' - '+rec.branch,
+    store:rec.store, branch:rec.branch,
+    histRec:rec, histDs:ds,
+    sections:['Opening','Closing','Received','Refills','Private','Manifold','Daily Sales'],
+    onApply:function(sel,oldVal,newVal,reason,auth){
+```
+(Only change: the new `histRec:rec, histDs:ds,` line - everything else in this function is untouched.) None of the same-day Adjust tools (`openCapAdjust`/`openReceivedAdjust`/`openCountAdjust`) ever set these two fields, so `corrCfg.histRec` stays `undefined` there - the correct, automatic gate for keeping this task's new buttons out of the same-day tools.
 
-- [ ] **Step 3: On tap, resize (`_resizeImageForCapture`) then call `_photoQueueAdd` with the historical row's own `_rid`, AND update `rec.store[capType]`'s matching row's local photo field directly (mirroring what `_photoQueueWriteBack` does for the live case, but against the snapshot instead of `store[capType]`) so the historical view reflects it without waiting for the queue**
+- [ ] **Step 2: Add the persistence helper and the shared photo-add handlers**
 
-- [ ] **Step 4: Syntax-check** (same command as Task 1 Step 2)
+Place these near the other `corr*` functions (e.g. directly after `corrStepEdit`/before `corrApply`, or any other sensible spot near the rest of this tool's functions):
 
-- [ ] **Step 5: Verify live**
+```js
+// Persists a photo-add's mutation back to localStorage for the 48-hour historical tool -
+// mirrors exactly what _correctSavedLineOpen's own onApply already does for VALUE
+// corrections. A photo add doesn't go through onApply at all (it isn't a value correction),
+// so it needs this same persistence step called explicitly instead - without it, an added
+// photo would only live in memory and vanish on next reload/reopen of this saved day.
+function _corrPersistHistRec(){
+  if(!corrCfg.histRec)return;
+  localStorage.setItem(histKey(corrCfg.histDs,corrCfg.histRec.branch),JSON.stringify(corrCfg.histRec));
+}
+function _corrSectionCapType(section){
+  return section==='Refills'?'refill':section==='Private'?'private':section==='Manifold'?'manifold':null;
+}
+// Manual add/retry photo for the 48-hour historical correction tool - only ever reachable
+// when corrCfg.histRec is set (see Step 1), so this never renders inside the same-day Adjust
+// tools, which already have their own manual-add button on the live Review screen (Task 11).
+// Reuses _pickPhotoFile (Task 11) for the picker itself. Beyond queuing the upload exactly
+// like Task 11 does, this ALSO pushes the raw photo onto rec.store's own row so the
+// historical view (which renders straight from rec.store - see the shared report table
+// builder around index.html ~13803-13818) shows it immediately, without waiting for the
+// background queue - the queue's own write-back only ever reaches the LIVE store[capType],
+// a separate, already-diverged copy from this closed day's frozen snapshot.
+function _corrOpenAddPhotoFor(i){
+  var l=corrCfg._lines[i];
+  var row=l&&l.row;
+  if(!row||!row._rid)return;
+  var capType=_corrSectionCapType(corrCfg._section);
+  if(!capType)return;
+  _pickPhotoFile(function(dataUri){
+    var photoField=(capType==='private'?'supplierPhoto':'photo');
+    (row[photoField]=row[photoField]||[]).push(dataUri);
+    var category=(capType==='manifold'?'Manifold':capType==='refill'?'Refill':'Private');
+    _photoQueueAdd({capType:capType,branch:corrCfg.branch,date:corrCfg.histDs,rowRid:row._rid,category:category,photos:[dataUri]});
+    _corrPersistHistRec();
+    toast('Photo queued — uploading in background');
+    corrStepLines(corrCfg._section); // rebuild+redisplay, modal stays open for further corrections
+  });
+}
+```
 
-Walk through the real UI: close a test day (or use an already-closed real day within 48 hours), open the historical correction tool for a row missing a photo, add one, confirm it queues and the historical view shows it immediately.
+- [ ] **Step 3: Add the button to Manifold's own list and the generic Refill/Private list**
 
-- [ ] **Step 6: Commit**
+In `corrStepManifoldList()` (currently index.html ~12258-12266), change:
+```js
+function corrStepManifoldList(){
+  var lines=corrCfg._lines;
+  var html='<div style="font-size:12px;color:var(--muted);margin-bottom:6px"><button class="sigClear" onclick="corrStepSection()">‹ Back</button> &nbsp; <b>Manifold</b> — tap the line to correct:</div>';
+  lines.forEach(function(l,i){
+    html+='<button class="sigClear" style="width:100%;margin-bottom:6px;text-align:left" onclick="corrStepManifoldEdit('+i+')">'+l.label+'</button>';
+  });
+  if(!lines.length)html+='<div class="histEmpty">No populated lines in this section.</div>';
+  document.getElementById('corrBody').innerHTML=html;
+}
+```
+to:
+```js
+function corrStepManifoldList(){
+  var lines=corrCfg._lines;
+  var html='<div style="font-size:12px;color:var(--muted);margin-bottom:6px"><button class="sigClear" onclick="corrStepSection()">‹ Back</button> &nbsp; <b>Manifold</b> — tap the line to correct:</div>';
+  lines.forEach(function(l,i){
+    html+='<button class="sigClear" style="width:100%;margin-bottom:6px;text-align:left" onclick="corrStepManifoldEdit('+i+')">'+l.label+'</button>';
+    if(corrCfg.histRec&&l.row&&l.row._rid){
+      html+='<button type="button" class="sigClear" style="width:100%;margin:-2px 0 8px;text-align:left;font-size:11px;opacity:.85" onclick="_corrOpenAddPhotoFor('+i+')">+ Add/retry photo for this line</button>';
+    }
+  });
+  if(!lines.length)html+='<div class="histEmpty">No populated lines in this section.</div>';
+  document.getElementById('corrBody').innerHTML=html;
+}
+```
+
+In `corrStepLines(section)` (currently index.html ~12028-12040 - this is the generic flat-list branch, reached for `Refills`/`Private`/`Daily Sales`; Received/Opening/Closing/Manifold have already returned by this point), change:
+```js
+  var html='<div style="font-size:12px;color:var(--muted);margin-bottom:6px"><button class="sigClear" onclick="corrStepSection()">‹ Back</button> &nbsp; <b>'+section+'</b> — tap the line to correct:</div>';
+  lines.forEach(function(l,i){
+    html+='<button class="sigClear" style="width:100%;margin-bottom:6px;text-align:left" onclick="corrStepEdit('+i+')">'+l.label+'</button>';
+  });
+  if(!lines.length)html+='<div class="histEmpty">No populated lines in this section.</div>';
+  document.getElementById('corrBody').innerHTML=html;
+```
+to:
+```js
+  var html='<div style="font-size:12px;color:var(--muted);margin-bottom:6px"><button class="sigClear" onclick="corrStepSection()">‹ Back</button> &nbsp; <b>'+section+'</b> — tap the line to correct:</div>';
+  // Daily Sales rows never had a photo field - only offer this for Refills/Private, and only
+  // inside the historical tool (corrCfg.histRec), never the same-day Adjust tools (Task 11
+  // already covers those via the live Review screen's own button).
+  var showPhoto=corrCfg.histRec&&(section==='Refills'||section==='Private');
+  lines.forEach(function(l,i){
+    html+='<button class="sigClear" style="width:100%;margin-bottom:6px;text-align:left" onclick="corrStepEdit('+i+')">'+l.label+'</button>';
+    if(showPhoto&&l.row&&l.row._rid){
+      html+='<button type="button" class="sigClear" style="width:100%;margin:-2px 0 8px;text-align:left;font-size:11px;opacity:.85" onclick="_corrOpenAddPhotoFor('+i+')">+ Add/retry photo for this line</button>';
+    }
+  });
+  if(!lines.length)html+='<div class="histEmpty">No populated lines in this section.</div>';
+  document.getElementById('corrBody').innerHTML=html;
+```
+(Note `corrStepLines`'s own opening lines - `var lines=corrLines(...)`, `corrCfg._section=section;corrCfg._lines=lines;`, and the three `if(section===...){...return;}` dispatches above this block - are unchanged, only the html-building block shown above is touched.)
+
+- [ ] **Step 4: Add the equivalent action to Received's own historical picker**
+
+Received's photo model is per-delivery, same as Task 11's live-screen solution - reuse that exact grouping approach, scoped to the historical snapshot instead. Add near `_rTodaysDeliveryGroups`/`_openAddPhotoForReceivedGroup` (Task 11) or any other sensible spot near the other `corr*` functions:
+
+```js
+// Same per-delivery grouping shape as the live Review screen's _rTodaysDeliveryGroups
+// (Task 11), but reads corrCfg.store.received (the historical snapshot) scoped to
+// corrCfg.branch, with NO date filter - every row already sitting in a closed day's own
+// snapshot belongs to that one day already, unlike the live store which holds every day.
+function _corrTodaysDeliveryGroups(){
+  var rows=(corrCfg.store.received||[]).filter(function(r){return r.branch===corrCfg.branch;});
+  var groups={};
+  rows.forEach(function(r){
+    var key=(r.deliveryNote||'')+'|'+(r.invoiceNo||'')+'|'+(r.supplier||'');
+    if(!groups[key])groups[key]={supplier:r.supplier||'(no supplier)',invoiceNo:r.invoiceNo||'',rowRids:[],hasPhoto:false};
+    groups[key].rowRids.push(r._rid);
+    if((r.photos||[]).length||r.photoLinks)groups[key].hasPhoto=true;
+  });
+  return Object.keys(groups).map(function(k){return groups[k];});
+}
+function _corrOpenAddPhotoForReceivedGroup(rowRids){
+  _pickPhotoFile(function(dataUri){
+    rowRids.forEach(function(rid){
+      var row=(corrCfg.store.received||[]).filter(function(r){return r._rid===rid;})[0];
+      if(row)(row.photos=row.photos||[]).push(dataUri);
+    });
+    _photoQueueAdd({capType:'received',branch:corrCfg.branch,date:corrCfg.histDs,rowRids:rowRids,category:'Received',photos:[dataUri]});
+    _corrPersistHistRec();
+    toast('Photo queued — uploading in background');
+    corrStepLines(corrCfg._section); // rebuild+redisplay, modal stays open for further corrections
+  });
+}
+```
+
+In `corrStepReceivedGroups()` (currently index.html ~12055-12079), add a new block right before its final `document.getElementById('corrBody').innerHTML=html;` line, gated on `corrCfg.histRec`:
+```js
+  if(corrCfg.histRec){
+    var pgroups=_corrTodaysDeliveryGroups();
+    if(pgroups.length){
+      html+='<div style="font-size:12px;color:var(--muted);margin:10px 0 4px">Add/retry a delivery photo:</div>';
+      html+=pgroups.map(function(g){
+        var status=g.hasPhoto?'✓ photo on file':'— no photo';
+        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #EEF1F4;font-size:12px"><span>'+(g.supplier)+(g.invoiceNo?' · Inv '+g.invoiceNo:'')+' — '+status+'</span><button type="button" class="sigClear" style="padding:3px 8px;font-size:10px" onclick=\'_corrOpenAddPhotoForReceivedGroup('+JSON.stringify(g.rowRids)+')\'>+ Add/retry photo</button></div>';
+      }).join('');
+    }
+  }
+  document.getElementById('corrBody').innerHTML=html;
+```
+(Everything else in `corrStepReceivedGroups()` - the existing per-delivery-size grouping/rendering for VALUE correction - is untouched; this is purely an additional block appended to the same `html` string right before it's written to the DOM.)
+
+- [ ] **Step 5: Syntax-check** (same command as Task 1 Step 2)
+
+- [ ] **Step 6: Verify**
+
+No test framework, no reliable browser tooling, real login prohibited - static code-reading verification: confirm `corrCfg.histRec`/`corrCfg.histDs` are only ever set by `_correctSavedLineOpen`, confirm every same-day Adjust tool's own `openCorrection({...})` call genuinely omits both fields (grep `openCorrection(` for all call sites), confirm `histKey`/`_pickPhotoFile`/`_photoQueueAdd` are real in-scope identifiers at each new call site, and trace through one concrete example of `_corrOpenAddPhotoFor`/`_corrOpenAddPhotoForReceivedGroup` end to end (which row gets mutated, what gets queued, what gets persisted).
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add index.html
