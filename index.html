@@ -7752,6 +7752,33 @@ function rCommittedSummary(br){
   });
   return out;
 }
+function _rTodaysDeliveryGroups(br){
+  var rows=store.received.filter(function(r){return r.branch===br&&(r._date||today)===today;});
+  var groups={};
+  rows.forEach(function(r){
+    var key=(r.deliveryNote||'')+'|'+(r.invoiceNo||'')+'|'+(r.supplier||'');
+    if(!groups[key])groups[key]={supplier:r.supplier||'(no supplier)',invoiceNo:r.invoiceNo||'',rowRids:[],photoLinks:''};
+    groups[key].rowRids.push(r._rid);
+    if(r.photoLinks)groups[key].photoLinks=r.photoLinks;
+  });
+  return Object.keys(groups).map(function(k){return groups[k];});
+}
+function _openAddPhotoForReceivedGroup(rowRids){
+  var input=document.createElement('input');
+  input.type='file';input.accept='image/*';input.style.display='none';
+  document.body.appendChild(input);
+  input.onchange=function(){
+    var f=input.files&&input.files[0];
+    document.body.removeChild(input);
+    if(!f)return;
+    _resizeImageForCapture(f).then(function(dataUri){
+      if(dataUri.length>PHOTO_HARD_LIMIT){toast('Photo still too large after resizing — try a different photo',true);return;}
+      _photoQueueAdd({capType:'received',branch:rBranch,date:today,rowRids:rowRids,category:'Received',photos:[dataUri]});
+      toast('Photo queued — uploading in background');
+    }).catch(function(){toast('Could not read that photo',true);});
+  };
+  input.click();
+}
 function _rSummaryLine(byBrand){
   var keys=Object.keys(byBrand);
   return keys.length?keys.map(function(b){return b+' '+byBrand[b];}).join('<br>'):'—';
@@ -7823,6 +7850,14 @@ function rReview(){
       html+='<tr><td style="padding:6px;border-bottom:1px solid #EEF1F4"><b>'+sz+'</b></td><td style="padding:6px;border-bottom:1px solid #EEF1F4">'+f+'</td><td style="padding:6px;border-bottom:1px solid #EEF1F4">'+e+'</td><td style="padding:6px;border-bottom:1px solid #EEF1F4;text-align:center;font-weight:800;color:'+(d===0?'#B4C1CC':'#C0392B')+'">'+(d>0?'+':'')+d+'</td></tr>';
     });
     html+='</table>';
+    var groups=_rTodaysDeliveryGroups(rBranch);
+    if(groups.length){
+      html+='<div style="font-size:12px;color:var(--muted);margin:10px 0 4px">Today\'s deliveries — photos</div>';
+      html+=groups.map(function(g){
+        var status=g.photoLinks?'✓ photo on file':'— no photo';
+        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #EEF1F4;font-size:12px"><span>'+(g.supplier)+(g.invoiceNo?' · Inv '+g.invoiceNo:'')+' — '+status+'</span><button type="button" class="sigClear" style="padding:3px 8px;font-size:10px" onclick=\'_openAddPhotoForReceivedGroup('+JSON.stringify(g.rowRids)+')\'>'+(g.photoLinks?'+ Retry photo':'+ Add photo')+'</button></div>';
+      }).join('');
+    }
   }
   if(sizes.length){
     html+='<div style="font-size:12px;color:var(--amber);font-weight:800;margin:14px 0 4px">New — about to commit</div>';
@@ -9793,7 +9828,7 @@ function capReviewHTML(type){
   return '<table class="htable"><tr><th></th>'+capReviewCols(type).map(function(c){return '<th>'+c.label+'</th>';}).join('')+'</tr>'+
     rows.map(function(r){
       var tag=r._committed?'<span style="color:var(--ok);font-weight:800">✓</span>':'<span style="color:var(--amber);font-weight:800">new</span>';
-      return '<tr'+(r._committed?' style="opacity:.7"':'')+'><td>'+tag+'</td>'+capReviewCols(type).map(function(c){var v=r[c.k];if(c.photo){var ph=Array.isArray(v)?v:(v?[v]:[]);return '<td>'+(ph.length?ph.map(function(s){return '<img src="'+s+'" style="max-height:40px;border-radius:4px;margin:1px">';}).join(''):'—')+'</td>';}return '<td>'+(v===undefined||v===''||v===null?'—':v)+'</td>';}).join('')+'</tr>';
+      return '<tr'+(r._committed?' style="opacity:.7"':'')+'><td>'+tag+'</td>'+capReviewCols(type).map(function(c){var v=r[c.k];if(c.photo){var ph=Array.isArray(v)?v:(v?[v]:[]);var addBtn='<button type="button" class="sigClear" style="padding:3px 8px;font-size:10px" onclick="_openAddPhotoFor(\''+type+'\',\''+(r._rid||'')+'\')">'+(ph.length?'+ Add another':'+ Add photo')+'</button>';return '<td>'+(ph.length?ph.map(function(s){return '<img src="'+s+'" style="max-height:40px;border-radius:4px;margin:1px">';}).join(''):'—')+(r._rid?addBtn:'')+'</td>';}return '<td>'+(v===undefined||v===''||v===null?'—':v)+'</td>';}).join('')+'</tr>';
     }).join('')+
     '</table><div style="font-size:12px;color:var(--muted);margin-top:8px">'+newCount+' new entry(ies) will be committed'+(committedCount?' · '+committedCount+' already committed today':'')+'.</div>';
 }
@@ -9802,7 +9837,7 @@ function capReviewCols(type){
   // logic sets it from the toggle bucket key - it just was never shown in Review, so a
   // cylinder's stage was invisible right up until commit.
   if(type==='manifold')return [{k:'stage',label:'Stage'},{k:'cyl',label:'Cylinder'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'gasLeft',label:'Gas left kg'},{k:'cylState',label:'Condition'},{k:'notes',label:'Note'},{k:'photo',label:'Photo',photo:true}];
-  if(type==='refill')return [{k:'size',label:'Size'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'pumped',label:'Pumped kg'},{k:'seal',label:'Seal #'},{k:'notes',label:'Notes'}];
+  if(type==='refill')return [{k:'size',label:'Size'},{k:'brand',label:'Brand'},{k:'gasType',label:'Gas'},{k:'pumped',label:'Pumped kg'},{k:'seal',label:'Seal #'},{k:'notes',label:'Notes'},{k:'photo',label:'Photo',photo:true}];
   // Real bug, confirmed live 2026-09-18 ("pictures also don't want to load from the private
   // refills"): the renderer below used to check c.k==='photo' specifically - Private's own
   // photo field is keyed 'supplierPhoto' (see the popup field definition and photoKey in
@@ -9813,6 +9848,30 @@ function capReviewCols(type){
   // hardcoded key name, so it works regardless of which key a capture type's photo field uses.
   if(type==='private')return [{k:'cylBrand',label:'Cyl brand'},{k:'otherBrand',label:'Other name'},{k:'gasType',label:'Gas'},{k:'pumped',label:'kg'},{k:'customer',label:'Customer / notes'},{k:'filledBy',label:'Filled by'},{k:'fillSupplier',label:'Supplier'},{k:'fillSupplierOther',label:'Other supplier'},{k:'invoiceNo',label:'Invoice #'},{k:'supplierPhoto',label:'Photo',photo:true}];
   return [{k:'item',label:'Item'},{k:'brand',label:'Brand'}];
+}
+// Reuses the plain <input type="file" accept="image/*"> pattern already used for live
+// capture (onPhotoPick/_pickPhotoOrFallback) - deliberately WITHOUT the capture="environment"
+// hint the live-capture inputs use, since this button is for attaching a photo that may
+// already exist as a file (downloaded, scanned, transferred from another device) rather than
+// taking a brand new one; the browser still offers "take photo" as one of the options on a
+// phone/tablet, it just isn't forced to camera-first. On a PC/laptop/desktop this opens the
+// normal file browser either way - no behavior difference to preserve there.
+function _openAddPhotoFor(capType,rid){
+  var input=document.createElement('input');
+  input.type='file';input.accept='image/*';input.style.display='none';
+  document.body.appendChild(input);
+  input.onchange=function(){
+    var f=input.files&&input.files[0];
+    document.body.removeChild(input);
+    if(!f)return;
+    _resizeImageForCapture(f).then(function(dataUri){
+      if(dataUri.length>PHOTO_HARD_LIMIT){toast('Photo still too large after resizing — try a different photo',true);return;}
+      var category=(capType==='manifold'?'Manifold':capType==='refill'?'Refill':capType==='private'?'Private':capType==='received'?'Received':'Residual');
+      _photoQueueAdd({capType:capType,branch:(histBranch||branch),date:today,rowRid:rid,category:category,photos:[dataUri]});
+      toast('Photo queued — uploading in background');
+    }).catch(function(){toast('Could not read that photo',true);});
+  };
+  input.click();
 }
 function capBackFromReview(){show('capView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);}
 // Removes just-committed lines for branch `br` out of capData, per item (and per toggle
