@@ -7764,20 +7764,11 @@ function _rTodaysDeliveryGroups(br){
   return Object.keys(groups).map(function(k){return groups[k];});
 }
 function _openAddPhotoForReceivedGroup(rowRids){
-  var input=document.createElement('input');
-  input.type='file';input.accept='image/*';input.style.display='none';
-  document.body.appendChild(input);
-  input.onchange=function(){
-    var f=input.files&&input.files[0];
-    document.body.removeChild(input);
-    if(!f)return;
-    _resizeImageForCapture(f).then(function(dataUri){
-      if(dataUri.length>PHOTO_HARD_LIMIT){toast('Photo still too large after resizing — try a different photo',true);return;}
-      _photoQueueAdd({capType:'received',branch:rBranch,date:today,rowRids:rowRids,category:'Received',photos:[dataUri]});
-      toast('Photo queued — uploading in background');
-    }).catch(function(){toast('Could not read that photo',true);});
-  };
-  input.click();
+  _pickPhotoFile(function(dataUri){
+    _photoQueueAdd({capType:'received',branch:rBranch,date:today,rowRids:rowRids,category:'Received',photos:[dataUri]});
+    toast('Photo queued — uploading in background');
+    _rUpdateSessionCounter();
+  });
 }
 function _rSummaryLine(byBrand){
   var keys=Object.keys(byBrand);
@@ -9856,22 +9847,40 @@ function capReviewCols(type){
 // taking a brand new one; the browser still offers "take photo" as one of the options on a
 // phone/tablet, it just isn't forced to camera-first. On a PC/laptop/desktop this opens the
 // normal file browser either way - no behavior difference to preserve there.
-function _openAddPhotoFor(capType,rid){
+function _pickPhotoFile(onDataUri){
   var input=document.createElement('input');
   input.type='file';input.accept='image/*';input.style.display='none';
   document.body.appendChild(input);
+  var done=false;
+  function cleanup(){
+    if(done)return;done=true;
+    window.removeEventListener('focus',onFocus);
+    if(input.parentNode)document.body.removeChild(input);
+  }
+  function onFocus(){
+    setTimeout(function(){if(!done && (!input.files || !input.files.length))cleanup();},300);
+  }
+  window.addEventListener('focus',onFocus);
   input.onchange=function(){
+    if(done)return;done=true;
+    window.removeEventListener('focus',onFocus);
     var f=input.files&&input.files[0];
-    document.body.removeChild(input);
+    if(input.parentNode)document.body.removeChild(input);
     if(!f)return;
     _resizeImageForCapture(f).then(function(dataUri){
       if(dataUri.length>PHOTO_HARD_LIMIT){toast('Photo still too large after resizing — try a different photo',true);return;}
-      var category=(capType==='manifold'?'Manifold':capType==='refill'?'Refill':capType==='private'?'Private':capType==='received'?'Received':'Residual');
-      _photoQueueAdd({capType:capType,branch:(histBranch||branch),date:today,rowRid:rid,category:category,photos:[dataUri]});
-      toast('Photo queued — uploading in background');
+      onDataUri(dataUri);
     }).catch(function(){toast('Could not read that photo',true);});
   };
   input.click();
+}
+function _openAddPhotoFor(capType,rid){
+  _pickPhotoFile(function(dataUri){
+    var category=(capType==='manifold'?'Manifold':capType==='refill'?'Refill':'Private');
+    _photoQueueAdd({capType:capType,branch:capBranch,date:today,rowRid:rid,category:category,photos:[dataUri]});
+    toast('Photo queued — uploading in background');
+    _capUpdateSessionCounter();
+  });
 }
 function capBackFromReview(){show('capView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);}
 // Removes just-committed lines for branch `br` out of capData, per item (and per toggle
