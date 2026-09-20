@@ -10059,6 +10059,15 @@ function _capCommitStayOrHome(){
   buildHeader(c);
   renderGrid();
   if(typeof _capUpdateSessionCounter==='function')_capUpdateSessionCounter();
+  // Real bug, confirmed live 2026-09-20 (Task 12 end-to-end verification): commit is always
+  // reached FROM capReviewView (the Commit button lives there, not on the grid), and this
+  // function rebuilds #capView's own DOM in the background but never switches the visible
+  // view back to it - unlike _openCapContinue's own reset, which this was modeled on and
+  // which DOES call show('capView'). Without this, the operator stayed staring at the stale
+  // Review screen after every commit (its "N new entry(ies) will be committed" text and old
+  // rows never refreshed either), not the fresh grid Task 7 was actually supposed to return
+  // them to - only caught by live browser testing, not by static code review.
+  show('capView');
   window.scrollTo(0,0);
 }
 // Dual counter, added 2026-09-18 per explicit request - "committed today" (this section,
