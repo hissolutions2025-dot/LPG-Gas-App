@@ -7638,6 +7638,7 @@ function rSetBranch(x){
   rBranch=x;applyBranchLock('rbr-',x);rRenderGrid();rRenderSupplierSelect();rRestoreSupplierFields();
   (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&rBranch===br)rRenderGrid();});})(rBranch);
   (function(br){_fetchCaptureLiveRows('received','received',br,today).then(function(){if(rBranch===br)rRenderGrid();});})(rBranch);
+  _rUpdateSessionCounter();
 }
 
 // Three-state cell, same visual language as Count's cCellHtml (shares the same .cCell.
@@ -8195,6 +8196,7 @@ function capSetBranch(x){
   (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&capBranch===br)renderGrid();});})(x);
   renderGrid(); // grid must re-render on the new branch, not keep showing the old branch's stale state - runs immediately with whatever's cached, the live fetch above re-renders again once it lands
   if(capType==='private')_refreshFillSupplierSelect();
+  _capUpdateSessionCounter();
 }
 function buildHeader(c){
   var box=document.getElementById('capHeadControls');var html='';
@@ -11443,6 +11445,8 @@ function _photoQueueRemove(id){
   var q=_photoQueueLoad().filter(function(e){return e.id!==id;});
   _photoQueueSave(q);
   _updatePhotoQueuePendingBadge();
+  if(typeof _capUpdateSessionCounter==='function')_capUpdateSessionCounter();
+  if(typeof _rUpdateSessionCounter==='function')_rUpdateSessionCounter();
 }
 function _photoQueueMarkAttempt(id,err){
   var q=_photoQueueLoad();
