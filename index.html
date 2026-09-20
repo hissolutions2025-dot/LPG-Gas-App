@@ -2811,7 +2811,12 @@ function _bdSectionsList(){return [
     {k:'Size',label:'Size',type:'select',options:[].concat.apply([],RESIDUAL_SIZES.map(function(g){return g.items;}))},
     {k:'CylScale',label:'Scale kg',type:'number'},
     {k:'CylTare',label:'Tare kg',type:'number'},
-    {k:'Note',label:'Note',type:'text'}]}
+    {k:'Note',label:'Note',type:'text'}]},
+  {key:'dailysales',label:'Daily Sales / Returns',photo:false,fields:[
+    {k:'size',label:'Size',type:'select',options:ALLSIZES},
+    {k:'brand',label:'Brand',type:'select',options:C_FULLBRANDS[bdBranch]||['Other']},
+    {k:'sold',label:'Full sold',type:'number'},
+    {k:'returned',label:'Empty returned',type:'number'}]}
 ];}
 function _bdSection(key){return _bdSectionsList().filter(function(s){return s.key===key;})[0];}
 function bdInit(){
@@ -2844,7 +2849,7 @@ function bdCheckDate(){
     }
     statusEl.textContent='No record found for '+bdBranch+' '+dateVal+' — safe to enter below.';
     statusEl.style.color='var(--ok)';
-    bdData={date:dateVal,branch:bdBranch,opening:[],closing:[],manifold:[],refill:[],private:[],received:[],residual:[]};
+    bdData={date:dateVal,branch:bdBranch,opening:[],closing:[],manifold:[],refill:[],private:[],received:[],residual:[],dailysales:[]};
     bdRenderForm();
   },function(){
     statusEl.textContent='Could not check (network error) — try again.';
@@ -2857,6 +2862,14 @@ function bdRenderForm(){
   _bdSectionsList().forEach(function(sec){
     html+='<div class="histSection"><h4>'+sec.label+'</h4><div id="bdTable-'+sec.key+'"></div>'+
       '<button type="button" class="sigClear" onclick="bdAddRow(\''+sec.key+'\')">+ Add '+sec.label+' line</button></div>';
+    // Daily Sales' own private-refill kg total is a single number for the whole day, not a
+    // repeatable row - matches the live Daily Sales screen's own separate dsPrivateKg field,
+    // which sits alongside (not inside) its Sold/Returned grid for the same reason.
+    if(sec.key==='dailysales'){
+      html+='<div class="histSection"><h4>Private Refill (kg, filled by us)</h4>'+
+        '<div class="adminRow"><div class="grow"><label class="mLabel" style="font-size:11px">Total kg for the day</label>'+
+        '<input class="mField" type="number" id="bdPrivateKg" placeholder="0.00"></div></div></div>';
+    }
   });
   html+='<button class="saveBtn" id="bdSubmitBtn" onclick="bdSubmit()">Submit backdated day</button>';
   body.innerHTML=html;
@@ -2910,21 +2923,23 @@ function bdRenderRows(key){
 function bdSubmit(){
   if(!bdData){toast('Pick a valid date first',true);return;}
   if(bdSubmitBusy)return;
-  var totalLines=bdData.opening.length+bdData.closing.length+bdData.manifold.length+bdData.refill.length+bdData.private.length+bdData.received.length+bdData.residual.length;
-  if(!totalLines){toast('Nothing entered',true);return;}
+  var totalLines=bdData.opening.length+bdData.closing.length+bdData.manifold.length+bdData.refill.length+bdData.private.length+bdData.received.length+bdData.residual.length+bdData.dailysales.length;
+  var pkEl=document.getElementById('bdPrivateKg');
+  var privateKg=pkEl?num(pkEl.value):0;
+  if(!totalLines&&!privateKg){toast('Nothing entered',true);return;}
   askPassword('Confirm backdate','Enter your password to submit this backdated day for '+bdData.branch+' '+bdData.date+':').then(function(pw){
     if(pw===null)return;
     _verifyPersonPassword(operator,pw,null).then(function(me){
       if(!me){toast('Wrong password',true);return;}
       bdSubmitBusy=true;
       var btn=document.getElementById('bdSubmitBtn');if(btn){btn.disabled=true;btn.style.opacity='.6';}
-      bdDoSubmit(me,totalLines);
+      bdDoSubmit(me,totalLines,privateKg);
       bdSubmitBusy=false;
       if(btn){btn.disabled=false;btn.style.opacity='1';}
     });
   });
 }
-function bdDoSubmit(auth,totalLines){
+function bdDoSubmit(auth,totalLines,privateKg){
   var d=bdData.date, br=bdData.branch;
   var snap={count:[],manifold:[],refill:[],private:[],received:[],residual:[]};
   var queuedPhotos=0;
@@ -2972,6 +2987,19 @@ function bdDoSubmit(auth,totalLines){
   // function does (they all stamp `date` per row; residualLog's payload never included one),
   // so pushing it here risks silently misdating it in the Sheet instead of just leaving a gap.
   // The day_closes snapshot and any photos are still saved correctly either way.
+  // Daily Sales / Returns lives in its OWN table (daily_sales), one row per branch+date, NOT
+  // inside day_closes.store_snapshot - see correctSavedLine's own comment on this same split.
+  // Matches the live Daily Sales screen's dsCommit() exactly: same upsert shape/onConflict key,
+  // same "skip an all-zero size/brand line" filter, entered_by_name_snapshot additionally
+  // tagged "(Backdated ...)" for the same traceability reason day_closes' authoriser_name is.
+  var dsLines=bdData.dailysales.filter(function(r){return num(r.sold)||num(r.returned);}).map(function(r){
+    return {size:r.size,brand:r.brand,sold:num(r.sold),returned:num(r.returned)};
+  });
+  if(dsLines.length||privateKg){
+    sb.from('daily_sales').upsert({branch:br,date:d,lines:dsLines,private_refill_kg:privateKg,entered_by:currentProfile.id,entered_by_name_snapshot:auth.name+' (Backdated '+today+')'},{onConflict:'branch,date'}).then(function(res){
+      if(res.error)console.error('Backdated Daily Sales save failed:',res.error.message);
+    },function(){console.error('Backdated Daily Sales save failed: network error');});
+  }
   auditLog('Backdated day submitted',br+' '+d+' — '+totalLines+' line(s), '+queuedPhotos+' photo(s) queued, by '+auth.name+' ('+auth.level+')');
   toast('Backdated day saved for '+br+' '+d+(queuedPhotos?(' · '+queuedPhotos+' photo(s) uploading in background'):'')+(snap.residual.length?' · Residual not pushed to Sheet (see note)':''));
   bdInit();
