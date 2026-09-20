@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "lpg-gas-app",
-      "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "8123"],
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["-y", "http-server", "-p", "8123", "-c-1"],
       "port": 8123
     },
     {
