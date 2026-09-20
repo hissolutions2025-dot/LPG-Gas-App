@@ -878,6 +878,17 @@
     </div>
   </div>
 
+  <!-- Backdate's own add/edit popup - same shape as capModal (the live Manifold/Refill/
+       Private capture popup), kept fully separate so it never shares state with today's
+       real in-progress capture. -->
+  <div id="bdModal" class="modal"><div class="modalCard">
+    <div class="modalHead"><span id="bdModalTitle">—</span><button onclick="bdCloseModal()" class="mClose">✕</button></div>
+    <div id="bdModalLines"></div>
+    <div id="bdModalForm"></div>
+    <button class="mAddBtn" onclick="bdModalAdd()">Add</button>
+    <button class="mDone" onclick="bdCloseModal()">Done</button>
+  </div></div>
+
   <!-- SEAL REGISTER PANE -->
   <div id="adminSeals">
     <div class="cgRow" style="margin-bottom:10px"><label>Branch</label><div class="cgToggle">
@@ -2759,37 +2770,35 @@ function adminSetBranch(b){
 // today's real in-progress work, nothing to forget to "reset" afterward) - trades away live
 // mismatch-as-you-go feedback and the full popup UX for that isolation, which is the point.
 var bdBranch='Helderberg', bdData=null, bdSubmitBusy=false;
-// Built lazily (function, not a top-level array literal) - RESIDUAL_SIZES and R_SIZES are
-// declared much further down the file (lines ~3471/~7410), so evaluating this at load time
-// (module order) would reference them before assignment; calling it only when the Backdate
-// tab is actually opened means the whole script has already finished loading by then.
-function _bdSectionsList(){return [
-  {key:'opening',label:'Opening Count',photo:false,fields:[
-    {k:'state',label:'State',type:'select',options:['Full','Empty']},
-    {k:'size',label:'Size',type:'select',options:ALLSIZES},
-    {k:'brand',label:'Brand',type:'select',options:BRANDS},
-    {k:'qty',label:'Qty',type:'number'}]},
-  {key:'closing',label:'Closing Count',photo:false,fields:[
-    {k:'state',label:'State',type:'select',options:['Full','Empty']},
-    {k:'size',label:'Size',type:'select',options:ALLSIZES},
-    {k:'brand',label:'Brand',type:'select',options:BRANDS},
-    {k:'qty',label:'Qty',type:'number'}]},
-  {key:'manifold',label:'Manifold',photo:true,fields:[
+// Built lazily (function, not a top-level object literal) - RESIDUAL_SIZES is declared much
+// further down the file (line ~3471), so evaluating this at load time (module order) would
+// reference it before assignment; calling it only when the modal actually opens means the
+// whole script has already finished loading by then.
+// Card-style sections (Manifold/Refill/Private/Residual) - same "tap + Add, fill a small
+// form, Add another or Done, see a summary card list" flow as the live capture popups
+// (capModal/renderModalLines/addLine/doneModal), rebuilt standalone for Backdate's own
+// isolated data (bdData) via the shared bdModal below rather than reusing capModal itself -
+// reusing the live modal would tie a backdated entry to today's real in-progress capType/
+// capData state, which is exactly the shared-mutable-state risk this tool was built to avoid.
+function _bdCardSpecs(){return {
+  manifold:{title:'Manifold',photo:true,fields:[
     {k:'stage',label:'Stage',type:'select',options:['Opening','Closing']},
     {k:'cyl',label:'Cylinder',type:'text',placeholder:'Cyl 1'},
     {k:'brand',label:'Brand',type:'select',options:BRANDS},
     {k:'gasType',label:'Gas',type:'select',options:['LPG','Propane']},
     {k:'scale',label:'Scale kg',type:'number'},
     {k:'tare',label:'Tare kg',type:'number'},
-    {k:'notes',label:'Note',type:'text'}]},
-  {key:'refill',label:'Refill',photo:true,fields:[
+    {k:'notes',label:'Note',type:'text'}],
+    build:function(v){return {stage:v.stage,cyl:v.cyl,brand:v.brand,gasType:v.gasType,scale:v.scale,tare:v.tare,notes:v.notes};}},
+  refill:{title:'Refill',photo:true,fields:[
     {k:'size',label:'Size',type:'select',options:FILLSIZES},
     {k:'brand',label:'Brand',type:'select',options:BRANDS},
     {k:'gasType',label:'Gas',type:'select',options:['LPG','Propane']},
     {k:'pumped',label:'Pumped kg',type:'number'},
     {k:'seal',label:'Seal #',type:'text'},
-    {k:'notes',label:'Notes',type:'text'}]},
-  {key:'private',label:'Private Refill',photo:true,fields:[
+    {k:'notes',label:'Notes',type:'text'}],
+    build:function(v){return {size:v.size,brand:v.brand,gasType:v.gasType,pumped:v.pumped,seal:v.seal,notes:v.notes};}},
+  private:{title:'Private Refill',photo:true,fields:[
     {k:'cylBrand',label:'Cyl brand',type:'select',options:PRIVBRANDS},
     {k:'otherBrand',label:'Other name',type:'text'},
     {k:'gasType',label:'Gas',type:'select',options:['LPG','Propane']},
@@ -2797,28 +2806,16 @@ function _bdSectionsList(){return [
     {k:'customer',label:'Customer',type:'text'},
     {k:'filledBy',label:'Filled by',type:'select',options:['Us','Supplier']},
     {k:'fillSupplier',label:'Supplier',type:'text'},
-    {k:'invoiceNo',label:'Invoice #',type:'text'}]},
-  {key:'received',label:'Received',photo:true,fields:[
-    {k:'size',label:'Size',type:'select',options:R_SIZES},
-    {k:'brand',label:'Brand',type:'select',options:BRANDS},
-    {k:'fullIn',label:'Full in',type:'number'},
-    {k:'emptyOut',label:'Empty out',type:'number'},
-    {k:'supplier',label:'Supplier',type:'text'},
-    {k:'deliveryNote',label:'DN #',type:'text'},
-    {k:'invoiceNo',label:'Invoice #',type:'text'}]},
-  {key:'residual',label:'Residual Gas',photo:true,fields:[
+    {k:'invoiceNo',label:'Invoice #',type:'text'}],
+    build:function(v){return {cylBrand:v.cylBrand,otherBrand:v.otherBrand,gasType:v.gasType,pumped:v.pumped,customer:v.customer,filledBy:v.filledBy,fillSupplier:v.fillSupplier,invoiceNo:v.invoiceNo};}},
+  residual:{title:'Residual Gas',photo:true,fields:[
     {k:'Brand',label:'Brand',type:'select',options:BRANDS},
     {k:'Size',label:'Size',type:'select',options:[].concat.apply([],RESIDUAL_SIZES.map(function(g){return g.items;}))},
     {k:'CylScale',label:'Scale kg',type:'number'},
     {k:'CylTare',label:'Tare kg',type:'number'},
-    {k:'Note',label:'Note',type:'text'}]},
-  {key:'dailysales',label:'Daily Sales / Returns',photo:false,fields:[
-    {k:'size',label:'Size',type:'select',options:ALLSIZES},
-    {k:'brand',label:'Brand',type:'select',options:C_FULLBRANDS[bdBranch]||['Other']},
-    {k:'sold',label:'Full sold',type:'number'},
-    {k:'returned',label:'Empty returned',type:'number'}]}
-];}
-function _bdSection(key){return _bdSectionsList().filter(function(s){return s.key===key;})[0];}
+    {k:'Note',label:'Note',type:'text'}],
+    build:function(v){return {Brand:v.Brand,Size:v.Size,CylScale:v.CylScale,CylTare:v.CylTare,Note:v.Note};}}
+};}
 function bdInit(){
   bdBranch=branch||'Helderberg';applyBranchLock('bdbr-',bdBranch);
   var d=document.getElementById('bdDate');if(d){d.max=today;d.value='';}
@@ -2859,66 +2856,215 @@ function bdCheckDate(){
 function bdRenderForm(){
   var body=document.getElementById('bdFormBody');
   var html='';
-  _bdSectionsList().forEach(function(sec){
-    html+='<div class="histSection"><h4>'+sec.label+'</h4><div id="bdTable-'+sec.key+'"></div>'+
-      '<button type="button" class="sigClear" onclick="bdAddRow(\''+sec.key+'\')">+ Add '+sec.label+' line</button></div>';
-    // Daily Sales' own private-refill kg total is a single number for the whole day, not a
-    // repeatable row - matches the live Daily Sales screen's own separate dsPrivateKg field,
-    // which sits alongside (not inside) its Sold/Returned grid for the same reason.
-    if(sec.key==='dailysales'){
-      html+='<div class="histSection"><h4>Private Refill (kg, filled by us)</h4>'+
-        '<div class="adminRow"><div class="grow"><label class="mLabel" style="font-size:11px">Total kg for the day</label>'+
-        '<input class="mField" type="number" id="bdPrivateKg" placeholder="0.00"></div></div></div>';
-    }
-  });
+  html+='<div class="histSection"><h4>Opening Count</h4><div id="bdGrid-opening"></div></div>';
+  html+='<div class="histSection"><h4>Closing Count</h4><div id="bdGrid-closing"></div></div>';
+  html+='<div class="histSection"><h4>Manifold</h4><div id="bdCards-manifold"></div><button type="button" class="sigClear" onclick="bdOpenCardModal(\'manifold\')">+ Add Manifold reading</button></div>';
+  html+='<div class="histSection"><h4>Refill</h4><div id="bdCards-refill"></div><button type="button" class="sigClear" onclick="bdOpenCardModal(\'refill\')">+ Add Refill</button></div>';
+  html+='<div class="histSection"><h4>Private Refill</h4><div id="bdCards-private"></div><button type="button" class="sigClear" onclick="bdOpenCardModal(\'private\')">+ Add Private Refill</button></div>';
+  html+='<div class="histSection"><h4>Received</h4><div id="bdGrid-received"></div></div>';
+  html+='<div class="histSection"><h4>Residual Gas</h4><div id="bdCards-residual"></div><button type="button" class="sigClear" onclick="bdOpenCardModal(\'residual\')">+ Add Residual Gas</button></div>';
+  html+='<div class="histSection"><h4>Daily Sales / Returns</h4><div id="bdDsGrid"></div></div>';
+  // Private Refill kg total is a single number for the whole day, not a repeatable row -
+  // matches the live Daily Sales screen's own separate dsPrivateKg field, which sits
+  // alongside (not inside) its Sold/Returned grid for the same reason.
+  html+='<div class="histSection"><h4>Private Refill (kg, filled by us)</h4>'+
+    '<div class="adminRow"><div class="grow"><label class="mLabel" style="font-size:11px">Total kg for the day</label>'+
+    '<input class="mField" type="number" id="bdPrivateKg" placeholder="0.00"></div></div></div>';
   html+='<button class="saveBtn" id="bdSubmitBtn" onclick="bdSubmit()">Submit backdated day</button>';
   body.innerHTML=html;
   body.style.display='block';
-  _bdSectionsList().forEach(function(sec){bdRenderRows(sec.key);});
+  bdRenderCountGrid('opening');
+  bdRenderCountGrid('closing');
+  bdRenderCardSection('manifold');
+  bdRenderCardSection('refill');
+  bdRenderCardSection('private');
+  bdRenderReceivedGrid();
+  bdRenderCardSection('residual');
+  bdRenderDailySalesGrid();
 }
-function bdAddRow(key){
-  var sec=_bdSection(key);
-  var row={};
-  sec.fields.forEach(function(f){row[f.k]=(f.type==='select')?f.options[0]:'';});
-  if(sec.photo)row._photos=[];
-  bdData[key].push(row);
-  bdRenderRows(key);
+// ---- Opening/Closing Count: Size x Full/Empty grid, tap a cell to add/remove brand+qty
+// lines - same .cGrid/.cgHead/.cgLine/.cCell markup and classes the live Stock Count screen
+// (cRenderGrid/cCellHtml) uses, so it looks and behaves like the screen operators already
+// use daily, just backed by bdData instead of the live store. ----
+function bdRenderCountGrid(key){
+  var el=document.getElementById('bdGrid-'+key);if(!el)return;
+  var html='<div class="cgHead"><div class="gc sz">Size</div><div class="gc">Full</div><div class="gc">Empty</div></div>';
+  html+=ALLSIZES.map(function(sz){
+    return '<div class="cgLine"><div class="gc sz">'+sz+'</div>'+
+      '<div class="gc">'+bdCountCellHtml(key,sz,'Full')+'</div>'+
+      '<div class="gc">'+bdCountCellHtml(key,sz,'Empty')+'</div></div>';
+  }).join('');
+  el.innerHTML='<div class="cGrid">'+html+'</div>';
 }
-function bdRemoveRow(key,i){bdData[key].splice(i,1);bdRenderRows(key);}
-function bdSetField(key,i,k,val){if(bdData&&bdData[key]&&bdData[key][i])bdData[key][i][k]=val;}
-function bdPickPhoto(key,i){
-  _pickPhotoFile(function(dataUri){
-    if(dataUri.length>PHOTO_HARD_LIMIT){toast('Photo still too large after resizing — try a different photo',true);return;}
-    var row=bdData[key][i];if(!row)return;
-    row._photos=row._photos||[];row._photos.push(dataUri);
-    bdRenderRows(key);
-  });
+function bdCountCellHtml(key,sz,state){
+  var lines=bdData[key].filter(function(r){return r.size===sz&&r.state===state;});
+  var total=lines.reduce(function(s,r){return s+num(r.qty);},0);
+  var brs=lines.map(function(r){return (r.brand||'').slice(0,4)+' '+num(r.qty);}).join(', ');
+  return '<button type="button" class="cCell '+(lines.length?'committed':'z')+'" onclick="bdOpenCountCell(\''+key+'\',\''+sz+'\',\''+state+'\')">'+
+    '<span class="val">'+(lines.length?total:'–')+'</span>'+(brs?'<span class="brs">'+brs+'</span>':'')+'</button>';
 }
-function bdRenderRows(key){
-  var sec=_bdSection(key);
-  var el=document.getElementById('bdTable-'+key);if(!el)return;
+function bdOpenCountCell(key,sz,state){
+  var brands=(state==='Full')?(C_FULLBRANDS[bdBranch]||['Other']):BRANDS;
+  bdOpenModal(key,sz+' — '+state,
+    function(r){return r.size===sz&&r.state===state;},
+    [{k:'brand',label:'Brand',type:'select',options:brands},{k:'qty',label:'Qty',type:'number'}],
+    function(v){return {state:state,size:sz,brand:v.brand,qty:num(v.qty)};},
+    false,
+    function(){bdRenderCountGrid(key);}
+  );
+}
+// ---- Received: Size x Full-in/Empty-out grid, same shape as Count's - matches the live
+// Received screen's own rGrid (same .cGrid markup, rOpenDetail's tap-a-cell flow). ----
+function bdRenderReceivedGrid(){
+  var el=document.getElementById('bdGrid-received');if(!el)return;
+  var html='<div class="cgHead"><div class="gc sz">Size</div><div class="gc">Full in</div><div class="gc">Empty out</div></div>';
+  html+=R_SIZES.map(function(sz){
+    return '<div class="cgLine"><div class="gc sz">'+sz+'</div>'+
+      '<div class="gc">'+bdReceivedCellHtml(sz,'fullIn')+'</div>'+
+      '<div class="gc">'+bdReceivedCellHtml(sz,'emptyOut')+'</div></div>';
+  }).join('');
+  el.innerHTML='<div class="cGrid">'+html+'</div>';
+}
+function bdReceivedCellHtml(sz,side){
+  var lines=bdData.received.filter(function(r){return r.size===sz&&num(r[side])>0;});
+  var total=lines.reduce(function(s,r){return s+num(r[side]);},0);
+  var brs=lines.map(function(r){return (r.brand||'').slice(0,4)+' '+num(r[side]);}).join(', ');
+  return '<button type="button" class="cCell '+(lines.length?'committed':'z')+'" onclick="bdOpenReceivedCell(\''+sz+'\',\''+side+'\')">'+
+    '<span class="val">'+(lines.length?total:'–')+'</span>'+(brs?'<span class="brs">'+brs+'</span>':'')+'</button>';
+}
+function bdOpenReceivedCell(sz,side){
+  bdOpenModal('received',sz+' — '+(side==='fullIn'?'Full in':'Empty out'),
+    function(r){return r.size===sz&&num(r[side])>0;},
+    [{k:'brand',label:'Brand',type:'select',options:BRANDS},{k:'qty',label:'Qty',type:'number'},
+     {k:'supplier',label:'Supplier',type:'text'},{k:'deliveryNote',label:'DN #',type:'text'},{k:'invoiceNo',label:'Invoice #',type:'text'}],
+    function(v){var row={size:sz,brand:v.brand,fullIn:0,emptyOut:0,supplier:v.supplier,deliveryNote:v.deliveryNote,invoiceNo:v.invoiceNo};row[side]=num(v.qty);return row;},
+    true,
+    function(){bdRenderReceivedGrid();}
+  );
+}
+// ---- Manifold/Refill/Private/Residual: "+ Add" opens the shared bdModal, added lines show
+// as compact summary cards - same tap-tile-then-popup-then-summary flow the live app's own
+// Manifold/Refill/Private capture popups use (capModal/renderModalLines), just against
+// bdData instead of the live capData. ----
+function bdRenderCardSection(key){
+  var el=document.getElementById('bdCards-'+key);if(!el)return;
   var rows=bdData[key];
   if(!rows.length){el.innerHTML='<div class="histEmpty">No lines yet.</div>';return;}
-  var html='';
-  rows.forEach(function(r,i){
-    html+='<div class="adminRow" style="flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:8px">';
-    sec.fields.forEach(function(f){
-      var id='bdf-'+key+'-'+i+'-'+f.k;
-      if(f.type==='select'){
-        html+='<div class="grow"><label class="mLabel" style="font-size:10px">'+f.label+'</label><select class="mField" id="'+id+'" onchange="bdSetField(\''+key+'\','+i+',\''+f.k+'\',this.value)">'+
-          f.options.map(function(o){return '<option value="'+o+'"'+(r[f.k]===o?' selected':'')+'>'+o+'</option>';}).join('')+'</select></div>';
-      } else {
-        html+='<div class="grow"><label class="mLabel" style="font-size:10px">'+f.label+'</label><input class="mField" type="'+(f.type==='number'?'number':'text')+'" id="'+id+'" value="'+(r[f.k]!==undefined?r[f.k]:'')+'" placeholder="'+(f.placeholder||'')+'" oninput="bdSetField(\''+key+'\','+i+',\''+f.k+'\',this.value)"></div>';
-      }
+  el.innerHTML=rows.map(function(r,i){
+    return '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line);font-size:13px">'+
+      '<span>'+bdLineSummary(r)+'</span>'+
+      '<button type="button" class="sigClear" style="color:#C0392B;font-size:10px" onclick="bdRemoveCardLine(\''+key+'\','+i+')">Remove</button></div>';
+  }).join('');
+}
+function bdRemoveCardLine(key,i){bdData[key].splice(i,1);bdRenderCardSection(key);}
+function bdOpenCardModal(key){
+  var spec=_bdCardSpecs()[key];
+  bdOpenModal(key,spec.title,function(){return true;},spec.fields,spec.build,spec.photo,function(){bdRenderCardSection(key);});
+}
+// ---- Daily Sales / Returns: exhaustive Size x Brand grid, every combination editable
+// directly in place - no add/remove, no modal - matches the LIVE Daily Sales screen's own
+// dsRenderGrid exactly (same idea: type straight into the row, nothing to "add" first). ----
+function bdRenderDailySalesGrid(){
+  var el=document.getElementById('bdDsGrid');if(!el)return;
+  var brands=C_FULLBRANDS[bdBranch]||['Other'];
+  var html='<table class="dsTable"><tr><th></th><th>Full Sold</th><th>Emp Return</th></tr>';
+  ALLSIZES.forEach(function(sz){
+    brands.forEach(function(brand){
+      var row=bdData.dailysales.filter(function(r){return r.size===sz&&r.brand===brand;})[0];
+      if(!row){row={size:sz,brand:brand,sold:0,returned:0};bdData.dailysales.push(row);}
+      html+='<tr><td class="dsSizeCell"><b>'+sz+'</b> <span style="color:var(--muted);font-weight:400">'+brand+'</span></td>'+
+        '<td><input type="number" inputmode="numeric" min="0" step="1" value="'+num(row.sold)+'" oninput="bdDsSet(\''+sz+'\',\''+brand+'\',\'sold\',this.value)"></td>'+
+        '<td><input type="number" inputmode="numeric" min="0" step="1" value="'+num(row.returned)+'" oninput="bdDsSet(\''+sz+'\',\''+brand+'\',\'returned\',this.value)"></td></tr>';
     });
-    if(sec.photo){
-      html+='<div class="grow"><label class="mLabel" style="font-size:10px">Photo</label>'+
-        '<button type="button" class="sigClear" style="font-size:10px" onclick="bdPickPhoto(\''+key+'\','+i+')">'+((r._photos&&r._photos.length)?('📷 '+r._photos.length+' added'):'+ Add photo')+'</button></div>';
-    }
-    html+='<div class="grow" style="align-self:flex-end"><button type="button" class="sigClear" style="color:#C0392B;font-size:10px" onclick="bdRemoveRow(\''+key+'\','+i+')">Remove</button></div>';
-    html+='</div>';
   });
+  html+='</table>';
   el.innerHTML=html;
+}
+function bdDsSet(sz,brand,field,val){
+  var row=bdData.dailysales.filter(function(r){return r.size===sz&&r.brand===brand;})[0];
+  if(row)row[field]=Math.max(0,Math.round(num(val)));
+}
+// ---- Shared modal (bdModal) - generic "show existing matching lines + a small add-form +
+// Add/Done" engine, backing both the grid cells (Count/Received) and the card sections
+// (Manifold/Refill/Private/Residual). Mirrors capModal's own shape (modalCard/modalHead/
+// mClose/mAddBtn/mDone classes) so it looks the same as the live popups, but is its own
+// separate DOM element and JS state - never shares anything with capModal/capData/capType,
+// preserving the isolation the whole tool was built for. ----
+var bdModalKey=null,bdModalFilter=null,bdModalFields=null,bdModalBuild=null,bdModalOnDone=null,bdModalPhotoOn=false,bdModalPendingPhotos=[];
+function bdOpenModal(key,title,filterFn,fields,buildFn,photoOn,onDone){
+  bdModalKey=key;bdModalFilter=filterFn;bdModalFields=fields;bdModalBuild=buildFn;bdModalPhotoOn=!!photoOn;bdModalOnDone=onDone;bdModalPendingPhotos=[];
+  document.getElementById('bdModalTitle').textContent=title;
+  bdRenderModalForm();
+  bdRenderModalLines();
+  document.getElementById('bdModal').classList.add('show');
+}
+function bdCloseModal(){
+  document.getElementById('bdModal').classList.remove('show');
+  if(bdModalOnDone)bdModalOnDone();
+  bdModalKey=null;bdModalFilter=null;bdModalFields=null;bdModalBuild=null;bdModalOnDone=null;bdModalPendingPhotos=[];
+}
+function bdRenderModalForm(){
+  var html='';
+  bdModalFields.forEach(function(f){
+    var id='bdmf-'+f.k;
+    if(f.type==='select'){
+      html+='<label class="mLabel">'+f.label+'</label><select class="mField" id="'+id+'">'+f.options.map(function(o){return '<option value="'+o+'">'+o+'</option>';}).join('')+'</select>';
+    } else {
+      html+='<label class="mLabel">'+f.label+'</label><input class="mField" type="'+(f.type==='number'?'number':'text')+'" id="'+id+'" placeholder="'+(f.placeholder||'')+'">';
+    }
+  });
+  if(bdModalPhotoOn){
+    html+='<label class="mLabel">Photo</label><button type="button" class="sigClear" id="bdModalPhotoBtn" style="width:100%" onclick="bdModalPhoto()">'+(bdModalPendingPhotos.length?('📷 '+bdModalPendingPhotos.length+' added'):'+ Add photo')+'</button>';
+  }
+  document.getElementById('bdModalForm').innerHTML=html;
+}
+function bdModalPhoto(){
+  _pickPhotoFile(function(dataUri){
+    if(dataUri.length>PHOTO_HARD_LIMIT){toast('Photo still too large after resizing — try a different photo',true);return;}
+    bdModalPendingPhotos.push(dataUri);
+    bdRenderModalForm();
+  });
+}
+function bdLineSummary(r){
+  var parts=[];
+  if(r.brand)parts.push(r.brand);if(r.Brand)parts.push(r.Brand);
+  if(r.cyl)parts.push(r.cyl);if(r.stage)parts.push(r.stage);
+  if(r.size)parts.push(r.size);if(r.Size)parts.push(r.Size);
+  if(r.qty!==undefined)parts.push(num(r.qty)+'x');
+  if(r.fullIn!==undefined&&num(r.fullIn))parts.push('Full in '+r.fullIn);
+  if(r.emptyOut!==undefined&&num(r.emptyOut))parts.push('Empty out '+r.emptyOut);
+  if(r.gasLeft!==undefined)parts.push(r.gasLeft.toFixed?r.gasLeft.toFixed(2)+'kg left':r.gasLeft+'kg left');
+  else if(r.scale!==undefined&&r.tare!==undefined)parts.push((num(r.scale)-num(r.tare)).toFixed(2)+'kg left');
+  if(r.pumped!==undefined&&r.pumped!=='')parts.push(num(r.pumped)+'kg pumped');
+  if(r.CylScale!==undefined&&r.CylTare!==undefined)parts.push((num(r.CylScale)-num(r.CylTare)).toFixed(2)+'kg left');
+  if(r.customer)parts.push(r.customer);
+  if(r.supplier)parts.push(r.supplier);
+  if(r._photos&&r._photos.length)parts.push('📷'+r._photos.length);
+  return parts.join(' · ')||'(line)';
+}
+function bdRenderModalLines(){
+  var box=document.getElementById('bdModalLines');
+  var matches=bdData[bdModalKey].map(function(r,i){return {r:r,i:i};}).filter(function(p){return bdModalFilter(p.r);});
+  if(!matches.length){box.innerHTML='<div style="font-size:12px;color:var(--muted);padding:6px 0">Nothing added yet.</div>';return;}
+  box.innerHTML=matches.map(function(p){
+    return '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line);font-size:13px">'+
+      '<span>'+bdLineSummary(p.r)+'</span>'+
+      '<button type="button" class="sigClear" style="color:#C0392B;font-size:10px" onclick="bdRemoveModalLine('+p.i+')">Remove</button></div>';
+  }).join('');
+}
+function bdRemoveModalLine(i){
+  bdData[bdModalKey].splice(i,1);
+  bdRenderModalLines();
+}
+function bdModalAdd(){
+  var vals={};
+  bdModalFields.forEach(function(f){var el=document.getElementById('bdmf-'+f.k);vals[f.k]=el?el.value:'';});
+  var row=bdModalBuild(vals);
+  if(bdModalPendingPhotos.length)row._photos=bdModalPendingPhotos;
+  bdModalPendingPhotos=[];
+  bdData[bdModalKey].push(row);
+  bdRenderModalForm();
+  bdRenderModalLines();
 }
 function bdSubmit(){
   if(!bdData){toast('Pick a valid date first',true);return;}
