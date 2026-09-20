@@ -840,6 +840,54 @@ Call site: in `openReceived()` (the function that first opens the Received scree
 ```
 (This mirrors Step 3's placement pattern for Manifold/Refill/Private - called once when the screen opens, plus already-guarded from `_rCommitStayOrHome()` in Task 8.)
 
+- [ ] **Step 4b: Refresh both counters on branch switch (ADDED 2026-09-20, code-quality review of the first implementation, commit `f7db645`)**
+
+Without this, a Manager/Owner (Operators are branch-locked and never see this toggle) who switches branches on an already-open capture screen keeps seeing the PREVIOUS branch's "N committed today · N uploading" numbers until they commit something or leave and reopen the screen - the exact stale-display problem this whole task exists to prevent.
+
+In `rSetBranch(x)` (currently index.html:7636-7641), add the call as the new last line before the closing `}`:
+```js
+function rSetBranch(x){
+  if(role==='Operator' && x!==branch){toast('Locked to '+branch,true);return;}
+  rBranch=x;applyBranchLock('rbr-',x);rRenderGrid();rRenderSupplierSelect();rRestoreSupplierFields();
+  (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&rBranch===br)rRenderGrid();});})(rBranch);
+  (function(br){_fetchCaptureLiveRows('received','received',br,today).then(function(){if(rBranch===br)rRenderGrid();});})(rBranch);
+  _rUpdateSessionCounter();
+}
+```
+(No `typeof` guard needed here - by the time this task's own Step 4 has run, `_rUpdateSessionCounter` already exists in the same commit.)
+
+In `capSetBranch(x)` (currently index.html:8188-8198), add the call as the new last line before the closing `}`:
+```js
+function capSetBranch(x){
+  if(role==='Operator' && x!==branch){toast('You are locked to '+branch,true);return;}
+  capBranch=x;applyBranchLock('capbr-',x);
+  document.getElementById('hSub').textContent=capBranch;
+  if(capType==='manifold'){_fetchManifoldSlotCount(x).then(renderGrid);_fetchManifoldPrevClose(x);_manifoldOpeningSyncPending=true;_fetchManifoldLiveRows(x,today).then(function(){_manifoldOpeningSyncPending=false;renderGrid();},function(){_manifoldOpeningSyncPending=false;renderGrid();});}
+  if(capType==='refill'||capType==='private'){_fetchCaptureLiveRows(capType,capType,x,today).then(renderGrid);}
+  if(capType==='refill'){_fetchSealLive(x);}
+  (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&capBranch===br)renderGrid();});})(x);
+  renderGrid(); // grid must re-render on the new branch, not keep showing the old branch's stale state - runs immediately with whatever's cached, the live fetch above re-renders again once it lands
+  if(capType==='private')_refreshFillSupplierSelect();
+  _capUpdateSessionCounter();
+}
+```
+
+- [ ] **Step 4c: Refresh the "photos uploading" count as the background queue actually drains (ADDED 2026-09-20, same review)**
+
+Without this, "N photo(s) uploading" freezes at whatever it was when the screen opened/last committed, even after the background queue (Task 1-3's `_photoQueueProcess`) actually finishes uploading and removes those entries - it only becomes accurate again on the next commit or screen reopen. Both counter elements exist in the DOM at all times (just hidden via CSS when their view isn't active), so it's safe to call both unconditionally, guarded by `typeof`, whenever the queue's state changes - the `if(!el)return;` inside each function is not the relevant guard here (the elements always exist), but calling a cheap `document.getElementById`+`localStorage` read twice on every queue event is negligible.
+
+In `_photoQueueRemove(id)` (currently index.html:11442-11446), add both guarded refresh calls after the existing badge update:
+```js
+function _photoQueueRemove(id){
+  var q=_photoQueueLoad().filter(function(e){return e.id!==id;});
+  _photoQueueSave(q);
+  _updatePhotoQueuePendingBadge();
+  if(typeof _capUpdateSessionCounter==='function')_capUpdateSessionCounter();
+  if(typeof _rUpdateSessionCounter==='function')_rUpdateSessionCounter();
+}
+```
+In `_photoQueueMarkAttempt(id,err)` (currently index.html:11447-11453), add the same two lines after `_photoQueueSave(q);` (a failed attempt doesn't remove the entry, but it's still worth refreshing in case the operator is watching the count expecting it to move) - actually, on reflection: a failed attempt does NOT change queue length, so `queuedForBranch` can't have changed - skip this one, only `_photoQueueRemove` needs the refresh. (Left here as an explicit note so this isn't silently "forgotten" - it's a deliberate no-op, not an oversight.)
+
 - [ ] **Step 5: Syntax-check** (same command as Task 1 Step 2)
 
 - [ ] **Step 6: Verify live**
