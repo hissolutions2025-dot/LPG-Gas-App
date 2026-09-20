@@ -813,7 +813,32 @@ In `_openCapContinue` (Task from earlier work this session - search `if(type==='
   _capUpdateSessionCounter();
 ```
 
-- [ ] **Step 4: Add the same counter to Received's own capture view**, mirroring Steps 1-3 with Received's own template/element ids and an `_rUpdateSessionCounter()` reading `store.received`/`rBranch` instead of `store[capType]`/`capBranch`.
+- [ ] **Step 4: Add the same counter to Received's own capture view**
+
+**RESOLVED 2026-09-19 (investigated before implementation dispatch) - fully specified below, do not re-derive:**
+
+HTML: Received's own hint element is `<div class="capHint" id="rHint" style="margin-bottom:12px;"></div>` inside `#recvGridView` (before `#rAdjustLink`/`#rGrid`). Add the counter directly after it:
+```html
+<div class="capHint" id="rHint" style="margin-bottom:12px;"></div>
+<div id="rSessionCounter" style="font-size:11px;color:var(--muted);margin-top:4px"></div>
+```
+
+Function - **IMPORTANT DEVIATION from the Manifold/Refill/Private version**: do NOT copy the `&&r._committed` clause. Manifold/Refill/Private/Residual rows get `_committed=true` stamped explicitly at commit time (`_capCommitReal` line ~9893, `residualSubmit`'s `committedRows` mapper), but Received's `rCommit` never stamps `_committed` on the rows it pushes into `store.received` - that field simply doesn't exist there. `store.received` only ever holds already-committed rows for a branch/day in the first place (drafts live separately in `rData`/`rSupplierState`, never in `store.received`), so filtering by `r._committed` would silently and permanently show "0 committed today" for Received. Instead, mirror the exact filter `rCommittedSummary()` already uses (branch + date only, no committed-flag check) - see index.html's existing `function rCommittedSummary(br){...store.received.forEach(function(r){if(r.branch!==br)return;if((r._date||today)!==today)return;...` for the precedent this must match:
+```js
+function _rUpdateSessionCounter(){
+  var el=document.getElementById('rSessionCounter');if(!el)return;
+  var committedToday=(store.received||[]).filter(function(r){return r.branch===rBranch&&(r._date||today)===today;}).length;
+  var queuedForBranch=_photoQueueLoad().filter(function(e){return e.capType==='received'&&e.branch===rBranch;}).length;
+  el.textContent=committedToday+' committed today'+(queuedForBranch?(' · '+queuedForBranch+' photo(s) uploading'):'');
+}
+```
+
+Call site: in `openReceived()` (the function that first opens the Received screen - search `function openReceived()`), add directly after the existing `rShow('recvGridView');rRenderGrid();rLoadSuppliers();window.scrollTo(0,0);` line:
+```js
+    rShow('recvGridView');rRenderGrid();rLoadSuppliers();window.scrollTo(0,0);
+    _rUpdateSessionCounter();
+```
+(This mirrors Step 3's placement pattern for Manifold/Refill/Private - called once when the screen opens, plus already-guarded from `_rCommitStayOrHome()` in Task 8.)
 
 - [ ] **Step 5: Syntax-check** (same command as Task 1 Step 2)
 
