@@ -15986,6 +15986,38 @@ if('serviceWorker' in navigator){
   // pending.
   setInterval(_maybeApplyPendingReload, 120000);
 }
+// Real gap, confirmed live 2026-09-21 (three separate deploys in one day never reached an
+// operator's phone despite "close and reopen"): the "new version ready" toast above ONLY
+// fires when sw.js's OWN bytes change - the browser's update check is a byte comparison of
+// sw.js itself, nothing to do with index.html. Every fix that day only ever touched
+// index.html, so updatefound never fired even once, and a backgrounded-then-resumed PWA on
+// a phone often never performs a genuine fresh navigation either (just resumes the same
+// already-loaded JS), so sw.js's own network-first fetch handler never got a chance to run
+// again. This is a second, independent detector that doesn't depend on sw.js changing at
+// all - polls this exact page's own ETag (GitHub Pages/Fastly sends one on every response,
+// see sw.js's own comment) with a real network request, and feeds the SAME existing
+// _pendingReload/_maybeApplyPendingReload machinery above once it sees the ETag change, so a
+// stale phone still gets the same safe "apply once back on Home or idle" toast instead of
+// running old code indefinitely.
+var _appETag=null;
+function _checkAppETag(){
+  fetch(location.href,{method:'HEAD',cache:'no-store'}).then(function(res){
+    var tag=res.headers.get('etag');
+    if(!tag)return; // host isn't sending one for some reason - silently no-op, sw.js's own mechanism is still the primary path
+    if(_appETag===null){_appETag=tag;return;} // first check this session - just record the baseline
+    if(tag!==_appETag){
+      _appETag=tag;
+      _pendingReload=true;
+      if(!_pendingReloadToasted){
+        _pendingReloadToasted=true;
+        toast('A new version of the app is ready — it\'ll apply once you\'re back on Home or idle.');
+      }
+      _maybeApplyPendingReload();
+    }
+  }).catch(function(){}); // offline or blocked - next interval tries again, no harm skipping one
+}
+_checkAppETag();
+setInterval(_checkAppETag, 120000);
 </script>
 </body>
 </html>
