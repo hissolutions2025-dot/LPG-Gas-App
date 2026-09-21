@@ -11086,9 +11086,12 @@ function printCombinedReport(){
 function openHistory(mismatchOverlayRows,_skipManifoldLiveFetch){
   _updateCloseDayPendingBadge();
   _updateCountPendingBadge();
-  _refreshDayCloseSignatures(); // fire-and-forget, like the badge updates above - don't block render
   if(!histBranch||(role==='Operator'))histBranch=branch||'Helderberg';
   if(histBranch==='All'){_openHistoryCombined();return;}
+  // Moved after histBranch is resolved above (was firing on the stale/pre-toggle branch) -
+  // fire-and-forget, like the badge updates above - don't block render. See closeDay()'s own
+  // comment for the full story on why every one of these must be passed histBranch explicitly.
+  _refreshDayCloseSignatures(histBranch);
   var _sb=document.querySelector('.sigBlock');if(_sb)_sb.style.display='block'; // undo any earlier combined-view hide when switching back to a real branch
   var _hab2=document.getElementById('histActionBar');if(_hab2)_hab2.style.display='flex'; // same undo, for the action bar hidden alongside sigBlock in _openHistoryCombined()
   // Every live mirror (Manifold + Received/Refill/Private/Residual, via capture_live_rows)
@@ -11365,10 +11368,11 @@ window.addEventListener('online',_dayCloseSigFlush);
 // _dayCloseSigPendingRoles()/_dayCloseSigFlushOne() (below) right after its normal remote
 // refresh, specifically to catch this before treating sigData as trustworthy.
 // Returns which of 'Operator'/'Manager' currently have a payload queued for TODAY's branch.
-function _dayCloseSigPendingRoles(){
+function _dayCloseSigPendingRoles(br){
+  br=br||branch;
   var q;try{q=JSON.parse(localStorage.getItem('gs_daycloseSig_queue')||'[]');}catch(e){return [];}
   var roles={};
-  q.forEach(function(p){if(p&&p.branch===branch&&p.date===today&&(p.role==='Operator'||p.role==='Manager'))roles[p.role]=true;});
+  q.forEach(function(p){if(p&&p.branch===br&&p.date===today&&(p.role==='Operator'||p.role==='Manager'))roles[p.role]=true;});
   return Object.keys(roles);
 }
 // Attempts ONE fresh upsert for just today's branch's queued signature(s) in `roles`, and
@@ -11377,9 +11381,10 @@ function _dayCloseSigPendingRoles(){
 // updates sigData/sigSignedBy directly (no need to wait for another remote refetch) and
 // removes only the flushed entries from the queue - anything unrelated to this branch/date
 // stays queued untouched.
-function _dayCloseSigFlushOne(roles){
+function _dayCloseSigFlushOne(roles,br){
+  br=br||branch;
   var q;try{q=JSON.parse(localStorage.getItem('gs_daycloseSig_queue')||'[]');}catch(e){return Promise.resolve(roles.slice());}
-  var toFlush=q.filter(function(p){return p&&p.branch===branch&&p.date===today&&roles.indexOf(p.role)>-1;});
+  var toFlush=q.filter(function(p){return p&&p.branch===br&&p.date===today&&roles.indexOf(p.role)>-1;});
   var rest=q.filter(function(p){return toFlush.indexOf(p)===-1;});
   if(!toFlush.length)return Promise.resolve([]);
   return Promise.all(toFlush.map(function(payload){
@@ -11454,9 +11459,14 @@ function _fetchDayCloseSignatures(br,date){
 // edge case, on a flaky field connection. Without this, an OLDER response resolving AFTER a
 // NEWER one could silently overwrite a just-applied fresher signature with stale data.
 var _dayCloseSigRefreshToken=0;
-function _refreshDayCloseSignatures(){
+// br: defaults to the global session branch (unchanged for every existing no-arg call), but
+// closeDay() and the History screen's own signature refreshes must pass histBranch explicitly -
+// see closeDay()'s own comment for the full story (this whole family of functions silently
+// read the bare global branch instead of the branch actually being viewed/closed).
+function _refreshDayCloseSignatures(br){
+  br=br||branch;
   var myToken=++_dayCloseSigRefreshToken;
-  return _fetchDayCloseSignatures(branch,today).then(function(rows){
+  return _fetchDayCloseSignatures(br,today).then(function(rows){
     if(myToken!==_dayCloseSigRefreshToken)return rows; // a newer refresh already superseded this one
     ['sigOp','sigMgr'].forEach(function(id){
       var role=(id==='sigOp')?'Operator':'Manager';
@@ -11536,10 +11546,15 @@ function _dedupManifoldSnapshotRows(rows){
   });
   return Object.keys(latest).map(function(k){return latest[k];});
 }
-function manifoldBalance(){
+// br: which branch to balance - defaults to the global session branch for every OTHER caller
+// (live Manifold capture, mid-day mismatch checks) that has always relied on that default.
+// closeDay() is the one caller that must NOT use that default - see closeDay()'s own comment
+// on why the branch actually being closed is histBranch, not the bare global branch.
+function manifoldBalance(br){
+  br=br||branch;
   var TOL=0.2;
   function sumStage(stage){
-    var rows=store.manifold.filter(function(r){return (!r.branch||!branch||r.branch===branch)&&r.stage===stage;});
+    var rows=store.manifold.filter(function(r){return (!r.branch||!br||r.branch===br)&&r.stage===stage;});
     if(stage==='Opening'||stage==='Closing')rows=_dedupManifoldSnapshotRows(rows);
     return rows.reduce(function(a,r){return a+num(r.gasLeft);},0);
   }
@@ -11548,17 +11563,17 @@ function manifoldBalance(){
   var closing=sumStage('Closing');
   var removed=sumStage('Removed');
   var gasOut=opening+added-closing-removed;
-  var refKg=store.refill.filter(function(r){return !r.branch||!branch||r.branch===branch;}).reduce(function(a,r){return a+num(r.pumped);},0);
+  var refKg=store.refill.filter(function(r){return !r.branch||!br||r.branch===br;}).reduce(function(a,r){return a+num(r.pumped);},0);
   // Only "Filled by: Us" - a Private Refill filled at a SUPPLIER never drew gas from this
   // branch's own manifold, so it can't be part of a check that's specifically about this
   // manifold's own weighed gas-out. Previously included every private refill regardless of
   // filledBy, which could show a false imbalance (and prompt an unnecessary override) any
   // time a supplier-filled private refill happened the same day.
-  var privKg=store.private.filter(function(r){return (!r.branch||!branch||r.branch===branch)&&r.filledBy!=='Supplier';}).reduce(function(a,r){return a+num(r.pumped);},0);
+  var privKg=store.private.filter(function(r){return (!r.branch||!br||r.branch===br)&&r.filledBy!=='Supplier';}).reduce(function(a,r){return a+num(r.pumped);},0);
   var pumped=refKg+privKg;
   var diff=gasOut-pumped;
   return {opening:opening,added:added,closing:closing,removed:removed,gasOut:gasOut,refKg:refKg,privKg:privKg,pumped:pumped,diff:diff,balanced:Math.abs(diff)<=TOL,tol:TOL,
-    hasData:(store.manifold.filter(function(r){return !r.branch||!branch||r.branch===branch;}).length>0)};
+    hasData:(store.manifold.filter(function(r){return !r.branch||!br||r.branch===br;}).length>0)};
 }
 // ===== DAY COMPLETENESS (2026-09-08) =====
 // Whether Stock Count and Manifold were actually captured today - derived from the same real
@@ -11681,6 +11696,24 @@ function _dayCompletenessOverride(br,missingSummary){
   });
 }
 function closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,_unapprovedTransfers,_skipSigRefresh){
+  // Real bug reported live 2026-09-21 for Kleinmond: this whole function, and every function
+  // it calls (manifoldBalance, _refreshDayCloseSignatures, _dayCloseSigPendingRoles/FlushOne,
+  // _closeDayFinalize, saveDayToHistory), used the bare global `branch` - the branch this
+  // session originally LOGGED IN under - not histBranch, the branch actually selected via
+  // History's own Helderberg/Kleinmond toggle. openHistory() itself already shadows branch
+  // with histBranch for its OWN rendering (see its "shadow so all filters below use the
+  // toggle's branch" comment) - closeDay() was simply never given the same treatment, even
+  // though the only place it's ever invoked from is this exact screen.
+  // Consequence: an Owner logged in under Helderberg who used the toggle to view/close
+  // Kleinmond saw HELDERBERG's real signatures and HELDERBERG's real manifold balance under
+  // a screen labelled Kleinmond - not a display glitch, but the actual gates being checked
+  // against the wrong branch's data. Left unfixed, actually closing would have written
+  // Kleinmond's close-day record under branch:'Helderberg' instead (see _closeDayFinalize),
+  // using an UNFILTERED store_snapshot containing every branch's data mixed together.
+  // Shadowing branch=histBranch here (same technique openHistory() already uses) fixes every
+  // inline check below for free; every function called by name below is explicitly passed
+  // this (now-correct) `branch` value since a plain function call never inherits this shadow.
+  var branch=histBranch;
   var _skipTransfersRefresh=(_unapprovedTransfers!==undefined);
   var total=Object.keys(store).filter(function(k){return k[0]!=='_';}).reduce(function(a,k){return a+(Array.isArray(store[k])?store[k].length:0);},0);
   if(total===0){toast('Nothing captured to close the day',true);return;}
@@ -11689,16 +11722,16 @@ function closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,_unapprovedTr
   // submitted seconds ago. Same one-shot-recursion-guard shape as the Pending Overrides/
   // Transfers refetches below.
   if(!_skipSigRefresh){
-    _refreshDayCloseSignatures().then(function(){
+    _refreshDayCloseSignatures(branch).then(function(){
       // QUEUE GATE (follow-up hardening): a box this device unlocked itself is never
       // overwritten by the refresh above (see _refreshDayCloseSignatures's own comment) - so a
       // signature that failed to push and is only sitting in _dayCloseSigQueue's retry queue,
       // never actually confirmed remotely, would otherwise still read as "signed" here. Try
       // one fresh flush before deciding; block if it still can't land rather than silently
       // trusting a local value nothing has confirmed.
-      var pending=_dayCloseSigPendingRoles();
+      var pending=_dayCloseSigPendingRoles(branch);
       if(!pending.length){closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,_unapprovedTransfers,true);return;}
-      _dayCloseSigFlushOne(pending).then(function(stillPending){
+      _dayCloseSigFlushOne(pending,branch).then(function(stillPending){
         if(stillPending.length){
           toast('Cannot close: '+stillPending.join(' and ')+' signature still syncing — check your connection and try again.',true);
           return;
@@ -11819,7 +11852,7 @@ function closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,_unapprovedTr
     return;
   }
   // MANIFOLD BALANCE GATE
-  var bal=manifoldBalance();
+  var bal=manifoldBalance(branch);
   if(bal.hasData && !bal.balanced && !store._manifoldOverride){ showManifoldOverride(bal);return; }
   // One-shot fetch of today's exception counts + who-worked names for the confirm summary
   // below - same one-shot recursion-guard shape as the Pending Overrides refetch above,
@@ -11864,7 +11897,7 @@ function closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,_unapprovedTr
   // resolved server-side by now. The 48-hour historical correction tool reuses corrLines()
   // (same as same-day Adjust) and would otherwise show a permanently-misleading "still
   // pending" marker on an already-resolved, closed record.
-  _fetchManifoldLiveRows(branch,today).then(function(){_closeDayFinalize(bal);},function(){_closeDayFinalize(bal);});
+  _fetchManifoldLiveRows(branch,today).then(function(){_closeDayFinalize(bal,branch);},function(){_closeDayFinalize(bal,branch);});
 }
 // Split out so a retry (from the pending-sync queue, added in the next task)
 // can re-run the actual close without re-asking the two confirm() dialogs above.
@@ -12121,28 +12154,40 @@ function _clearBranchDayDrafts(br){
   residualList=residualList.filter(function(r){return (r.Branch||residualBranch)!==br;});
   if(residualList.length!==beforeLen){residualSaveDraft();if(residualBranch===br)renderResidualList();}
 }
-function _closeDayFinalize(bal){
+// br: the branch actually being closed - MUST be passed explicitly by closeDay() (histBranch,
+// not the bare global branch). See closeDay()'s own comment for the full story: an Owner/
+// Manager viewing a DIFFERENT branch than their login branch via History's toggle had every
+// one of these close-day functions silently act on their login branch instead of the one
+// they were looking at - wrong signatures shown, wrong manifold balance checked, and (this
+// function) the actual closed-day record written under the wrong branch entirely, with
+// store_snapshot containing the WHOLE unfiltered store (every branch's data mixed together,
+// not just the branch being closed) since JSON.stringify(store) was never branch-filtered.
+function _closeDayFinalize(bal,br){
+  br=br||branch;
   dayClosed=true;
+  var snapStore={};
+  ['count','manifold','refill','private','received'].forEach(function(k){snapStore[k]=(store[k]||[]).filter(function(r){return !r.branch||r.branch===br;});});
+  snapStore.residual=(store.residual||[]).filter(function(r){return !r.Branch||r.Branch===br;});
   var record={
-    branch:branch, date:today,
+    branch:br, date:today,
     closed_by:currentProfile.id,
     authoriser_name:(store._closeAuth||'?').split(' (')[0],
     authoriser_level:(store._closeAuth||'').replace(/^.*\(([^)]+)\)$/,'$1')||role,
-    store_snapshot:JSON.parse(JSON.stringify(store)),
+    store_snapshot:snapStore,
     signatures:{op:sigData.sigOp,mgr:sigData.sigMgr,signedByOp:sigSignedBy.sigOp,signedByMgr:sigSignedBy.sigMgr},
     manifold_balance:bal.hasData?{diff:bal.diff,balanced:bal.balanced,override:store._manifoldOverride||null}:null
   };
   _closeDaySend(record);
-  syncPush('DayClose',[{date:today,branch:branch,Operator:operator,Authoriser:(store._closeAuth||''),SignedOp:(sigSignedBy.sigOp||''),SignedMgr:(sigSignedBy.sigMgr||''),ManifoldBalance:(bal.hasData?bal.diff.toFixed(2):''),OverrideReason:(store._manifoldOverride||'')}]);
-  saveDayToHistory(); // local backup copy - the next task makes History reading prefer Supabase, falling back to this
+  syncPush('DayClose',[{date:today,branch:br,Operator:operator,Authoriser:(store._closeAuth||''),SignedOp:(sigSignedBy.sigOp||''),SignedMgr:(sigSignedBy.sigMgr||''),ManifoldBalance:(bal.hasData?bal.diff.toFixed(2):''),OverrideReason:(store._manifoldOverride||'')}]);
+  saveDayToHistory(br); // local backup copy - the next task makes History reading prefer Supabase, falling back to this
   clearWorkingStore();
-  ['count','manifold','refill','private','received'].forEach(function(k){store[k]=(store[k]||[]).filter(function(r){return r.branch&&r.branch!==branch;});});
+  ['count','manifold','refill','private','received'].forEach(function(k){store[k]=(store[k]||[]).filter(function(r){return r.branch&&r.branch!==br;});});
   // Residual Gas rows use a capitalised r.Branch (own historical convention, unlike every
   // other section's lowercase r.branch) - was previously missing from this clear entirely.
-  store.residual=(store.residual||[]).filter(function(r){return r.Branch&&r.Branch!==branch;});
-  _clearBranchDayDrafts(branch);
+  store.residual=(store.residual||[]).filter(function(r){return r.Branch&&r.Branch!==br;});
+  _clearBranchDayDrafts(br);
   store._startedBy=null;store._startedAt=null;updateBadges();
-  auditLog('Day closed','Day closed — '+branch+' ('+today+') · authorised by '+(store._closeAuth||'?')+' · signed: Op='+(sigSignedBy.sigOp||'?')+', Mgr='+(sigSignedBy.sigMgr||'?')+((bal.hasData&&!bal.balanced)?(' · manifold imbalance overridden ('+bal.diff.toFixed(2)+'kg): '+(store._manifoldOverride||'')):''));
+  auditLog('Day closed','Day closed — '+br+' ('+today+') · authorised by '+(store._closeAuth||'?')+' · signed: Op='+(sigSignedBy.sigOp||'?')+', Mgr='+(sigSignedBy.sigMgr||'?')+((bal.hasData&&!bal.balanced)?(' · manifold imbalance overridden ('+bal.diff.toFixed(2)+'kg): '+(store._manifoldOverride||'')):''));
   toast('Day closed, signed & saved ✓');
   store._manifoldOverride=null;store._closeAuth=null;store._extraCountAuth=null;store._openMismatch=[];store._noPrevAuth=null;store._dayCompletenessOverride=null;
   cTries={};cLocked={};
@@ -12323,16 +12368,20 @@ function requireEdit(){
     toast('Wrong Owner password',true);return false;
   });
 }
-function saveDayToHistory(){
+function saveDayToHistory(br){
+  br=br||branch;
   try{
-    var rec={date:today,branch:branch,operator:operator,role:role,closedAt:nowStamp(),closedTs:Date.now(),
-      store:JSON.parse(JSON.stringify(store)),sig:{op:sigData.sigOp,mgr:sigData.sigMgr},
+    var snapStore={};
+    ['count','manifold','refill','private','received'].forEach(function(k){snapStore[k]=(store[k]||[]).filter(function(r){return !r.branch||r.branch===br;});});
+    snapStore.residual=(store.residual||[]).filter(function(r){return !r.Branch||r.Branch===br;});
+    var rec={date:today,branch:br,operator:operator,role:role,closedAt:nowStamp(),closedTs:Date.now(),
+      store:snapStore,sig:{op:sigData.sigOp,mgr:sigData.sigMgr},
       closeAuth:store._closeAuth||'',signedBy:{op:sigSignedBy.sigOp,mgr:sigSignedBy.sigMgr}};
-    localStorage.setItem(histKey(today,branch),JSON.stringify(rec));
+    localStorage.setItem(histKey(today,br),JSON.stringify(rec));
     var idx=[];try{idx=JSON.parse(localStorage.getItem('gs_hist_index')||'[]');}catch(e){}
-    var k=histKey(today,branch);if(idx.indexOf(k)<0){idx.push(k);localStorage.setItem('gs_hist_index',JSON.stringify(idx));}
+    var k=histKey(today,br);if(idx.indexOf(k)<0){idx.push(k);localStorage.setItem('gs_hist_index',JSON.stringify(idx));}
     // CARRY-FORWARD: closing count becomes next day's expected opening (per size+brand+state)
-    saveExpectedOpening(branch);
+    saveExpectedOpening(br);
     if(FEATURES.driveUpload){try{uploadCountToDrive(_savedSrc(rec),true);}catch(e){}}
   }catch(e){toast('Saved locally failed — storage unavailable in this viewer',true);}
 }
@@ -13794,7 +13843,7 @@ function setHistTab(which){
   // Re-check remote sign-off status on switching back to Today - openHistory() only fires this
   // once per open/reopen, but a user can flip to the History (past) tab and back to Today
   // without a fresh openHistory() call, so this is the only re-entry point for that path.
-  if(which==='today')_refreshDayCloseSignatures();
+  if(which==='today')_refreshDayCloseSignatures(histBranch);
   if(which==='past'){var d=new Date();if(calYear===undefined){calYear=d.getFullYear();calMonth2=d.getMonth();}refreshSharedSavedDates().then(renderCalendar);}
 }
 var _sharedSavedDates={};
