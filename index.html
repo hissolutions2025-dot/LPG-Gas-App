@@ -6703,6 +6703,21 @@ function _captureLiveFlush(){
     },function(e){_captureLiveQueue(payload);});
   });
 }
+// Real gap found 2026-09-21: unlike the Sheets sync queue (syncFlush) and the photo upload
+// queue, NOTHING was ever calling _captureLiveFlush() except _pushCaptureLiveRows's own
+// success path (a queued failure only got retried as a side effect of some LATER capture
+// happening to succeed). A single failed push (weak signal at a pump site, entirely
+// plausible) with no further captures that day just sat in gs_capturelive_queue forever -
+// invisible to _fetchCaptureLiveRows, so it never reached the in-app live report, even
+// though the separate Sheets push (syncPush, which already does self-retry) could still
+// succeed independently - reported live: "Coenie pump refills today but it is not
+// reflecting" and "I dont see it on the report", while the row WAS already present in the
+// Sheet. Same self-heal pattern the photo queue already uses (online + a periodic sweep).
+window.addEventListener('online',function(){_captureLiveFlush();});
+setInterval(function(){
+  var q;try{q=JSON.parse(localStorage.getItem('gs_capturelive_queue')||'[]');}catch(e){q=[];}
+  if(q.length)_captureLiveFlush();
+},45000);
 // Fetch-on-open: pulls kind+branch+date's live rows into store[storeKey], same merge
 // _fetchManifoldLiveRows already does (dedup by _rid, preserve any not-yet-synced local
 // pending row not yet visible in the live table, leave every other branch/date untouched).
