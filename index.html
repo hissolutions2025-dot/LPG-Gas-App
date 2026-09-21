@@ -13570,7 +13570,18 @@ function _renderSavedDayBody(rec,ds){
     html+='</table>';
   }
   if(!withinWindow){
-    html+='<div style="font-size:12px;color:var(--muted)">The 48-hour correction window has closed. This record is now locked.</div>';
+    // Owner-only bypass, added 2026-09-21 (see correctSavedLine's own comment for the full
+    // rationale) - this button was previously hidden outright once the window closed, so
+    // even an Owner had no way to reach correctSavedLine's own bypass logic (already built,
+    // just unreachable from here). Manager/Operator still see the plain locked message -
+    // the bypass is deliberately narrower than the normal Manager-or-Owner correction bar.
+    if(role==='Owner'){
+      var hrsOver=Math.round((Date.now()-rec.closedTs)/3600000);
+      html+='<div style="font-size:12px;color:var(--bad);margin-bottom:8px">The normal 48-hour correction window closed '+(hrsOver-48)+' hour(s) ago. As Owner you can still correct it - the override is logged.</div>';
+      html+='<button class="saveBtn" style="background:#9B2C2C" onclick="correctSavedLine(\''+ds+'\')">Log a correction (48h override)</button>';
+    } else {
+      html+='<div style="font-size:12px;color:var(--muted)">The 48-hour correction window has closed. Ask an Owner to correct this.</div>';
+    }
   } else {
     var hrsLeft=Math.max(0,Math.round((48*3600*1000-(Date.now()-rec.closedTs))/3600000));
     html+='<div style="font-size:12px;color:var(--muted);margin-bottom:8px">A Manager or Owner may correct an operator mistake for '+hrsLeft+' more hour(s). Corrections are logged; a note is required.</div>';
