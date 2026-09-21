@@ -1371,7 +1371,14 @@ const MOVES=['Received-Full','Returned-Empty','Faulty-Full'];
 // blocks capture from working.
 var _manifoldSlotCounts={};
 function _manifoldCylLabels(br){
-  var n=_manifoldSlotCounts[br]||4; // 4 is the fallback/default slot count - see comment above
+  // undefined (never fetched yet / fetch failed) falls back to 4, same as always - but a
+  // REAL, deliberately-configured 0 ("this branch has no manifold" - see saveManifoldSlots)
+  // must stay 0, not get treated as falsy and silently coerced back to 4. Was `||4`, which
+  // made a 0-slot branch impossible in practice: Close Day would still demand Manifold data
+  // for 4 phantom slots no matter what Admin was saved as. Reported live: Kleinmond's
+  // manifold is physically disconnected, yet Close Day kept asking for an override reason
+  // for it every single day.
+  var n=(_manifoldSlotCounts[br]!==undefined)?_manifoldSlotCounts[br]:4;
   var out=[];for(var i=1;i<=n;i++)out.push('Cyl '+i);
   return out;
 }
@@ -3481,7 +3488,7 @@ function renderManifoldSlots(){
       box.innerHTML='<div style="color:#9B2C2C;font-size:13px">Could not load slot count — '+res.error.message+'</div>';
       return;
     }
-    var n=(res.data&&res.data.slot_count)||4;
+    var n=(res.data&&res.data.slot_count!==undefined&&res.data.slot_count!==null)?res.data.slot_count:4; // same 0-must-stay-0 fix as _manifoldCylLabels - was `||4`, which showed 4 in this very form even when 0 had been saved
     var tol=(res.data&&res.data.tolerances)||null;
     function tv(gt,rule,field){
       var d=MANIFOLD_TOL_DEFAULTS[gt][rule];
@@ -3499,7 +3506,8 @@ function renderManifoldSlots(){
         '</div>';
     }
     box.innerHTML='<label class="mLabel" style="font-size:11px">Slot count</label>'+
-      '<input class="mField" type="number" min="1" max="12" id="mfSlotCount" value="'+n+'">'+
+      '<input class="mField" type="number" min="0" max="12" id="mfSlotCount" value="'+n+'">'+
+      '<div style="font-size:11px;color:var(--muted);margin-top:2px">0 = this branch has no manifold - Close Day will stop asking for it entirely.</div>'+
       '<div style="margin-top:14px;font-weight:600;font-size:12px">Weight tolerances</div>'+
       '<div style="display:flex;gap:16px;margin-top:6px;flex-wrap:wrap">'+
       '<div style="flex:1;min-width:150px"><div style="font-size:11px;font-weight:600;margin-bottom:4px">LPG</div>'+
@@ -3522,7 +3530,12 @@ function renderManifoldSlots(){
 function saveManifoldSlots(br){
   if(role!=='Owner'){toast('Owner only',true);return;}
   var n=num(document.getElementById('mfSlotCount').value);
-  if(n<1||n>12||n%1!==0){toast('Enter a whole number between 1 and 12',true);return;}
+  // Reported live 2026-09-21: Kleinmond's manifold is physically disconnected, yet Close Day
+  // kept demanding an override reason for it every day - _dayCompleteness's manifoldMissing
+  // check already correctly goes empty when _manifoldCylLabels(br) has zero labels (see that
+  // function), but there was no way to actually GET a branch to zero slots - this form itself
+  // hard-refused anything below 1. 0 is now a valid, real "this branch has no manifold" state.
+  if(n<0||n>12||n%1!==0){toast('Enter a whole number between 0 and 12',true);return;}
   var RULES=['flagged','ceiling','underfill','leftover'];
   var tolerances={lpg:{},propane:{}};
   var badField=null;
