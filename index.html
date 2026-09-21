@@ -12665,23 +12665,43 @@ function corrStepCountGroupEdit(gi){
   var key=corrCfg._countGroupOrder[gi];
   var g=corrCfg._countGroups[key];
   corrCfg._countGroupActive=gi;
-  function colInputs(rows){
-    if(!rows.length)return '<div style="font-size:11px;color:var(--muted)">—</div>';
-    return rows.map(function(x){
-      var byline=_stockCountByline({_operator:x._operator,_time:x._time,_correctedFrom:x._correctedFrom,
-        _correctedBy:x._correctedBy,_correctedTime:x._correctedTime,qty:x.val});
-      return '<div style="margin-bottom:8px">'+
-        (rows.length>1?'<div style="font-size:11px;color:var(--muted);margin-bottom:3px">'+x.brand+'</div>':'')+
-        '<input class="mField" type="number" inputmode="numeric" min="0" data-idx="'+x.idx+'" data-orig="'+x.val+'" value="'+x.val+'" style="width:100%;margin:0">'+
-        (byline?'<div style="font-size:10px;color:var(--muted);margin-top:3px">'+byline+'</div>':'')+
+  // Real gap fixed 2026-09-21: a side with no existing lines used to render a plain static
+  // "—" (nothing to tap, nothing to type into) - correct if that size's Full/Empty genuinely
+  // had zero cylinders, but no way to fix it if the side just never got captured. Now every
+  // side always ends with an "add a brand" mini-row too (even when it already has lines - a
+  // size can need a brand it never had, e.g. an Oryx empty came back but was never logged
+  // alongside the Afrox ones), gated on corrCfg.histRec the same as every other "add" feature
+  // in this tool - never shown inside the same-day Adjust tools, which this same screen is
+  // also reachable from.
+  function colInputs(rows,side){
+    var html='';
+    if(rows.length){
+      html+=rows.map(function(x){
+        var byline=_stockCountByline({_operator:x._operator,_time:x._time,_correctedFrom:x._correctedFrom,
+          _correctedBy:x._correctedBy,_correctedTime:x._correctedTime,qty:x.val});
+        return '<div style="margin-bottom:8px">'+
+          (rows.length>1?'<div style="font-size:11px;color:var(--muted);margin-bottom:3px">'+x.brand+'</div>':'')+
+          '<input class="mField" type="number" inputmode="numeric" min="0" data-idx="'+x.idx+'" data-orig="'+x.val+'" value="'+x.val+'" style="width:100%;margin:0">'+
+          (byline?'<div style="font-size:10px;color:var(--muted);margin-top:3px">'+byline+'</div>':'')+
+          '</div>';
+      }).join('');
+    } else if(!corrCfg.histRec){
+      html+='<div style="font-size:11px;color:var(--muted)">—</div>';
+    }
+    if(corrCfg.histRec){
+      var brandOpts=(side==='full')?(C_FULLBRANDS[corrCfg.branch]||['Other']):BRANDS;
+      html+='<div style="margin-top:'+(rows.length?'8px':'0')+';padding-top:'+(rows.length?'8px':'0')+';'+(rows.length?'border-top:1px dashed var(--line)':'')+'">'+
+        '<select class="mField" data-newbrand="'+side+'" style="margin-bottom:4px;font-size:12px">'+brandOpts.map(function(b){return '<option value="'+b+'">'+b+'</option>';}).join('')+'</select>'+
+        '<input class="mField" type="number" inputmode="numeric" min="0" data-newqty="'+side+'" placeholder="Add a brand…" style="width:100%;margin:0">'+
         '</div>';
-    }).join('');
+    }
+    return html;
   }
   var html='<div style="font-size:12px;color:var(--muted);margin-bottom:8px"><button class="sigClear" onclick="corrStepCountGroups(\''+corrCfg._countGroupSection+'\')">‹ Back</button></div>'+
     '<div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:12px">'+corrCfg._countGroupSection+' '+g.size+'</div>'+
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">'+
-    '<div><div style="font-size:10px;font-weight:800;color:var(--muted);margin-bottom:6px">FULL</div>'+colInputs(g.full)+'</div>'+
-    '<div><div style="font-size:10px;font-weight:800;color:var(--muted);margin-bottom:6px">EMPTY</div>'+colInputs(g.empty)+'</div>'+
+    '<div><div style="font-size:10px;font-weight:800;color:var(--muted);margin-bottom:6px">FULL</div>'+colInputs(g.full,'full')+'</div>'+
+    '<div><div style="font-size:10px;font-weight:800;color:var(--muted);margin-bottom:6px">EMPTY</div>'+colInputs(g.empty,'empty')+'</div>'+
     '</div>'+
     '<textarea id="corrReason" placeholder="Reason for correction (required)" style="width:100%;min-height:60px;border:1px solid var(--line);border-radius:10px;padding:8px;font:inherit;box-sizing:border-box"></textarea>'+
     '<button class="mDone" id="corrApplyBtn" style="margin-top:8px" onclick="corrApplyCountGroup()">Apply correction</button>';
@@ -12694,7 +12714,16 @@ function corrApplyCountGroup(){
   var g=corrCfg._countGroups[key];
   var inputs=Array.prototype.slice.call(document.querySelectorAll('#corrBody input[data-idx]'));
   var changed=inputs.filter(function(el){return num(el.value)!==num(el.getAttribute('data-orig'));});
-  if(changed.length===0){toast('Nothing changed',true);return;}
+  // New-brand additions (see corrStepCountGroupEdit's own comment) - a brand+qty pair the
+  // operator actually filled in (qty > 0), added alongside any `changed` edits under the
+  // same shared reason and the same "Apply correction" tap.
+  var newAdds=[];
+  ['full','empty'].forEach(function(side){
+    var qtyEl=document.querySelector('#corrBody input[data-newqty="'+side+'"]');
+    var brandEl=document.querySelector('#corrBody select[data-newbrand="'+side+'"]');
+    if(qtyEl&&num(qtyEl.value)>0)newAdds.push({side:side,brand:brandEl.value,qty:num(qtyEl.value)});
+  });
+  if(changed.length===0&&newAdds.length===0){toast('Nothing changed',true);return;}
   var reasonEl=document.getElementById('corrReason');
   var reason=(reasonEl.value||'').trim();
   if(!reason){toast('A reason is required',true);return;}
@@ -12721,6 +12750,21 @@ function corrApplyCountGroup(){
     line.row._correctedFrom=oldVal;line.row._correctedBy=corrAuth.name;line.row._correctedTime=nowStamp();
     line.set(newVal);
     corrCfg.onApply(sel,oldVal,newVal,reason,corrAuth);
+  });
+  // New brand+qty additions are genuinely new rows, not edits to an existing one - pushed
+  // straight onto corrCfg.store.count (same shape corrOpenAddCountLine's own button uses),
+  // with a plain Sheet append (syncPush, no _replaceKey - see that function's own comment for
+  // why a replace-set here would silently wipe every other Count row already synced for the
+  // day). Still logged through corrCfg.onApply so it lands in the same corrections/Adjustments/
+  // audit trail as every other change here, just with no `.set()` to call (there's no existing
+  // line to mutate) and no `row` on `sel` (onApply never reads it).
+  newAdds.forEach(function(a){
+    var row={countType:corrCfg._countGroupSection,state:(a.side==='full'?'Full':'Empty'),size:g.size,brand:a.brand,qty:a.qty};
+    row._rid=_rid();row.branch=corrCfg.branch;row._date=corrCfg.histDs;
+    (corrCfg.store.count=corrCfg.store.count||[]).push(row);
+    syncPush('Counts',syncRowsCount([row],corrCfg.branch).map(function(x){x.date=corrCfg.histDs;return x;}));
+    var addTag='Count '+corrCfg._countGroupSection+' '+g.size+' '+a.brand+' ('+(a.side==='full'?'Full':'Empty')+', new)';
+    corrCfg.onApply({tag:addTag,section:corrCfg._section},0,a.qty,reason,corrAuth);
   });
   toast('Correction logged ✓');
   setTimeout(function(){corrApplyBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}},600);
