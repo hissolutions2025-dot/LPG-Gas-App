@@ -12735,7 +12735,15 @@ function corrApplyCountGroup(){
   if(changed.length===0&&newAdds.length===0){toast('Nothing changed',true);return;}
   var reasonEl=document.getElementById('corrReason');
   var reason=(reasonEl.value||'').trim();
-  if(!reason){toast('A reason is required',true);return;}
+  // Only required when an EXISTING value is being changed - a pure newAdds-only submission
+  // (nothing in `changed`) is filling in a row that was simply never captured, same as this
+  // tool's other "+ Add X line" buttons (corrOpenAddCountLine etc, via corrAddModalSubmit),
+  // none of which ask for a reason either. Reported live 2026-09-21: entering a new Empty
+  // brand+qty and applying with the Reason box left blank appeared to silently do nothing -
+  // it was this check blocking it, with only an easy-to-miss toast as feedback. Was requiring
+  // reason unconditionally here (inconsistent with the sibling "+Add" buttons, and the wrong
+  // failure mode for a field that's easy to forget while your attention is on the qty box).
+  if(changed.length>0&&!reason){toast('A reason is required',true);return;}
   corrApplyBusy=true;
   var btn=document.getElementById('corrApplyBtn');if(btn){btn.disabled=true;btn.style.opacity='.6';}
   // Reuses each entry point's own onApply exactly as the single-line path does (once per
