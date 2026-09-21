@@ -2459,11 +2459,15 @@ var _manifoldPrevClose={};
 function _fetchManifoldPrevClose(br){
   _lastCloseDate(br,today).then(function(yDate){
     if(!yDate){delete _manifoldPrevClose[br];return;} // no prior close - tier 3 has nothing, tier 4 (no baseline) applies
-    return sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
+    return sb.from('day_closes').select('store_snapshot,corrected_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
       if(res.error){console.error('_fetchManifoldPrevClose failed for '+br+':',res.error.message);return;}
       if(!res.data){delete _manifoldPrevClose[br];return;} // no prior close - tier 3 has nothing, tier 4 (no baseline) applies
+      // Same fix as _fetchPrevCloseExpected - see its own comment. Without this, a Manifold
+      // Stage/Cyl/Scale/Tare correction to yesterday's Closing (like the ones just made for
+      // 2026-09-19) would never reach today's Opening comparison/mismatch check.
+      var snap=res.data.corrected_snapshot||res.data.store_snapshot;
       var exp={};
-      ((res.data.store_snapshot&&res.data.store_snapshot.manifold)||[]).filter(function(r){return r.stage==='Closing';}).forEach(function(r){
+      ((snap&&snap.manifold)||[]).filter(function(r){return r.stage==='Closing';}).forEach(function(r){
         // scale/gasLeft added for the Opening-discipline live check (see popCalc()) - the
         // Removed-step baseline chain that originally built this cache only ever needed
         // brand/gasType/tare, gasLeft is derived defensively (r.gasLeft may be absent on an
@@ -6134,11 +6138,15 @@ function _fetchLiveExpectedOpening(br){
   // of the fetch firing with nothing ever repainting once it arrived).
   return _lastCloseDate(br,today).then(function(yDate){
     if(!yDate){delete _liveExpectedOpening[br];return false;} // no prior close - local carry-forward fallback applies
-    return sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
+    return sb.from('day_closes').select('store_snapshot,corrected_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
       if(res.error){console.error('_fetchLiveExpectedOpening failed for '+br+':',res.error.message);return false;}
       if(!res.data){delete _liveExpectedOpening[br];return false;} // no prior close - local carry-forward fallback applies
+      // corrected_snapshot (see _corrSyncSnapshot's own comment) - without this, a correction to
+      // yesterday's Closing would never reach THIS grid, the one the operator is actually
+      // looking at while counting today's Opening.
+      var snap=res.data.corrected_snapshot||res.data.store_snapshot;
       var exp={};
-      ((res.data.store_snapshot&&res.data.store_snapshot.count)||[]).filter(function(r){return r.countType==='Closing';}).forEach(function(r){
+      ((snap&&snap.count)||[]).filter(function(r){return r.countType==='Closing';}).forEach(function(r){
         var st=(r.state==='Empty')?'Empty':'Full';
         if(!exp[r.size])exp[r.size]={Full:{},Empty:{}};
         exp[r.size][st][r.brand]=(exp[r.size][st][r.brand]||0)+num(r.qty);
@@ -7591,7 +7599,7 @@ function _refreshCountMismatches(br, localOverlayRows){
       // same "nothing found" shape maybeSingle() itself returns for a miss, so every check
       // below (dcRes.error, dcRes.data) behaves exactly as it already did for that outcome.
       var dcPromise=yDate
-        ? sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle()
+        ? sb.from('day_closes').select('store_snapshot,corrected_snapshot').eq('branch',br).eq('date',yDate).maybeSingle()
         : Promise.resolve({data:null,error:null});
       // op is read live from the shared stock_counts table (the Phase 2b pilot's table),
       // never from local store.count - a device that hasn't itself committed or synced
@@ -7626,10 +7634,14 @@ function _refreshCountMismatches(br, localOverlayRows){
       // documented distinction intact (a genuinely-empty snapshot -> no real baseline, skip;
       // a non-empty snapshot legitimately missing one specific brand -> still a real
       // expected-0 for that brand, comparison still runs).
-      var hasBaseline=!!(dcRes.data && dcRes.data.store_snapshot && dcRes.data.store_snapshot.count && dcRes.data.store_snapshot.count.length);
+      // corrected_snapshot (see _corrSyncSnapshot's own comment) holds the current, corrected
+      // store once a historical correction has been made to yesterday's Closing - without this,
+      // a correction would never reach this live mismatch check against today's Opening either.
+      var _dcSnap=dcRes.data&&(dcRes.data.corrected_snapshot||dcRes.data.store_snapshot);
+      var hasBaseline=!!(_dcSnap && _dcSnap.count && _dcSnap.count.length);
       var exp={};
-      if(dcRes.data && dcRes.data.store_snapshot && dcRes.data.store_snapshot.count){
-        dcRes.data.store_snapshot.count.filter(function(r){return r.countType==='Closing';}).forEach(function(r){
+      if(_dcSnap && _dcSnap.count){
+        _dcSnap.count.filter(function(r){return r.countType==='Closing';}).forEach(function(r){
           var st=(r.state==='Empty')?'Empty':'Full';
           if(!exp[r.size])exp[r.size]={Full:{},Empty:{}};
           exp[r.size][st][r.brand]=(exp[r.size][st][r.brand]||0)+num(r.qty);
@@ -14228,10 +14240,15 @@ function _fetchFaultyHeld(br){
 function _fetchPrevCloseExpected(br,date){
   return _lastCloseDate(br,date).then(function(yDate){
     if(!yDate)return {};
-    return sb.from('day_closes').select('store_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
+    return sb.from('day_closes').select('store_snapshot,corrected_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
       if(res.error||!res.data)return {};
+      // corrected_snapshot (see _corrSyncSnapshot's own comment) holds the current, corrected
+      // store once a historical correction has been made to that Closing - reads the same way
+      // loadSavedDayShared() does, so a correction to yesterday's Closing actually reaches
+      // today's Opening comparison instead of comparing against the frozen original forever.
+      var snap=res.data.corrected_snapshot||res.data.store_snapshot;
       var exp={};
-      ((res.data.store_snapshot&&res.data.store_snapshot.count)||[]).filter(function(r){return r.countType==='Closing';}).forEach(function(r){
+      ((snap&&snap.count)||[]).filter(function(r){return r.countType==='Closing';}).forEach(function(r){
         var st=(r.state==='Empty')?'Empty':'Full';
         if(!exp[r.size])exp[r.size]={Full:{},Empty:{}};
         exp[r.size][st][r.brand]=(exp[r.size][st][r.brand]||0)+num(r.qty);
