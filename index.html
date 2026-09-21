@@ -12322,7 +12322,7 @@ function loadExpectedOpening(br){try{var r=localStorage.getItem(expKey(br));retu
 // #3 correct a specific line in a saved (closed) day, within 48hrs, manager/owner + reason
 // ===== REUSABLE CORRECTION PICKER (section -> line -> value+reason) =====
 var corrCfg=null, corrAuth=null, corrPick=null, corrApplyBusy=false;
-function closeCorr(){document.getElementById('corrModal').classList.remove('show');if(corrCfg&&corrCfg.afterClose)corrCfg.afterClose();corrCfg=null;corrAuth=null;corrPick=null;}
+function closeCorr(){document.getElementById('corrModal').classList.remove('show');if(corrCfg&&corrCfg.afterClose)corrCfg.afterClose();corrCfg=null;corrAuth=null;corrPick=null;_maybeApplyPendingReload();}
 function corrLines(st,section,br){
   function inBr(r){return !br||!r.branch||r.branch===br;}
   var out=[];
