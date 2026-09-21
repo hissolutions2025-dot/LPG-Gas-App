@@ -1217,6 +1217,15 @@
   <div id="corrBody"></div>
 </div></div>
 
+<!-- "Add a new line" for the 48-hour historical tool - stacks on top of corrModal (higher
+     z-index via DOM order within the same .modal class), its own separate popup so it never
+     shares state with corrModal's own value-correction flow. -->
+<div id="corrAddModal" class="modal"><div class="modalCard">
+  <div class="modalHead"><span id="corrAddTitle">Add a line</span><button onclick="corrCloseAddModal()" class="mClose">✕</button></div>
+  <div id="corrAddForm"></div>
+  <button class="mDone" onclick="corrAddModalSubmit()">Add line</button>
+</div></div>
+
 <div id="textModal" class="modal"><div class="modalCard">
   <div class="modalHead"><span id="textModalTitle">—</span><button onclick="textModalCancel()" class="mClose">&#10005;</button></div>
   <div style="padding:4px 0 10px"><div id="textModalMsg" style="font-size:13px;color:var(--navy);white-space:pre-line;margin-bottom:10px"></div>
@@ -12465,6 +12474,16 @@ function corrStepLines(section){
   if(section==='Opening'||section==='Closing'){corrStepCountGroups(section);return;}
   if(section==='Manifold'){corrStepManifoldList();return;}
   var html='<div style="font-size:12px;color:var(--muted);margin-bottom:6px"><button class="sigClear" onclick="corrStepSection()">\u2039 Back</button> &nbsp; <b>'+section+'</b> \u2014 tap the line to correct:</div>';
+  // "Add a missing line" - historical tool only (corrCfg.histRec), for a row that never made
+  // it into the system at all (nothing to correct until it exists).
+  if(corrCfg.histRec){
+    var addKey=(section==='Refills')?'refill':(section==='Private')?'private':null;
+    if(addKey){
+      html+='<button type="button" class="sigClear" style="width:100%;margin-bottom:8px" onclick="corrOpenAddSpecLine(\''+addKey+'\',\''+section+'\')">+ Add '+(section==='Refills'?'Refill':'Private Refill')+'</button>';
+    } else if(section==='Daily Sales'){
+      html+='<button type="button" class="sigClear" style="width:100%;margin-bottom:8px" onclick="corrOpenAddDailySalesLine()">+ Add Daily Sales line</button>';
+    }
+  }
   // Daily Sales rows never had a photo field - only offer this for Refills/Private, and only
   // inside the historical tool (corrCfg.histRec), never the same-day Adjust tools (Task 11
   // already covers those via the live Review screen's own button).
@@ -12504,6 +12523,9 @@ function corrStepReceivedGroups(){
   corrCfg._receivedGroups=groups;
   corrCfg._receivedGroupOrder=order;
   var html='<div style="font-size:12px;color:var(--muted);margin-bottom:10px"><button class="sigClear" onclick="corrStepSection()">\u2039 Back</button> &nbsp; <b>Received</b> \u2014 tap a delivery to correct:</div>';
+  if(corrCfg.histRec){
+    html+='<button type="button" class="sigClear" style="width:100%;margin-bottom:8px" onclick="corrOpenAddReceivedLine()">+ Add Received line</button>';
+  }
   if(!order.length)html+='<div class="histEmpty">No populated lines in this section.</div>';
   function sideSummary(rows){return rows.length?rows.map(function(x){return x.brand+' '+x.val;}).join(', '):'\u2014';}
   order.forEach(function(key,gi){
@@ -12625,6 +12647,9 @@ function corrStepCountGroups(section){
   corrCfg._countGroupOrder=order;
   corrCfg._countGroupSection=section;
   var html='<div style="font-size:12px;color:var(--muted);margin-bottom:10px"><button class="sigClear" onclick="corrStepSection()">‹ Back</button> &nbsp; <b>'+section+'</b> — tap a size to correct:</div>';
+  if(corrCfg.histRec){
+    html+='<button type="button" class="sigClear" style="width:100%;margin-bottom:8px" onclick="corrOpenAddCountLine(\''+section+'\')">+ Add '+section+' line</button>';
+  }
   if(!order.length)html+='<div class="histEmpty">No populated lines in this section.</div>';
   function sideSummary(rows){return rows.length?rows.map(function(x){return x.brand+' '+x.val;}).join(', '):'—';}
   order.forEach(function(key,gi){
@@ -12708,6 +12733,9 @@ function corrApplyCountGroup(){
 function corrStepManifoldList(){
   var lines=corrCfg._lines;
   var html='<div style="font-size:12px;color:var(--muted);margin-bottom:6px"><button class="sigClear" onclick="corrStepSection()">‹ Back</button> &nbsp; <b>Manifold</b> — tap the line to correct:</div>';
+  if(corrCfg.histRec){
+    html+='<button type="button" class="sigClear" style="width:100%;margin-bottom:8px" onclick="corrOpenAddSpecLine(\'manifold\',\'Manifold\')">+ Add Manifold reading</button>';
+  }
   lines.forEach(function(l,i){
     html+='<button class="sigClear" style="width:100%;margin-bottom:6px;text-align:left" onclick="corrStepManifoldEdit('+i+')">'+l.label+'</button>';
     if(corrCfg.histRec&&l.row&&l.row._rid){
@@ -12816,6 +12844,131 @@ function _corrPersistHistRec(){
 }
 function _corrSectionCapType(section){
   return section==='Refills'?'refill':section==='Private'?'private':section==='Manifold'?'manifold':null;
+}
+// ---- "Add a new line" for the 48-hour historical tool, added 2026-09-21 after a real gap:
+// an operator's Manifold count never actually saved on a day that otherwise closed fine, and
+// the correction tool could only EDIT values on rows that already exist - there was nothing
+// to tap when the row itself was simply missing. Reuses _bdCardSpecs' field definitions
+// (Manifold/Refill/Private/Residual) since the underlying store.* row shapes are identical
+// whether the row comes from Backdate or from adding a line here - only the completion logic
+// (stamping the fields bdDoSubmit normally adds) and the Sheet-push mechanics differ, since
+// this pushes ONE new line onto an EXISTING day rather than building a whole day at once.
+// Gated on corrCfg.histRec the same way the photo-add buttons already are - never rendered
+// inside the same-day Adjust tools (openCapAdjust/openReceivedAdjust/openCountAdjust), which
+// have no "day already closed" concept to add a missed line back into.
+function _corrAddSpecs(){
+  var bd=_bdCardSpecs();
+  return {
+    manifold:{title:'Add Manifold reading',fields:bd.manifold.fields,
+      build:function(v){var scale=num(v.scale),tare=num(v.tare);return {stage:v.stage,cyl:v.cyl,brand:v.brand,gasType:v.gasType,scale:scale,tare:tare,gasLeft:scale-tare,notes:v.notes||'',_committed:true,_photoLink:''};},
+      sheet:{type:'Manifold',syncFn:syncRowsManifold}},
+    refill:{title:'Add Refill',fields:bd.refill.fields,
+      build:function(v){return {size:v.size,brand:v.brand,gasType:v.gasType,pumped:num(v.pumped),seal:v.seal||'',notes:v.notes||'',_committed:true,_photoLink:''};},
+      sheet:{type:'Refills',syncFn:syncRowsRefill}},
+    private:{title:'Add Private Refill',fields:bd.private.fields,
+      build:function(v){return {cylBrand:v.cylBrand,otherBrand:v.otherBrand||'',gasType:v.gasType,pumped:num(v.pumped),customer:v.customer||'',filledBy:v.filledBy,fillSupplier:v.fillSupplier||'',fillSupplierOther:'',invoiceNo:v.invoiceNo||'',_committed:true,photoLinks:''};},
+      sheet:{type:'Private',syncFn:syncRowsPrivate}},
+    residual:{title:'Add Residual Gas',fields:bd.residual.fields,
+      // No Sheet push, matching the same known gap as live/backdate Residual capture -
+      // residualLog has no confirmed way to accept a client-supplied date.
+      build:function(v){var cs=num(v.CylScale),ct=num(v.CylTare);return {Brand:v.Brand,Size:v.Size,GasType:RESIDUAL_GASTYPE[v.Size]||'',CylScale:cs,CylTare:ct,Residual:cs-ct,Note:v.Note||'',_committed:true};},
+      sheet:null}
+  };
+}
+var corrAddKey=null,corrAddFields=null,corrAddBuild=null,corrAddSheet=null,corrAddOnDone=null;
+function corrOpenAddModal(key,title,fields,buildFn,sheet,onDone){
+  corrAddKey=key;corrAddFields=fields;corrAddBuild=buildFn;corrAddSheet=sheet;corrAddOnDone=onDone;
+  document.getElementById('corrAddTitle').textContent=title;
+  var html='';
+  fields.forEach(function(f){
+    var id='caf-'+f.k;
+    if(f.type==='select'){
+      html+='<label class="mLabel">'+f.label+'</label><select class="mField" id="'+id+'">'+f.options.map(function(o){return '<option value="'+o+'">'+o+'</option>';}).join('')+'</select>';
+    } else {
+      html+='<label class="mLabel">'+f.label+'</label><input class="mField" type="'+(f.type==='number'?'number':'text')+'" id="'+id+'">';
+    }
+  });
+  document.getElementById('corrAddForm').innerHTML=html;
+  document.getElementById('corrAddModal').classList.add('show');
+}
+function corrCloseAddModal(){
+  document.getElementById('corrAddModal').classList.remove('show');
+  corrAddKey=null;corrAddFields=null;corrAddBuild=null;corrAddSheet=null;corrAddOnDone=null;
+}
+function corrAddModalSubmit(){
+  var vals={};
+  corrAddFields.forEach(function(f){var el=document.getElementById('caf-'+f.k);vals[f.k]=el?el.value:'';});
+  var row=corrAddBuild(vals);
+  if(corrAddKey==='_dailySales'){
+    // No _rid/branch/_date - daily_sales' `lines` array is already scoped to one branch+date
+    // by the table row itself (see dsCommit's own {size,brand,sold,returned} shape).
+    corrCfg.store._dailySales=corrCfg.store._dailySales||[];
+    corrCfg.store._dailySales.push(row);
+    _corrPersistHistRec();
+    sb.from('daily_sales').update({lines:corrCfg.store._dailySales}).eq('branch',corrCfg.branch).eq('date',corrCfg.histDs).select().then(function(res2){
+      if(res2.error||!res2.data||!res2.data.length)toast('Line added locally, but saving to Daily Sales failed - try again',true);
+    },function(){toast('Line added locally, but saving to Daily Sales failed - try again',true);});
+    auditLog('Historical line added',corrCfg.histDs+' '+corrCfg.branch+' (Daily Sales) by '+corrAuth.name,null,row);
+    toast('Line added ✓');
+    var _onDoneDs=corrAddOnDone;corrCloseAddModal();if(_onDoneDs)_onDoneDs();
+    return;
+  }
+  row._rid=_rid();row.branch=corrCfg.branch;row._date=corrCfg.histDs;
+  (corrCfg.store[corrAddKey]=corrCfg.store[corrAddKey]||[]).push(row);
+  _corrPersistHistRec();
+  // Plain append via syncPush - deliberately NOT using Count's own live/backdate _replaceKey
+  // marker (which tells the backend to WIPE every existing row for that date+branch first) -
+  // this is adding ONE line to an already-closed, already-synced day, so a replace-set here
+  // would silently destroy every other Count row already on the Sheet for that day.
+  if(corrAddSheet){
+    var sheetRows=corrAddSheet.syncFn([row],corrCfg.branch).map(function(x){x.date=corrCfg.histDs;return x;});
+    syncPush(corrAddSheet.type,sheetRows);
+  }
+  auditLog('Historical line added',corrCfg.histDs+' '+corrCfg.branch+' ('+corrAddKey+') by '+corrAuth.name,null,row);
+  toast('Line added ✓');
+  var onDone=corrAddOnDone;
+  corrCloseAddModal();
+  if(onDone)onDone();
+}
+// Daily Sales' own "add a line" - separate from the generic engine above since its storage
+// (rec.store._dailySales, upserted whole to the live daily_sales table) is nothing like the
+// append-to-a-Sheet model every other section uses - mirrors exactly what onApply's own
+// Daily-Sales branch already does for an EDIT, just for a brand-new line instead.
+function corrOpenAddDailySalesLine(){
+  corrOpenAddModal('_dailySales','Add Daily Sales line',
+    [{k:'size',label:'Size',type:'select',options:ALLSIZES},{k:'brand',label:'Brand',type:'select',options:C_FULLBRANDS[corrCfg.branch]||['Other']},
+     {k:'sold',label:'Sold',type:'number'},{k:'returned',label:'Returned',type:'number'}],
+    function(v){return {size:v.size,brand:v.brand,sold:num(v.sold),returned:num(v.returned)};},
+    null,
+    function(){corrStepLines('Daily Sales');}
+  );
+}
+function corrOpenAddReceivedLine(){
+  corrOpenAddModal('received','Add Received line',
+    [{k:'size',label:'Size',type:'select',options:R_SIZES},{k:'brand',label:'Brand',type:'select',options:BRANDS},
+     {k:'side',label:'Side',type:'select',options:['Full in','Empty out']},{k:'qty',label:'Qty',type:'number'},
+     {k:'supplier',label:'Supplier',type:'text'},{k:'deliveryNote',label:'DN #',type:'text'},{k:'invoiceNo',label:'Invoice #',type:'text'}],
+    function(v){var fullIn=(v.side==='Full in')?num(v.qty):0,emptyOut=(v.side==='Empty out')?num(v.qty):0;
+      return {size:v.size,brand:v.brand,fullIn:fullIn,emptyOut:emptyOut,_side:(v.side==='Full in'?'recv':'ret'),supplier:v.supplier||'',deliveryNote:v.deliveryNote||'',invoiceNo:v.invoiceNo||'',_committed:true,photoLinks:''};},
+    {type:'Received',syncFn:syncRowsReceived},
+    function(){corrStepLines('Received');}
+  );
+}
+// Shared wrapper for the 3 sections whose "add" fields/build/sheet come straight from
+// _corrAddSpecs() with no extra per-call logic (Manifold, Refill, Private) - Residual would
+// fit too but nothing in this tool currently opens a Residual picker to hang the button off.
+function corrOpenAddSpecLine(key,section){
+  var spec=_corrAddSpecs()[key];
+  corrOpenAddModal(key,spec.title,spec.fields,spec.build,spec.sheet,function(){corrStepLines(section);});
+}
+function corrOpenAddCountLine(section){
+  corrOpenAddModal('count','Add '+section+' line',
+    [{k:'state',label:'State',type:'select',options:['Full','Empty']},{k:'size',label:'Size',type:'select',options:ALLSIZES},
+     {k:'brand',label:'Brand',type:'select',options:BRANDS},{k:'qty',label:'Qty',type:'number'}],
+    function(v){return {countType:section,state:v.state,size:v.size,brand:v.brand,qty:num(v.qty)};},
+    {type:'Counts',syncFn:syncRowsCount},
+    function(){corrStepLines(section);}
+  );
 }
 // Manual add/retry photo for the 48-hour historical correction tool - only ever reachable
 // when corrCfg.histRec is set (see Step 1), so this never renders inside the same-day Adjust
