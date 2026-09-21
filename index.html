@@ -12689,10 +12689,14 @@ function corrStepCountGroupEdit(gi){
       html+='<div style="font-size:11px;color:var(--muted)">—</div>';
     }
     if(corrCfg.histRec){
+      // "Add a brand" is the CAPTION for this whole pair, not the qty input's own
+      // placeholder - real confusion reported live 2026-09-21 (the number field itself
+      // read "Add a brand…", which describes the select above it, not what to type here).
       var brandOpts=(side==='full')?(C_FULLBRANDS[corrCfg.branch]||['Other']):BRANDS;
       html+='<div style="margin-top:'+(rows.length?'8px':'0')+';padding-top:'+(rows.length?'8px':'0')+';'+(rows.length?'border-top:1px dashed var(--line)':'')+'">'+
+        '<div style="font-size:10px;color:var(--muted);margin-bottom:3px">+ Add a brand</div>'+
         '<select class="mField" data-newbrand="'+side+'" style="margin-bottom:4px;font-size:12px">'+brandOpts.map(function(b){return '<option value="'+b+'">'+b+'</option>';}).join('')+'</select>'+
-        '<input class="mField" type="number" inputmode="numeric" min="0" data-newqty="'+side+'" placeholder="Add a brand…" style="width:100%;margin:0">'+
+        '<input class="mField" type="number" inputmode="numeric" min="0" data-newqty="'+side+'" placeholder="Qty" style="width:100%;margin:0">'+
         '</div>';
     }
     return html;
