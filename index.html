@@ -12777,7 +12777,15 @@ function corrApplyCountGroup(){
   });
   toast('Correction logged ✓');
   setTimeout(function(){corrApplyBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}},600);
-  corrStepCountGroups(corrCfg._countGroupSection); // rebuild+redisplay the list with the new values, modal stays open for further corrections
+  // Real bug reported live 2026-09-21: typing e.g. 1 into Empty's "add a brand" qty and
+  // applying looked like it silently reverted to nothing. Root cause was here, not in the
+  // save itself (newAdds.forEach above DID push the row and persist it correctly) - this
+  // redraw was reusing corrCfg._lines, a snapshot corrLines() built BEFORE the new row
+  // existed, so the just-added row could never appear in the rebuilt group. corrStepLines()
+  // (used by every OTHER "+Add X line" button in this tool, e.g. corrOpenAddCountLine) is
+  // used here as well now specifically because it re-derives _lines from corrCfg.store
+  // first - not a plain call to corrStepCountGroups(), which does not.
+  corrStepLines(corrCfg._countGroupSection);
 }
 // Manifold's flat picker - same shape as the generic fallback list in corrStepLines, but
 // every row opens the dedicated multi-field editor below (corrStepManifoldEdit) instead of
