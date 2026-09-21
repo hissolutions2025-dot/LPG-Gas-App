@@ -12883,7 +12883,16 @@ function corrApplyManifoldEdit(){
   });
   toast('Correction logged ✓');
   setTimeout(function(){corrApplyBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}},600);
-  corrStepManifoldList(); // rebuild+redisplay the list with the new values, modal stays open for further corrections
+  // Same bug class as corrApplyCountGroup's newAdds fix (2026-09-21), found here too:
+  // corrStepManifoldList() reads l.label off corrCfg._lines, but that label is a plain STRING
+  // built once by corrLines() (e.g. "...scale 58.16kg tare 45.7kg...") - not a live getter. The
+  // underlying row (r.scale/r.tare/r.gasLeft, mutated a few lines above) WAS being corrected
+  // correctly, but the list kept showing the frozen pre-correction label, so a Scale/Tare fix
+  // looked like it "didn't want to change" - and since data-orig on reopening now (correctly)
+  // matched what the operator had already typed, re-entering the same number then hit "Nothing
+  // changed", reinforcing the impression it never saved. corrStepLines() rebuilds _lines (and
+  // so every label) from corrCfg.store fresh before redisplaying, same fix as the Count one.
+  corrStepLines(corrCfg._section);
 }
 function corrStepEdit(i){
   var l=corrCfg._lines[i];corrPick=l;
