@@ -12719,13 +12719,18 @@ function corrApplyCountGroup(){
   var inputs=Array.prototype.slice.call(document.querySelectorAll('#corrBody input[data-idx]'));
   var changed=inputs.filter(function(el){return num(el.value)!==num(el.getAttribute('data-orig'));});
   // New-brand additions (see corrStepCountGroupEdit's own comment) - a brand+qty pair the
-  // operator actually filled in (qty > 0), added alongside any `changed` edits under the
-  // same shared reason and the same "Apply correction" tap.
+  // operator actually filled in, added alongside any `changed` edits under the same shared
+  // reason and the same "Apply correction" tap. Checked via qtyEl.value!=='' (was `>0`,
+  // reported live 2026-09-21: a deliberately-entered "0" - e.g. "checked, found none" - is a
+  // real, meaningful count, not the same thing as "left blank, nothing to add here" - and got
+  // silently rejected as "Nothing changed" since `>0` treats them identically). An untouched
+  // field stays '' (its placeholder is never a real value), so this still correctly ignores a
+  // side the operator genuinely didn't touch.
   var newAdds=[];
   ['full','empty'].forEach(function(side){
     var qtyEl=document.querySelector('#corrBody input[data-newqty="'+side+'"]');
     var brandEl=document.querySelector('#corrBody select[data-newbrand="'+side+'"]');
-    if(qtyEl&&num(qtyEl.value)>0)newAdds.push({side:side,brand:brandEl.value,qty:num(qtyEl.value)});
+    if(qtyEl&&qtyEl.value!=='')newAdds.push({side:side,brand:brandEl.value,qty:num(qtyEl.value)});
   });
   if(changed.length===0&&newAdds.length===0){toast('Nothing changed',true);return;}
   var reasonEl=document.getElementById('corrReason');
