@@ -12969,7 +12969,23 @@ function correctSavedLine(ds){
   if(!perm('edit')){toast('You do not have edit/correct rights',true);return;}
   var rec=_currentSavedDayRec;
   if(!rec||rec.date!==ds){toast('Record not found \u2014 reopen this day and try again',true);return;}
-  if(!rec.closedTs || (Date.now()-rec.closedTs)>48*3600*1000){toast('48-hour window has closed',true);return;}
+  // Owner-only bypass, added 2026-09-21 after a real missed-window correction (a Received
+  // empty-cylinder count needed fixing 3 days after close, past the normal 48-hour self-
+  // service limit) - everything else about this tool (value correction, Adjustments log,
+  // Sheet row correction) already worked fine, the ONLY problem was the hard refusal below.
+  // Scoped to role==='Owner' specifically (the person actually logged in on THIS device,
+  // same raw-role check Manifold Slots already uses for its own Owner-only gate) rather than
+  // opening it to a borrowed Manager/Owner identity via openCorrection's own auth step below -
+  // deliberately narrower than the normal Manager-or-Owner bar the rest of this tool uses,
+  // since bypassing a safety window is more sensitive than a normal correction.
+  var withinWindow=rec.closedTs&&(Date.now()-rec.closedTs)<=48*3600*1000;
+  var lateOverride=false;
+  if(!withinWindow){
+    if(role!=='Owner'){toast('48-hour window has closed \u2014 ask an Owner to correct this',true);return;}
+    var hrsAgo=rec.closedTs?Math.round((Date.now()-rec.closedTs)/3600000):null;
+    if(!confirm('This day closed '+(hrsAgo!==null?hrsAgo+' hours ago':'an unknown time ago')+' \u2014 past the normal 48-hour window.\n\nAs Owner you can still correct it, but this bypass is logged.\n\nContinue?'))return;
+    lateOverride=true;
+  }
   // Reported: "Daily sales must be part of stock that can be adjusted after day close within
   // 48 hours." Daily Sales isn't in rec.store (see corrLines' 'Daily Sales' branch's own
   // comment for why) - fetch that day's real row fresh (branch+ds are fixed/historical here,
@@ -12989,27 +13005,31 @@ function correctSavedLine(ds){
   // branch reference in this function now uses that instead of the assumed global.
   sb.from('daily_sales').select('lines').eq('branch',rec.branch).eq('date',ds).maybeSingle().then(function(res){
     rec.store._dailySales=(res&&res.data&&res.data.lines)||[];
-    _correctSavedLineOpen(ds,rec);
+    _correctSavedLineOpen(ds,rec,lateOverride);
   },function(){
     rec.store._dailySales=rec.store._dailySales||[];
     toast('Could not load Daily Sales for this day - other sections are still correctable',true);
-    _correctSavedLineOpen(ds,rec);
+    _correctSavedLineOpen(ds,rec,lateOverride);
   });
 }
-function _correctSavedLineOpen(ds,rec){
+function _correctSavedLineOpen(ds,rec,lateOverride){
   openCorrection({
-    title:'Correct '+ds+' - '+rec.branch,
+    title:'Correct '+ds+' - '+rec.branch+(lateOverride?' (48h override)':''),
     store:rec.store, branch:rec.branch,
     histRec:rec, histDs:ds,
     sections:['Opening','Closing','Received','Refills','Private','Manifold','Daily Sales'],
     onApply:function(sel,oldVal,newVal,reason,auth){
+      // lateOverride tag mirrors the existing "(Owner override)" convention already used for
+      // a borrowed-identity signature elsewhere in this app (see _dayCloseSign) - same idea,
+      // flagging that this correction skipped a normal safety gate, not just who applied it.
+      var byTag=auth.name+' ('+auth.level+')'+(lateOverride?' [48h override]':'');
       rec.corrections=rec.corrections||[];
-      var correctionEntry={at:nowStamp(),by:auth.name+' ('+auth.level+')',line:sel.tag,from:oldVal,to:newVal,reason:reason};
+      var correctionEntry={at:nowStamp(),by:byTag,line:sel.tag,from:oldVal,to:newVal,reason:reason};
       rec.corrections.push(correctionEntry);
       _pushSharedCorrection(rec._sharedId, correctionEntry);
-      syncPush('Adjustments',[{date:ds,branch:rec.branch,Kind:'HistoricalCorrection',Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:auth.name+' ('+auth.level+')'}]);
+      syncPush('Adjustments',[{date:ds,branch:rec.branch,Kind:(lateOverride?'HistoricalCorrection48hOverride':'HistoricalCorrection'),Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:byTag}]);
       localStorage.setItem(histKey(ds,rec.branch),JSON.stringify(rec));
-      auditLog('Historical count corrected',ds+' '+sel.tag+': '+oldVal+' \u2192 '+newVal+' by '+auth.name+' - '+reason,{was:oldVal},{now:newVal});
+      auditLog('Historical count corrected'+(lateOverride?' (48h override)':''),ds+' '+sel.tag+': '+oldVal+' \u2192 '+newVal+' by '+byTag+' - '+reason,{was:oldVal},{now:newVal});
       // Daily Sales has no snapshot of its own to fall back on - unlike every other section
       // here (whose correction only ever needs to live in THIS local closed-day record), the
       // live daily_sales table is the only place this figure is ever read from again (the
