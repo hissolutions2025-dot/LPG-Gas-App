@@ -12994,6 +12994,7 @@ function corrAddModalSubmit(){
   row._rid=_rid();row.branch=corrCfg.branch;row._date=corrCfg.histDs;
   (corrCfg.store[corrAddKey]=corrCfg.store[corrAddKey]||[]).push(row);
   _corrPersistHistRec();
+  _corrSyncSnapshot(corrCfg.histRec); // see _corrSyncSnapshot's own comment - without this, this new line only ever lived in localStorage and vanished on the next reload, same bug as the onApply path
   // Plain append via syncPush - deliberately NOT using Count's own live/backdate _replaceKey
   // marker (which tells the backend to WIPE every existing row for that date+branch first) -
   // this is adding ONE line to an already-closed, already-synced day, so a replace-set here
@@ -13179,6 +13180,31 @@ function corrApply(){
 // `corrections`/`sync_status` may ever change on an existing row). No-ops
 // for a pre-migration day that only exists locally (no _sharedId) - that
 // day's corrections stay local-only, same as they do today.
+// True root cause of 2026-09-21's corrections repeatedly "vanishing" after reopening a day:
+// day_closes.store_snapshot is DELIBERATELY immutable at the database level (see Task 1's
+// enforce_day_close_immutable trigger - only `corrections`/`sync_status` may ever change on
+// an existing row, by design, so a signed close-day record can never be silently altered).
+// Every fix made to the correction tool tonight correctly mutated rec.store in memory and
+// saved it to THIS device's localStorage - but loadSavedDayShared() always re-fetches
+// store_snapshot fresh from Supabase, which the trigger guarantees is still the ORIGINAL,
+// uncorrected data. So every correction displayed fine only for as long as nothing re-loaded
+// the record - the instant it did (reopening the calendar day, another device, a page reload),
+// the correction was gone, no matter how correctly it had been applied.
+// Fix: corrected_snapshot (a NEW, unguarded jsonb column - see the SQL below) holds the
+// CURRENT corrected store, written here every time a correction actually changes it;
+// loadSavedDayShared() now reads corrected_snapshot first, falling back to the original
+// store_snapshot when no correction has ever been made. store_snapshot itself is never
+// touched, so the immutability guarantee this was built for is fully preserved.
+// One-time setup (run once in Supabase's SQL Editor, same manual-migration pattern as Task 1):
+//   alter table public.day_closes add column if not exists corrected_snapshot jsonb;
+function _corrSyncSnapshot(rec){
+  if(!rec||!rec._sharedId)return; // pre-migration local-only day - localStorage is already the only copy, nothing to sync
+  sb.from('day_closes').update({corrected_snapshot:rec.store}).eq('id',rec._sharedId).then(function(r){
+    if(r.error)toast('Correction saved locally, but could not sync to the shared record: '+r.error.message,true);
+  }).catch(function(){
+    toast('Correction saved locally, but a network error stopped it syncing to the shared record',true);
+  });
+}
 function _pushSharedCorrection(sharedId, correction){
   if(!sharedId)return;
   sb.from('day_closes').select('corrections').eq('id',sharedId).single().then(function(res){
@@ -13260,6 +13286,7 @@ function _correctSavedLineOpen(ds,rec,lateOverride){
       _pushSharedCorrection(rec._sharedId, correctionEntry);
       syncPush('Adjustments',[{date:ds,branch:rec.branch,Kind:(lateOverride?'HistoricalCorrection48hOverride':'HistoricalCorrection'),Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:byTag}]);
       localStorage.setItem(histKey(ds,rec.branch),JSON.stringify(rec));
+      _corrSyncSnapshot(rec); // see _corrSyncSnapshot's own comment - this is what actually makes the correction survive a reload, not just the corrections audit entry above
       auditLog('Historical count corrected'+(lateOverride?' (48h override)':''),ds+' '+sel.tag+': '+oldVal+' \u2192 '+newVal+' by '+byTag+' - '+reason,{was:oldVal},{now:newVal});
       // Daily Sales has no snapshot of its own to fall back on - unlike every other section
       // here (whose correction only ever needs to live in THIS local closed-day record), the
@@ -13651,7 +13678,10 @@ function loadSavedDayShared(date,br){
       var d=res.data;
       return {
         date:d.date, branch:d.branch, operator:d.authoriser_name, closedAt:d.closed_at, closedTs:new Date(d.closed_at).getTime(),
-        store:d.store_snapshot, sig:{op:d.signatures.op,mgr:d.signatures.mgr},
+        // corrected_snapshot (see _corrSyncSnapshot) holds the current, corrected store once any
+        // correction has been made - store_snapshot itself is DB-immutable and stays the original
+        // forever, so falls back to it only when nothing has ever been corrected.
+        store:d.corrected_snapshot||d.store_snapshot, sig:{op:d.signatures.op,mgr:d.signatures.mgr},
         signedBy:{op:d.signatures.signedByOp,mgr:d.signatures.signedByMgr},
         corrections:d.corrections||[], _sharedId:d.id
       };
