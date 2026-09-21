@@ -12834,6 +12834,9 @@ function corrStepManifoldEdit(i){
     // table showed Cyl 4's Closing as blank because of it. Stage wasn't correctable at all
     // before this - only Brand/Gas type/Scale/Tare were.
     '<label class="mLabel">Stage</label><select class="mField" id="corrMfStage" data-orig="'+(r.stage||'Opening')+'" style="margin-bottom:8px">'+opts(['Opening','Closing'],r.stage||'Opening')+'</select>'+
+    // Reported live 2026-09-21: the first slot's Cylinder was blank on the report (should read
+    // "Cyl 1", same as the other three) - Cylinder wasn't correctable at all before this either.
+    '<label class="mLabel">Cylinder</label><select class="mField" id="corrMfCyl" data-orig="'+(r.cyl||'')+'" style="margin-bottom:8px">'+opts(_manifoldCylLabels(corrCfg.branch),r.cyl||'')+'</select>'+
     '<label class="mLabel">Brand</label><select class="mField" id="corrMfBrand" data-orig="'+(r.brand||'')+'" style="margin-bottom:8px">'+opts(BRANDS,r.brand||'')+'</select>'+
     '<label class="mLabel">Gas type</label><select class="mField" id="corrMfGasType" data-orig="'+(r.gasType||'')+'" style="margin-bottom:8px">'+opts(['LPG','Propane'],r.gasType||'')+'</select>'+
     '<label class="mLabel">Scale weight (kg)</label><input class="mField" id="corrMfScale" type="number" inputmode="decimal" data-orig="'+r.scale+'" value="'+r.scale+'" oninput="_corrMfRecalc()" style="margin-bottom:8px">'+
@@ -12850,11 +12853,12 @@ function _corrMfRecalc(){
 function corrApplyManifoldEdit(){
   if(corrApplyBusy)return;
   var r=corrCfg._lines[corrCfg._mfActive].row;
-  var stageEl=document.getElementById('corrMfStage'),
+  var stageEl=document.getElementById('corrMfStage'),cylEl=document.getElementById('corrMfCyl'),
       brandEl=document.getElementById('corrMfBrand'),typeEl=document.getElementById('corrMfGasType'),
       scaleEl=document.getElementById('corrMfScale'),tareEl=document.getElementById('corrMfTare');
   var changes=[]; // {field,oldVal,newVal}
   if(stageEl&&stageEl.value!==stageEl.getAttribute('data-orig'))changes.push({field:'stage',oldVal:stageEl.getAttribute('data-orig'),newVal:stageEl.value});
+  if(cylEl&&cylEl.value!==cylEl.getAttribute('data-orig'))changes.push({field:'cyl',oldVal:cylEl.getAttribute('data-orig'),newVal:cylEl.value});
   if(brandEl.value!==brandEl.getAttribute('data-orig'))changes.push({field:'brand',oldVal:brandEl.getAttribute('data-orig'),newVal:brandEl.value});
   if(typeEl.value!==typeEl.getAttribute('data-orig'))changes.push({field:'gasType',oldVal:typeEl.getAttribute('data-orig'),newVal:typeEl.value});
   var scaleChanged=num(scaleEl.value)!==num(scaleEl.getAttribute('data-orig'));
@@ -12874,6 +12878,7 @@ function corrApplyManifoldEdit(){
   // half-updated tare/scale pair for the first one).
   changes.forEach(function(c){
     if(c.field==='stage')r.stage=c.newVal;
+    else if(c.field==='cyl')r.cyl=c.newVal;
     else if(c.field==='brand')r.brand=c.newVal;
     else if(c.field==='gasType')r.gasType=c.newVal;
     else if(c.field==='scale')r.scale=c.newVal;
