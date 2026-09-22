@@ -1378,7 +1378,14 @@ function _manifoldCylLabels(br){
   // for 4 phantom slots no matter what Admin was saved as. Reported live: Kleinmond's
   // manifold is physically disconnected, yet Close Day kept asking for an override reason
   // for it every single day.
-  var n=(_manifoldSlotCounts[br]!==undefined)?_manifoldSlotCounts[br]:4;
+  // Found in code review 2026-09-22: checked !==undefined only - a DB row whose slot_count was
+  // never explicitly set (e.g. a legacy manifold_settings row created for tolerances only)
+  // returns null, not undefined, and null!==undefined is true, so n became null and the
+  // for-loop below (1<=null is false) silently produced ZERO slots - identical to the
+  // deliberate "no manifold" state, for a branch that was simply never configured. The sibling
+  // fix in renderManifoldSlots already correctly checks both; this now matches it.
+  var raw=_manifoldSlotCounts[br];
+  var n=(raw!==undefined&&raw!==null)?raw:4;
   var out=[];for(var i=1;i<=n;i++)out.push('Cyl '+i);
   return out;
 }
@@ -3529,7 +3536,15 @@ function renderManifoldSlots(){
 }
 function saveManifoldSlots(br){
   if(role!=='Owner'){toast('Owner only',true);return;}
-  var n=num(document.getElementById('mfSlotCount').value);
+  // Found in code review 2026-09-22: num('')===0 (parseFloat('') is NaN, coerced to 0), so a
+  // blank field (e.g. cleared to retype a value, then Save tapped before typing the
+  // replacement) silently passed the n<0||n>12 check below as if 0 had been deliberately
+  // entered, saving "no manifold" for that branch with zero warning. Checked as a STRING first
+  // so a genuinely blank field is rejected the same way it always was, while a real "0" typed
+  // by the Owner still passes through untouched.
+  var rawVal=(document.getElementById('mfSlotCount').value||'').trim();
+  if(rawVal===''){toast('Enter a whole number between 0 and 12',true);return;}
+  var n=num(rawVal);
   // Reported live 2026-09-21: Kleinmond's manifold is physically disconnected, yet Close Day
   // kept demanding an override reason for it every day - _dayCompleteness's manifoldMissing
   // check already correctly goes empty when _manifoldCylLabels(br) has zero labels (see that
@@ -3677,7 +3692,10 @@ function _clearStockTakeDo(date,brSel,areas,branches){
           if(storeKeyByArea[a]){rec.store[storeKeyByArea[a]]=(rec.store[storeKeyByArea[a]]||[]).filter(function(r){return false;});}
         });
         if(areas.indexOf('DayClose')>-1){/* mark reopened */ rec._cleared=true;}
-        localStorage.setItem(histKey(date,bn),JSON.stringify(rec));
+        // Found in code review 2026-09-22: bypassed both the photo-stripping and quota-safe
+        // retry helpers built earlier tonight specifically because this exact call shape
+        // (localStorage.setItem of a full day record) can throw QuotaExceededError.
+        _setHistRecLocal(histKey(date,bn),rec);
       }
     }catch(e){}
     // ---- LOCAL: clear from TODAY's working store if date===today ----
@@ -11092,6 +11110,18 @@ function openHistory(mismatchOverlayRows,_skipManifoldLiveFetch){
   // fire-and-forget, like the badge updates above - don't block render. See closeDay()'s own
   // comment for the full story on why every one of these must be passed histBranch explicitly.
   _refreshDayCloseSignatures(histBranch);
+  // Found in code review 2026-09-22: _manifoldSlotCounts[br] (read by _manifoldCylLabels, used
+  // by _dayCompleteness's Close Day gate AND the correction tool's Manifold Cylinder dropdown)
+  // was ONLY ever populated by opening the LIVE Manifold capture screen for that branch -
+  // History/Close Day/the correction tool never fetched it themselves. An Owner logged in
+  // under one branch who goes straight to History, switches to a DIFFERENT branch (e.g.
+  // Kleinmond, deliberately configured to 0 manifold slots) and taps Close Day without ever
+  // having opened that branch's live Manifold screen this session would see the undefined-case
+  // fallback of 4 phantom slots instead of the real 0 - reproducing the exact "Kleinmond keeps
+  // demanding manifold data" bug from earlier tonight, via the single most natural path to
+  // reach Close Day. Fire-and-forget like the signature refresh above - the value is read
+  // fresh from _manifoldSlotCounts whenever needed, no re-render required here.
+  _fetchManifoldSlotCount(histBranch);
   var _sb=document.querySelector('.sigBlock');if(_sb)_sb.style.display='block'; // undo any earlier combined-view hide when switching back to a real branch
   var _hab2=document.getElementById('histActionBar');if(_hab2)_hab2.style.display='flex'; // same undo, for the action bar hidden alongside sigBlock in _openHistoryCombined()
   // Every live mirror (Manifold + Received/Refill/Private/Residual, via capture_live_rows)
@@ -12168,6 +12198,14 @@ function _closeDayFinalize(bal,br){
   var snapStore={};
   ['count','manifold','refill','private','received'].forEach(function(k){snapStore[k]=(store[k]||[]).filter(function(r){return !r.branch||r.branch===br;});});
   snapStore.residual=(store.residual||[]).filter(function(r){return !r.Branch||r.Branch===br;});
+  // Found in code review 2026-09-22: the old store_snapshot:JSON.parse(JSON.stringify(store))
+  // captured every property of `store` for free, including store._manifoldOverride - this
+  // explicit snapStore only ever copied the 6 array keys above, silently dropping it. The
+  // dedicated manifold_balance.override column below still gets it correctly, but _savedSrc()/
+  // buildCountDocAsync's report only ever reads rec.store._manifoldOverride (never that
+  // column) to print "Manifold imbalance override reason: ..." - without this, any day closed
+  // with an override would show the imbalance flag on its report but silently lose the reason.
+  snapStore._manifoldOverride=store._manifoldOverride||null;
   var record={
     branch:br, date:today,
     closed_by:currentProfile.id,
@@ -12421,6 +12459,7 @@ function saveDayToHistory(br){
     var snapStore={};
     ['count','manifold','refill','private','received'].forEach(function(k){snapStore[k]=(store[k]||[]).filter(function(r){return !r.branch||r.branch===br;});});
     snapStore.residual=(store.residual||[]).filter(function(r){return !r.Branch||r.Branch===br;});
+    snapStore._manifoldOverride=store._manifoldOverride||null; // see _closeDayFinalize's matching comment - this local backup needs the same field or its own report loses the override reason too
     var rec={date:today,branch:br,operator:operator,role:role,closedAt:nowStamp(),closedTs:Date.now(),
       store:snapStore,sig:{op:sigData.sigOp,mgr:sigData.sigMgr},
       closeAuth:store._closeAuth||'',signedBy:{op:sigSignedBy.sigOp,mgr:sigSignedBy.sigMgr}};
@@ -12895,39 +12934,49 @@ function corrApplyCountGroup(){
   // correctSavedLine's onApply pushes into the shared day_closes.corrections + audits -
   // both already handle being called this way, so the grouped UI is purely a presentation
   // change, not a new code path for what "applying a correction" actually does.
-  changed.forEach(function(el){
-    var idx=Number(el.getAttribute('data-idx'));
-    var line=corrCfg._lines[idx];
-    var oldVal=num(el.getAttribute('data-orig')), newVal=num(el.value);
-    var sel={tag:line.tag,section:corrCfg._section,row:line.row};
-    // Stamp the correction's byline directly onto the row - oldVal/newVal/who/when are
-    // all already known right here, no extra fetch needed. Harmless when line.row isn't
-    // a live store.count row (e.g. the 48-hour historical tool's cloned snapshot) since
-    // nothing else reads these fields off that path. Deliberately does NOT touch
-    // _operator/_time (who/when originally captured this line) - the correction is
-    // recorded as its own separate fact via _correctedBy/_correctedTime/_correctedFrom,
-    // so both "captured by" and "adjusted by" can be shown together, not one replacing
-    // the other.
-    line.row._correctedFrom=oldVal;line.row._correctedBy=corrAuth.name;line.row._correctedTime=nowStamp();
-    line.set(newVal);
-    corrCfg.onApply(sel,oldVal,newVal,reason,corrAuth);
-  });
-  // New brand+qty additions are genuinely new rows, not edits to an existing one - pushed
-  // straight onto corrCfg.store.count (same shape corrOpenAddCountLine's own button uses),
-  // with a plain Sheet append (syncPush, no _replaceKey - see that function's own comment for
-  // why a replace-set here would silently wipe every other Count row already synced for the
-  // day). Still logged through corrCfg.onApply so it lands in the same corrections/Adjustments/
-  // audit trail as every other change here, just with no `.set()` to call (there's no existing
-  // line to mutate) and no `row` on `sel` (onApply never reads it).
-  newAdds.forEach(function(a){
-    var row={countType:corrCfg._countGroupSection,state:(a.side==='full'?'Full':'Empty'),size:g.size,brand:a.brand,qty:a.qty};
-    row._rid=_rid();row.branch=corrCfg.branch;row._date=corrCfg.histDs;
-    (corrCfg.store.count=corrCfg.store.count||[]).push(row);
-    syncPush('Counts',syncRowsCount([row],corrCfg.branch).map(function(x){x.date=corrCfg.histDs;return x;}));
-    var addTag='Count '+corrCfg._countGroupSection+' '+g.size+' '+a.brand+' ('+(a.side==='full'?'Full':'Empty')+', new)';
-    corrCfg.onApply({tag:addTag,section:corrCfg._section},0,a.qty,reason,corrAuth);
-  });
-  toast('Correction logged ✓');
+  // Found in code review 2026-09-22: neither forEach below was ever guarded, unlike the
+  // sibling corrAddModalSubmit (fixed the same night for the identical failure class) -
+  // onApply's own localStorage write (_setHistRecLocal) can throw on quota even after its
+  // prune-and-retry, which would abort this whole function mid-loop with corrApplyBusy stuck
+  // true and no error shown.
+  try{
+    changed.forEach(function(el){
+      var idx=Number(el.getAttribute('data-idx'));
+      var line=corrCfg._lines[idx];
+      var oldVal=num(el.getAttribute('data-orig')), newVal=num(el.value);
+      var sel={tag:line.tag,section:corrCfg._section,row:line.row};
+      // Stamp the correction's byline directly onto the row - oldVal/newVal/who/when are
+      // all already known right here, no extra fetch needed. Harmless when line.row isn't
+      // a live store.count row (e.g. the 48-hour historical tool's cloned snapshot) since
+      // nothing else reads these fields off that path. Deliberately does NOT touch
+      // _operator/_time (who/when originally captured this line) - the correction is
+      // recorded as its own separate fact via _correctedBy/_correctedTime/_correctedFrom,
+      // so both "captured by" and "adjusted by" can be shown together, not one replacing
+      // the other.
+      line.row._correctedFrom=oldVal;line.row._correctedBy=corrAuth.name;line.row._correctedTime=nowStamp();
+      line.set(newVal);
+      corrCfg.onApply(sel,oldVal,newVal,reason,corrAuth);
+    });
+    // New brand+qty additions are genuinely new rows, not edits to an existing one - pushed
+    // straight onto corrCfg.store.count (same shape corrOpenAddCountLine's own button uses),
+    // with a plain Sheet append (syncPush, no _replaceKey - see that function's own comment for
+    // why a replace-set here would silently wipe every other Count row already synced for the
+    // day). Still logged through corrCfg.onApply so it lands in the same corrections/Adjustments/
+    // audit trail as every other change here, just with no `.set()` to call (there's no existing
+    // line to mutate) and no `row` on `sel` (onApply never reads it).
+    newAdds.forEach(function(a){
+      var row={countType:corrCfg._countGroupSection,state:(a.side==='full'?'Full':'Empty'),size:g.size,brand:a.brand,qty:a.qty};
+      row._rid=_rid();row.branch=corrCfg.branch;row._date=corrCfg.histDs;
+      (corrCfg.store.count=corrCfg.store.count||[]).push(row);
+      syncPush('Counts',syncRowsCount([row],corrCfg.branch).map(function(x){x.date=corrCfg.histDs;return x;}));
+      var addTag='Count '+corrCfg._countGroupSection+' '+g.size+' '+a.brand+' ('+(a.side==='full'?'Full':'Empty')+', new)';
+      corrCfg.onApply({tag:addTag,section:corrCfg._section},0,a.qty,reason,corrAuth);
+    });
+    toast('Correction logged ✓');
+  }catch(e){
+    console.error('corrApplyCountGroup failed:',e);
+    alert('The correction could not be fully saved:\n\n'+(e&&e.message?e.message:'unknown error')+'\n\nTry again, or tell your Manager/Owner this exact message.');
+  }
   setTimeout(function(){corrApplyBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}},600);
   // Real bug reported live 2026-09-21: typing e.g. 1 into Empty's "add a brand" qty and
   // applying looked like it silently reverted to nothing. Root cause was here, not in the
@@ -13016,29 +13065,38 @@ function corrApplyManifoldEdit(){
   corrApplyBusy=true;
   var btn=document.getElementById('corrApplyBtn');if(btn){btn.disabled=true;btn.style.opacity='.6';}
   if(r){r._correctedFrom=r.gasLeft;r._correctedBy=corrAuth.name;r._correctedTime=nowStamp();}
-  // Apply every changed field to the row FIRST, so Gas left (scale-tare) reflects the FINAL
-  // combined state before any onApply call reads it - matters when both scale and tare are
-  // corrected together in one Apply (recomputing after each individually would use a
-  // half-updated tare/scale pair for the first one).
-  changes.forEach(function(c){
-    if(c.field==='stage')r.stage=c.newVal;
-    else if(c.field==='cyl')r.cyl=c.newVal;
-    else if(c.field==='brand')r.brand=c.newVal;
-    else if(c.field==='gasType')r.gasType=c.newVal;
-    else if(c.field==='scale')r.scale=c.newVal;
-    else if(c.field==='tare')r.tare=c.newVal;
-  });
-  if(scaleChanged||tareChanged)r.gasLeft=num(r.scale)-num(r.tare);
-  // Reuses each entry point's own onApply exactly as corrApplyCountGroup already does (once
-  // per changed field) - _openCapAdjustReal's onApply re-syncs the Manifold sheet row +
-  // audits (branching per sel.field so a Brand/Gas-type/Scale/Tare correction each push the
-  // right column), and correctSavedLine's onApply pushes into the shared
-  // day_closes.corrections + audits, unchanged.
-  changes.forEach(function(c){
-    var sel={tag:'Manifold '+(r.stage||'Opening')+' '+r.cyl+' '+c.field,section:corrCfg._section,row:r,field:c.field};
-    corrCfg.onApply(sel,c.oldVal,c.newVal,reason,corrAuth);
-  });
-  toast('Correction logged ✓');
+  // Found in code review 2026-09-22: unguarded like corrApplyCountGroup was - onApply's own
+  // localStorage write can throw on quota even after its prune-and-retry, which would abort
+  // mid-loop with corrApplyBusy stuck true and no error shown, same failure class already
+  // fixed in corrAddModalSubmit/corrDeleteLine/corrApplyCountGroup.
+  try{
+    // Apply every changed field to the row FIRST, so Gas left (scale-tare) reflects the FINAL
+    // combined state before any onApply call reads it - matters when both scale and tare are
+    // corrected together in one Apply (recomputing after each individually would use a
+    // half-updated tare/scale pair for the first one).
+    changes.forEach(function(c){
+      if(c.field==='stage')r.stage=c.newVal;
+      else if(c.field==='cyl')r.cyl=c.newVal;
+      else if(c.field==='brand')r.brand=c.newVal;
+      else if(c.field==='gasType')r.gasType=c.newVal;
+      else if(c.field==='scale')r.scale=c.newVal;
+      else if(c.field==='tare')r.tare=c.newVal;
+    });
+    if(scaleChanged||tareChanged)r.gasLeft=num(r.scale)-num(r.tare);
+    // Reuses each entry point's own onApply exactly as corrApplyCountGroup already does (once
+    // per changed field) - _openCapAdjustReal's onApply re-syncs the Manifold sheet row +
+    // audits (branching per sel.field so a Brand/Gas-type/Scale/Tare correction each push the
+    // right column), and correctSavedLine's onApply pushes into the shared
+    // day_closes.corrections + audits, unchanged.
+    changes.forEach(function(c){
+      var sel={tag:'Manifold '+(r.stage||'Opening')+' '+r.cyl+' '+c.field,section:corrCfg._section,row:r,field:c.field};
+      corrCfg.onApply(sel,c.oldVal,c.newVal,reason,corrAuth);
+    });
+    toast('Correction logged ✓');
+  }catch(e){
+    console.error('corrApplyManifoldEdit failed:',e);
+    alert('The correction could not be fully saved:\n\n'+(e&&e.message?e.message:'unknown error')+'\n\nTry again, or tell your Manager/Owner this exact message.');
+  }
   setTimeout(function(){corrApplyBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}},600);
   // Same bug class as corrApplyCountGroup's newAdds fix (2026-09-21), found here too:
   // corrStepManifoldList() reads l.label off corrCfg._lines, but that label is a plain STRING
@@ -13089,22 +13147,33 @@ function corrDeleteLine(){
   var key=_corrSectionCapType(section);
   var arr=corrCfg.store[key]||[];
   var idx=arr.indexOf(row);
-  if(idx>-1)arr.splice(idx,1);
-  _corrPersistHistRec();
-  _corrSyncSnapshot(corrCfg.histRec);
-  // No delete-row backend action exists (only adjustRow, which updates in place) - zeroing
-  // Pumped and marking Notes leaves a clear, honest trail on the Sheet itself (an auditor
-  // reading it directly sees exactly why the row nets to nothing) rather than silently
-  // vanishing a row someone might later go looking for.
-  if(row._rid)adjustSheetRow(sheetName,row._rid,{Pumped:0,Notes:'VOIDED (deleted in app) - '+reason});
-  var byTag=corrAuth.name+' ('+corrAuth.level+')';
-  corrCfg.histRec.corrections=corrCfg.histRec.corrections||[];
-  var correctionEntry={at:nowStamp(),by:byTag,line:l.tag+' (deleted)',from:oldVal,to:0,reason:reason};
-  corrCfg.histRec.corrections.push(correctionEntry);
-  _pushSharedCorrection(corrCfg.histRec._sharedId,correctionEntry);
-  syncPush('Adjustments',[{date:corrCfg.histDs,branch:corrCfg.branch,Kind:'HistoricalLineDeleted',Line:l.tag,From:oldVal,To:0,Reason:reason,By:byTag}]);
-  auditLog('Historical line deleted',corrCfg.histDs+' '+l.tag+' by '+byTag+' - '+reason,{was:oldVal},{now:'deleted'});
-  toast('Line deleted \u2713');
+  // Found in code review 2026-09-22: everything from here on was unguarded, unlike the sibling
+  // corrAddModalSubmit (fixed the same night for the identical failure class) - if
+  // _corrPersistHistRec throws (localStorage quota, even after _setHistRecLocal's own
+  // prune-and-retry), the row was already spliced out of corrCfg.store[key] in memory but
+  // never persisted/synced/logged, and corrApplyBusy would be stuck true forever with no
+  // error shown - every other Apply/Delete in this modal silently dead from then on.
+  try{
+    if(idx>-1)arr.splice(idx,1);
+    _corrPersistHistRec();
+    _corrSyncSnapshot(corrCfg.histRec);
+    // No delete-row backend action exists (only adjustRow, which updates in place) - zeroing
+    // Pumped and marking Notes leaves a clear, honest trail on the Sheet itself (an auditor
+    // reading it directly sees exactly why the row nets to nothing) rather than silently
+    // vanishing a row someone might later go looking for.
+    if(row._rid)adjustSheetRow(sheetName,row._rid,{Pumped:0,Notes:'VOIDED (deleted in app) - '+reason});
+    var byTag=corrAuth.name+' ('+corrAuth.level+')';
+    corrCfg.histRec.corrections=corrCfg.histRec.corrections||[];
+    var correctionEntry={at:nowStamp(),by:byTag,line:l.tag+' (deleted)',from:oldVal,to:0,reason:reason};
+    corrCfg.histRec.corrections.push(correctionEntry);
+    _pushSharedCorrection(corrCfg.histRec._sharedId,correctionEntry);
+    syncPush('Adjustments',[{date:corrCfg.histDs,branch:corrCfg.branch,Kind:'HistoricalLineDeleted',Line:l.tag,From:oldVal,To:0,Reason:reason,By:byTag}]);
+    auditLog('Historical line deleted',corrCfg.histDs+' '+l.tag+' by '+byTag+' - '+reason,{was:oldVal},{now:'deleted'});
+    toast('Line deleted \u2713');
+  }catch(e){
+    console.error('corrDeleteLine failed:',e);
+    alert('The line could not be fully deleted:\n\n'+(e&&e.message?e.message:'unknown error')+'\n\nTry again, or tell your Manager/Owner this exact message.');
+  }
   corrApplyBusy=false;
   corrStepLines(section);
 }
@@ -13281,6 +13350,13 @@ function _corrOpenAddPhotoFor(i){
     var category=(capType==='manifold'?'Manifold':capType==='refill'?'Refill':'Private');
     _photoQueueAdd({capType:capType,branch:corrCfg.branch,date:corrCfg.histDs,rowRid:row._rid,category:category,photos:[dataUri]});
     _corrPersistHistRec();
+    // Found in code review 2026-09-22: every OTHER mutation path in this tool (onApply,
+    // corrAddModalSubmit, corrDeleteLine) was updated to also push to Supabase's
+    // corrected_snapshot, specifically because loadSavedDayShared() re-fetches from Supabase
+    // and discards anything that only ever lived in this device's localStorage - this photo
+    // add was missed, so it would silently revert on the next reload (another device, the
+    // calendar reopened, or a page refresh) even though the photo itself uploads fine.
+    _corrSyncSnapshot(corrCfg.histRec);
     toast('Photo queued — uploading in background');
     corrStepLines(corrCfg._section); // rebuild+redisplay, modal stays open for further corrections
   });
@@ -13308,6 +13384,7 @@ function _corrOpenAddPhotoForReceivedGroup(rowRids){
     });
     _photoQueueAdd({capType:'received',branch:corrCfg.branch,date:corrCfg.histDs,rowRids:rowRids,category:'Received',photos:[dataUri]});
     _corrPersistHistRec();
+    _corrSyncSnapshot(corrCfg.histRec); // see _corrOpenAddPhotoFor's own comment on this same fix
     toast('Photo queued — uploading in background');
     corrStepLines(corrCfg._section); // rebuild+redisplay, modal stays open for further corrections
   });
@@ -13946,7 +14023,15 @@ function _adoptRemoteCloseIfNeeded(br){
       signedBy:{op:d.signatures.signedByOp,mgr:d.signatures.signedByMgr},
       corrections:d.corrections||[],_sharedId:d.id};
     try{
-      localStorage.setItem(histKey(today,br),JSON.stringify(rec));
+      // Found in code review 2026-09-22: rec.store comes straight from Supabase's
+      // store_snapshot, which can still carry raw un-uploaded photo blobs from before
+      // tonight's fix existed (or from a device whose photo queue hadn't finished at close
+      // time) - the same quota risk _setHistRecLocal/_stringifyHistRecForStorage were built to
+      // handle, bypassed here entirely. A throw here was already swallowed by the catch below
+      // (this device just never "adopts" the remote close and keeps retrying next open), but
+      // routing through the shared helper means it now also gets the strip-then-prune-and-
+      // retry self-heal instead of failing every single time storage stays over quota.
+      _setHistRecLocal(histKey(today,br),rec);
       var idx=[];try{idx=JSON.parse(localStorage.getItem('gs_hist_index')||'[]');}catch(e){}
       var k=histKey(today,br);if(idx.indexOf(k)<0){idx.push(k);localStorage.setItem('gs_hist_index',JSON.stringify(idx));}
     }catch(e){}
