@@ -15665,9 +15665,26 @@ function _savedDayRecFor(ds,br){
 }
 // HISTORICAL: open a saved day's full count as a printable PDF
 function downloadCountPDFForDay(ds, br){
-  var rec=_savedDayRecFor(ds, br||histBranch||branch);
-  if(!rec){toast('No saved count for that day',true);return;}
-  _openDocAsync(buildCountDocAsync(_savedSrc(rec)));
+  var brFinal=br||histBranch||branch;
+  // Real bug reported live 2026-09-22: a PDF for a day with several Refill corrections showed
+  // only the ORIGINAL, uncorrected line - every one of that session's additions/deletes was
+  // missing. Root cause: _savedDayRecFor() falls back to loadSavedDay(), which reads PURELY
+  // from this device's own localStorage - never Supabase - whenever _currentSavedDayRec
+  // (in-memory only, always null right after a reload) doesn't already hold this exact day.
+  // Same bug class as loadSavedDayShared's own corrected_snapshot fix, just missed here -
+  // this local copy can be stale, or (on a different device than the one corrections were
+  // made on) can never have had them at all. Fetches fresh via loadSavedDayShared (same
+  // corrected_snapshot-preferring path the Saved Day screen itself uses) whenever the
+  // already-loaded record isn't already a match, instead of ever trusting the local-only
+  // fallback. window.open() still happens synchronously inside _openDocAsync (at the click
+  // gesture, so no popup blocker fires) - only the DATA fetch is deferred into the promise.
+  var recPromise=(_currentSavedDayRec&&_currentSavedDayRec.date===ds&&(!brFinal||_currentSavedDayRec.branch===brFinal))
+    ?Promise.resolve(_currentSavedDayRec)
+    :loadSavedDayShared(ds,brFinal);
+  _openDocAsync(recPromise.then(function(rec){
+    if(!rec)throw new Error('No saved count for that day');
+    return buildCountDocAsync(_savedSrc(rec));
+  }));
 }
 function exportData(){
   var total=Object.values(store).reduce(function(a,b){return a+b.length;},0);
