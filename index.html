@@ -13059,14 +13059,54 @@ function corrStepEdit(i){
   // and the historical tool - curVal passed explicitly since l.row's own value field isn't
   // always .qty (fullIn/emptyOut/gasLeft/pumped/etc depending on section).
   var byline=l.row?_stockCountByline(l.row,cur):'';
+  // "Delete this line" - added live 2026-09-22 after a wrongly-added Refill line (a size
+  // mis-tap while backfilling from a paper log, leaving a duplicate) needed removing entirely,
+  // not just correcting - correcting its value would still leave a phantom row behind.
+  // Scoped to Refills/Private (the two sections here with a plain Sheet + pumped-kg shape) and
+  // the historical tool only, same gate every other add/delete-adjacent feature in this tool
+  // already uses - never shown in the same-day Adjust tools, which have no delete concept.
+  var canDelete=corrCfg.histRec&&(corrCfg._section==='Refills'||corrCfg._section==='Private');
   var html='<div style="font-size:12px;color:var(--muted);margin-bottom:8px"><button class="sigClear" onclick="corrStepLines(\''+corrCfg._section+'\')">\u2039 Back</button></div>'+
     '<div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:8px">'+l.tag+'</div>'+
     '<div style="font-size:12px;color:var(--muted)">Current value: <b>'+cur+'</b></div>'+
     (byline?'<div style="font-size:10px;color:var(--muted);margin-top:4px">'+byline+'</div>':'')+
     '<input class="mField" id="corrNewVal" type="number" inputmode="numeric" placeholder="Correct value" value="'+cur+'" style="width:100%;margin:8px 0">'+
     '<textarea id="corrReason" placeholder="Reason for correction (required)" style="width:100%;min-height:60px;border:1px solid var(--line);border-radius:10px;padding:8px;font:inherit;box-sizing:border-box"></textarea>'+
-    '<button class="mDone" id="corrApplyBtn" style="margin-top:8px" onclick="corrApply()">Apply correction</button>';
+    '<button class="mDone" id="corrApplyBtn" style="margin-top:8px" onclick="corrApply()">Apply correction</button>'+
+    (canDelete?'<button class="sigClear" style="width:100%;margin-top:8px;color:#C0392B;border-color:#C0392B" onclick="corrDeleteLine()">Delete this line</button>':'');
   document.getElementById('corrBody').innerHTML=html;
+}
+function corrDeleteLine(){
+  if(corrApplyBusy)return;
+  if(!corrCfg.histRec)return;
+  var section=corrCfg._section;
+  var sheetName=(section==='Refills')?'Refills':(section==='Private')?'Private':null;
+  if(!sheetName){toast('Deleting a line is not available for this section',true);return;}
+  var reason=(prompt('Reason for deleting this line (required):')||'').trim();
+  if(!reason)return; // cancelled or left blank - no toast, the cancel itself is a clear enough signal
+  corrApplyBusy=true;
+  var l=corrPick,row=l.row,oldVal=l.get();
+  var key=_corrSectionCapType(section);
+  var arr=corrCfg.store[key]||[];
+  var idx=arr.indexOf(row);
+  if(idx>-1)arr.splice(idx,1);
+  _corrPersistHistRec();
+  _corrSyncSnapshot(corrCfg.histRec);
+  // No delete-row backend action exists (only adjustRow, which updates in place) - zeroing
+  // Pumped and marking Notes leaves a clear, honest trail on the Sheet itself (an auditor
+  // reading it directly sees exactly why the row nets to nothing) rather than silently
+  // vanishing a row someone might later go looking for.
+  if(row._rid)adjustSheetRow(sheetName,row._rid,{Pumped:0,Notes:'VOIDED (deleted in app) - '+reason});
+  var byTag=corrAuth.name+' ('+corrAuth.level+')';
+  corrCfg.histRec.corrections=corrCfg.histRec.corrections||[];
+  var correctionEntry={at:nowStamp(),by:byTag,line:l.tag+' (deleted)',from:oldVal,to:0,reason:reason};
+  corrCfg.histRec.corrections.push(correctionEntry);
+  _pushSharedCorrection(corrCfg.histRec._sharedId,correctionEntry);
+  syncPush('Adjustments',[{date:corrCfg.histDs,branch:corrCfg.branch,Kind:'HistoricalLineDeleted',Line:l.tag,From:oldVal,To:0,Reason:reason,By:byTag}]);
+  auditLog('Historical line deleted',corrCfg.histDs+' '+l.tag+' by '+byTag+' - '+reason,{was:oldVal},{now:'deleted'});
+  toast('Line deleted \u2713');
+  corrApplyBusy=false;
+  corrStepLines(section);
 }
 // Persists a photo-add's mutation back to localStorage for the 48-hour historical tool -
 // mirrors exactly what _correctSavedLineOpen's own onApply already does for VALUE
