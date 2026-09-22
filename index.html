@@ -13410,8 +13410,27 @@ function corrApply(){
 //   alter table public.day_closes add column if not exists corrected_snapshot jsonb;
 function _corrSyncSnapshot(rec){
   if(!rec||!rec._sharedId)return; // pre-migration local-only day - localStorage is already the only copy, nothing to sync
-  sb.from('day_closes').update({corrected_snapshot:rec.store}).eq('id',rec._sharedId).then(function(r){
+  // Real bug found live 2026-09-22: an Owner correcting a day PAST the 48-hour window (the
+  // client-side "48h override" feature) got no error at all, yet the correction never reached
+  // Supabase - root cause was the DATABASE's OWN RLS update policy on day_closes, which
+  // independently enforces the exact same 48-hour cutoff for EVERYONE, Owner or not. The
+  // client-side override only ever bypassed this app's own JS gate; it never touched RLS, so
+  // Postgres/PostgREST silently matched ZERO rows for the update (not an error - RLS just
+  // filters the row out of what's updatable) and this .then() saw r.error===null, looking
+  // exactly like success. Needs a one-time Supabase-side fix (SQL Editor, same manual-
+  // migration pattern as Task 1's original policies):
+  //   drop policy if exists "day_closes update within 48h by edit-permission holders" on public.day_closes;
+  //   create policy "day_closes update within 48h by edit-permission holders"
+  //     on public.day_closes for update
+  //     using (
+  //       (closed_at > now() - interval '48 hours' and exists(select 1 from public.profiles p where p.id=auth.uid() and (p.level in ('Owner','Manager') or (p.perms->>'adjust')='1')))
+  //       or exists(select 1 from public.profiles p where p.id=auth.uid() and p.level='Owner')
+  //     );
+  // .select() added below so THIS kind of RLS-silent-filter (zero rows, no error) is caught
+  // and surfaced immediately going forward, instead of looking identical to success.
+  sb.from('day_closes').update({corrected_snapshot:rec.store}).eq('id',rec._sharedId).select().then(function(r){
     if(r.error)toast('Correction saved locally, but could not sync to the shared record: '+r.error.message,true);
+    else if(!r.data||!r.data.length)toast('Correction saved locally, but the shared record refused the update (likely past the 48-hour window at the database level) - tell your Owner this exact message',true);
   }).catch(function(){
     toast('Correction saved locally, but a network error stopped it syncing to the shared record',true);
   });
@@ -13424,8 +13443,12 @@ function _pushSharedCorrection(sharedId, correction){
       return;
     }
     var updated=(res.data.corrections||[]).concat([correction]);
-    sb.from('day_closes').update({corrections:updated}).eq('id',sharedId).then(function(r2){
+    // Same RLS-silent-filter risk as _corrSyncSnapshot's own comment - .select() added so a
+    // past-48h update that matches zero rows (no error, just nothing updated) is caught
+    // instead of looking like success.
+    sb.from('day_closes').update({corrections:updated}).eq('id',sharedId).select().then(function(r2){
       if(r2.error)toast('Correction saved locally, but could not sync to the shared record: '+r2.error.message,true);
+      else if(!r2.data||!r2.data.length)toast('Correction saved locally, but the shared record refused the update (likely past the 48-hour window at the database level) - tell your Owner this exact message',true);
     }).catch(function(){
       toast('Correction saved locally, but a network error stopped it syncing to the shared record',true);
     });
