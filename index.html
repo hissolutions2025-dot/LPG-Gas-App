@@ -12209,6 +12209,39 @@ var _HEAVY_PHOTO_FIELDS={photo:1,supplierPhoto:1,photos:1};
 function _stringifyHistRecForStorage(rec){
   return JSON.stringify(rec,function(key,value){return _HEAVY_PHOTO_FIELDS.hasOwnProperty(key)?undefined:value;});
 }
+// Stripping alone wasn't enough (reported live, still quota-blocked right after that fix
+// shipped): today's OWN write becomes tiny, but every OTHER day's local backup saved BEFORE
+// this fix existed is still sitting there bloated with raw photo data, and the quota is
+// origin-wide, not per-key - total usage across every gs_hist_ entry can stay over quota even
+// though the one being written right now is small. Removes any local backup whose date is
+// older than the 48-hour correction window - safe, since loadSavedDayShared() always prefers
+// the Supabase copy anyway (see corrected_snapshot's own comment) and the correction tool
+// itself has no reason to touch a day this old locally in the first place.
+function _pruneOldLocalHistory(){
+  var idx=[];try{idx=JSON.parse(localStorage.getItem('gs_hist_index')||'[]');}catch(e){return 0;}
+  var cutoff=new Date(Date.now()-2*24*3600*1000).toISOString().slice(0,10);
+  var kept=[],removed=0;
+  idx.forEach(function(k){
+    var m=/^gs_hist_(\d{4}-\d{2}-\d{2})_/.exec(k);
+    if(m&&m[1]<cutoff){try{localStorage.removeItem(k);}catch(e){}removed++;}
+    else kept.push(k);
+  });
+  if(removed)try{localStorage.setItem('gs_hist_index',JSON.stringify(kept));}catch(e){}
+  return removed;
+}
+// Every save of a historical day's record goes through here: strips heavy photo blobs, and if
+// the write STILL hits quota (old pre-fix bloat elsewhere in storage), automatically prunes
+// anything past the 48-hour window and retries ONCE before giving up - no manual cleanup step
+// needed, self-heals on the very next attempt.
+function _setHistRecLocal(key,rec){
+  var json=_stringifyHistRecForStorage(rec);
+  try{
+    localStorage.setItem(key,json);
+  }catch(e){
+    if(_pruneOldLocalHistory()>0)localStorage.setItem(key,json);
+    else throw e;
+  }
+}
 // ===== IN-PROGRESS (working) day persistence =====
 // Saves the live captures under today+branch so closing the app doesn't lose them.
 // Cleared only on Close Day. Per-device localStorage (demo).
@@ -12391,7 +12424,7 @@ function saveDayToHistory(br){
     var rec={date:today,branch:br,operator:operator,role:role,closedAt:nowStamp(),closedTs:Date.now(),
       store:snapStore,sig:{op:sigData.sigOp,mgr:sigData.sigMgr},
       closeAuth:store._closeAuth||'',signedBy:{op:sigSignedBy.sigOp,mgr:sigSignedBy.sigMgr}};
-    localStorage.setItem(histKey(today,br),_stringifyHistRecForStorage(rec));
+    _setHistRecLocal(histKey(today,br),rec);
     var idx=[];try{idx=JSON.parse(localStorage.getItem('gs_hist_index')||'[]');}catch(e){}
     var k=histKey(today,br);if(idx.indexOf(k)<0){idx.push(k);localStorage.setItem('gs_hist_index',JSON.stringify(idx));}
     // CARRY-FORWARD: closing count becomes next day's expected opening (per size+brand+state)
@@ -13042,7 +13075,7 @@ function corrStepEdit(i){
 // photo would only live in memory and vanish on next reload/reopen of this saved day.
 function _corrPersistHistRec(){
   if(!corrCfg.histRec)return;
-  localStorage.setItem(histKey(corrCfg.histDs,corrCfg.histRec.branch),_stringifyHistRecForStorage(corrCfg.histRec));
+  _setHistRecLocal(histKey(corrCfg.histDs,corrCfg.histRec.branch),corrCfg.histRec);
 }
 function _corrSectionCapType(section){
   return section==='Refills'?'refill':section==='Private'?'private':section==='Manifold'?'manifold':null;
@@ -13423,7 +13456,7 @@ function _correctSavedLineOpen(ds,rec,lateOverride){
       rec.corrections.push(correctionEntry);
       _pushSharedCorrection(rec._sharedId, correctionEntry);
       syncPush('Adjustments',[{date:ds,branch:rec.branch,Kind:(lateOverride?'HistoricalCorrection48hOverride':'HistoricalCorrection'),Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:byTag}]);
-      localStorage.setItem(histKey(ds,rec.branch),_stringifyHistRecForStorage(rec));
+      _setHistRecLocal(histKey(ds,rec.branch),rec);
       _corrSyncSnapshot(rec); // see _corrSyncSnapshot's own comment - this is what actually makes the correction survive a reload, not just the corrections audit entry above
       auditLog('Historical count corrected'+(lateOverride?' (48h override)':''),ds+' '+sel.tag+': '+oldVal+' \u2192 '+newVal+' by '+byTag+' - '+reason,{was:oldVal},{now:newVal});
       // Daily Sales has no snapshot of its own to fall back on - unlike every other section
