@@ -13087,34 +13087,48 @@ function corrAddModalSubmit(){
   var vals={};
   corrAddFields.forEach(function(f){var el=document.getElementById('caf-'+f.k);vals[f.k]=el?el.value:'';});
   var row=corrAddBuild(vals);
-  if(corrAddKey==='_dailySales'){
-    // No _rid/branch/_date - daily_sales' `lines` array is already scoped to one branch+date
-    // by the table row itself (see dsCommit's own {size,brand,sold,returned} shape).
-    corrCfg.store._dailySales=corrCfg.store._dailySales||[];
-    corrCfg.store._dailySales.push(row);
-    _corrPersistHistRec();
-    sb.from('daily_sales').update({lines:corrCfg.store._dailySales}).eq('branch',corrCfg.branch).eq('date',corrCfg.histDs).select().then(function(res2){
-      if(res2.error||!res2.data||!res2.data.length)toast('Line added locally, but saving to Daily Sales failed - try again',true);
-    },function(){toast('Line added locally, but saving to Daily Sales failed - try again',true);});
-    auditLog('Historical line added',corrCfg.histDs+' '+corrCfg.branch+' (Daily Sales) by '+corrAuth.name,null,row);
+  // Reported live 2026-09-22: pressing "Add line" could leave the modal stuck open forever
+  // with no feedback at all. Root cause: nothing between the row push and corrCloseAddModal()
+  // below was ever wrapped - a throw anywhere in that stretch (e.g. localStorage.setItem
+  // inside _corrPersistHistRec hitting quota, a plausible risk this session given how much
+  // photo data has been stored) aborted the function right there, silently, before
+  // corrCloseAddModal()/onDone() ever ran. Same failure class corrApply() was already
+  // hardened against (see its own _corrFail comment) - corrAddModalSubmit never got the same
+  // treatment. Wrapping the risky work in try/catch and moving close+onDone UNCONDITIONALLY
+  // after it means a failure now shows a clear, can't-miss alert() instead of a modal that
+  // looks dead - and, just as important, the modal always closes either way, so the operator
+  // is never stuck not knowing what to do next.
+  try{
+    if(corrAddKey==='_dailySales'){
+      // No _rid/branch/_date - daily_sales' `lines` array is already scoped to one branch+date
+      // by the table row itself (see dsCommit's own {size,brand,sold,returned} shape).
+      corrCfg.store._dailySales=corrCfg.store._dailySales||[];
+      corrCfg.store._dailySales.push(row);
+      _corrPersistHistRec();
+      sb.from('daily_sales').update({lines:corrCfg.store._dailySales}).eq('branch',corrCfg.branch).eq('date',corrCfg.histDs).select().then(function(res2){
+        if(res2.error||!res2.data||!res2.data.length)toast('Line added locally, but saving to Daily Sales failed - try again',true);
+      },function(){toast('Line added locally, but saving to Daily Sales failed - try again',true);});
+      auditLog('Historical line added',corrCfg.histDs+' '+corrCfg.branch+' (Daily Sales) by '+corrAuth.name,null,row);
+    } else {
+      row._rid=_rid();row.branch=corrCfg.branch;row._date=corrCfg.histDs;
+      (corrCfg.store[corrAddKey]=corrCfg.store[corrAddKey]||[]).push(row);
+      _corrPersistHistRec();
+      _corrSyncSnapshot(corrCfg.histRec); // see _corrSyncSnapshot's own comment - without this, this new line only ever lived in localStorage and vanished on the next reload, same bug as the onApply path
+      // Plain append via syncPush - deliberately NOT using Count's own live/backdate _replaceKey
+      // marker (which tells the backend to WIPE every existing row for that date+branch first) -
+      // this is adding ONE line to an already-closed, already-synced day, so a replace-set here
+      // would silently destroy every other Count row already on the Sheet for that day.
+      if(corrAddSheet){
+        var sheetRows=corrAddSheet.syncFn([row],corrCfg.branch).map(function(x){x.date=corrCfg.histDs;return x;});
+        syncPush(corrAddSheet.type,sheetRows);
+      }
+      auditLog('Historical line added',corrCfg.histDs+' '+corrCfg.branch+' ('+corrAddKey+') by '+corrAuth.name,null,row);
+    }
     toast('Line added ✓');
-    var _onDoneDs=corrAddOnDone;corrCloseAddModal();if(_onDoneDs)_onDoneDs();
-    return;
+  }catch(e){
+    console.error('corrAddModalSubmit failed:',e);
+    alert('The line could not be fully saved:\n\n'+(e&&e.message?e.message:'unknown error')+'\n\nTry again, or tell your Manager/Owner this exact message.');
   }
-  row._rid=_rid();row.branch=corrCfg.branch;row._date=corrCfg.histDs;
-  (corrCfg.store[corrAddKey]=corrCfg.store[corrAddKey]||[]).push(row);
-  _corrPersistHistRec();
-  _corrSyncSnapshot(corrCfg.histRec); // see _corrSyncSnapshot's own comment - without this, this new line only ever lived in localStorage and vanished on the next reload, same bug as the onApply path
-  // Plain append via syncPush - deliberately NOT using Count's own live/backdate _replaceKey
-  // marker (which tells the backend to WIPE every existing row for that date+branch first) -
-  // this is adding ONE line to an already-closed, already-synced day, so a replace-set here
-  // would silently destroy every other Count row already on the Sheet for that day.
-  if(corrAddSheet){
-    var sheetRows=corrAddSheet.syncFn([row],corrCfg.branch).map(function(x){x.date=corrCfg.histDs;return x;});
-    syncPush(corrAddSheet.type,sheetRows);
-  }
-  auditLog('Historical line added',corrCfg.histDs+' '+corrCfg.branch+' ('+corrAddKey+') by '+corrAuth.name,null,row);
-  toast('Line added ✓');
   var onDone=corrAddOnDone;
   corrCloseAddModal();
   if(onDone)onDone();
