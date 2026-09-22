@@ -12195,6 +12195,20 @@ function _closeDayFinalize(bal,br){
 }
 // ===== LOCAL PERSISTENCE (bridge until online storage) =====
 function histKey(date,br){return 'gs_hist_'+date+'_'+br;}
+// Reported live 2026-09-22 (Helderberg 2026-09-21): "Add line" started throwing
+// QuotaExceededError - "Failed to execute 'setItem' on 'Storage': ... exceeded the quota" -
+// on this exact day's gs_hist_ record. Root cause: every localStorage save of a day's record
+// was JSON.stringify-ing the WHOLE thing verbatim, including raw un-uploaded photo blobs
+// (photo/supplierPhoto/photos - each can be several base64 images, easily hundreds of KB to
+// multiple MB per row). This device's own local copy is never the photo's real destination
+// anyway - the photo-upload queue (see PHOTO_QUEUE_LOCAL_FIELD) tracks and uploads them
+// independently, writing back a small link string once done - so the raw blob never needed
+// to be duplicated into this record at all. A JSON.stringify replacer is the cheapest way to
+// drop them (skips a named key anywhere in the tree, no separate clone/pass needed).
+var _HEAVY_PHOTO_FIELDS={photo:1,supplierPhoto:1,photos:1};
+function _stringifyHistRecForStorage(rec){
+  return JSON.stringify(rec,function(key,value){return _HEAVY_PHOTO_FIELDS.hasOwnProperty(key)?undefined:value;});
+}
 // ===== IN-PROGRESS (working) day persistence =====
 // Saves the live captures under today+branch so closing the app doesn't lose them.
 // Cleared only on Close Day. Per-device localStorage (demo).
@@ -12377,7 +12391,7 @@ function saveDayToHistory(br){
     var rec={date:today,branch:br,operator:operator,role:role,closedAt:nowStamp(),closedTs:Date.now(),
       store:snapStore,sig:{op:sigData.sigOp,mgr:sigData.sigMgr},
       closeAuth:store._closeAuth||'',signedBy:{op:sigSignedBy.sigOp,mgr:sigSignedBy.sigMgr}};
-    localStorage.setItem(histKey(today,br),JSON.stringify(rec));
+    localStorage.setItem(histKey(today,br),_stringifyHistRecForStorage(rec));
     var idx=[];try{idx=JSON.parse(localStorage.getItem('gs_hist_index')||'[]');}catch(e){}
     var k=histKey(today,br);if(idx.indexOf(k)<0){idx.push(k);localStorage.setItem('gs_hist_index',JSON.stringify(idx));}
     // CARRY-FORWARD: closing count becomes next day's expected opening (per size+brand+state)
@@ -13028,7 +13042,7 @@ function corrStepEdit(i){
 // photo would only live in memory and vanish on next reload/reopen of this saved day.
 function _corrPersistHistRec(){
   if(!corrCfg.histRec)return;
-  localStorage.setItem(histKey(corrCfg.histDs,corrCfg.histRec.branch),JSON.stringify(corrCfg.histRec));
+  localStorage.setItem(histKey(corrCfg.histDs,corrCfg.histRec.branch),_stringifyHistRecForStorage(corrCfg.histRec));
 }
 function _corrSectionCapType(section){
   return section==='Refills'?'refill':section==='Private'?'private':section==='Manifold'?'manifold':null;
@@ -13409,7 +13423,7 @@ function _correctSavedLineOpen(ds,rec,lateOverride){
       rec.corrections.push(correctionEntry);
       _pushSharedCorrection(rec._sharedId, correctionEntry);
       syncPush('Adjustments',[{date:ds,branch:rec.branch,Kind:(lateOverride?'HistoricalCorrection48hOverride':'HistoricalCorrection'),Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:byTag}]);
-      localStorage.setItem(histKey(ds,rec.branch),JSON.stringify(rec));
+      localStorage.setItem(histKey(ds,rec.branch),_stringifyHistRecForStorage(rec));
       _corrSyncSnapshot(rec); // see _corrSyncSnapshot's own comment - this is what actually makes the correction survive a reload, not just the corrections audit entry above
       auditLog('Historical count corrected'+(lateOverride?' (48h override)':''),ds+' '+sel.tag+': '+oldVal+' \u2192 '+newVal+' by '+byTag+' - '+reason,{was:oldVal},{now:newVal});
       // Daily Sales has no snapshot of its own to fall back on - unlike every other section
