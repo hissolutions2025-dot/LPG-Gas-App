@@ -12550,9 +12550,17 @@ function openCorrection(cfg){
 function corrStepSection(){
   var secs=corrCfg.sections||['Opening','Closing','Received','Refills','Private','Manifold'];
   var html='<div style="font-size:12px;color:var(--muted);margin-bottom:10px">Authorised as <b>'+corrAuth.name+'</b>. Choose the section to correct:</div>';
+  // Reported live 2026-09-21/22: a section with ZERO existing lines (e.g. Refills, when an
+  // operator's seal-roll issue meant nothing ever committed that day) was disabled here -
+  // exactly the case the historical tool's "+Add X line" feature (bf89fa9, all sections) was
+  // built for, but nobody could ever reach it: this picker refused entry before that button
+  // ever had a chance to render. corrCfg.histRec (only true for the 48-hour historical tool,
+  // never the same-day Adjust tools) now keeps every section tappable regardless of line
+  // count, since every section has its own add-line path by now.
   secs.forEach(function(s){
     var n=corrLines(corrCfg.store,s,corrCfg.branch).length;
-    html+='<button class="sigClear" style="width:100%;margin-bottom:6px;text-align:left'+(n?'':';opacity:.4')+'" '+(n?('onclick="corrStepLines(\''+s+'\')"'):'disabled')+'>'+s+' <span style="color:var(--muted)">('+n+' line'+(n===1?'':'s')+')</span></button>';
+    var canEnter=n>0||corrCfg.histRec;
+    html+='<button class="sigClear" style="width:100%;margin-bottom:6px;text-align:left'+(canEnter?'':';opacity:.4')+'" '+(canEnter?('onclick="corrStepLines(\''+s+'\')"'):'disabled')+'>'+s+' <span style="color:var(--muted)">('+n+' line'+(n===1?'':'s')+')</span></button>';
   });
   document.getElementById('corrBody').innerHTML=html;
 }
