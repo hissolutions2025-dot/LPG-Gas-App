@@ -7455,8 +7455,15 @@ function _countFlushQueue(){
       return sb.from('stock_counts').upsert(entry.rows,{onConflict:'branch,date,count_type,state,size,brand'}).then(function(res){
         if(!res.error){_countQueueRemove(entry.id);_updateCountPendingBadge();}
         // any error: leave it queued, already-current in localStorage - retried next flush.
-      }).catch(function(){
+        // Diagnostic added 2026-09-23 after a real report of a count stuck "waiting to
+        // sync" overnight across multiple sign-ins - this branch previously swallowed
+        // res.error completely (not even a console.log), so there was no way to tell a
+        // genuine, permanently-rejected upsert (bad RLS, schema mismatch) apart from a
+        // transient network blip that would clear on its own.
+        else console.error('stock_counts retry-flush upsert failed (entry stays queued):',entry.id,res.error.message||res.error);
+      }).catch(function(e){
         // network-level failure - leave it queued, try again next flush.
+        console.error('stock_counts retry-flush network error (entry stays queued):',entry.id,e&&e.message);
       });
     });
   }, Promise.resolve()).then(reset, reset);
