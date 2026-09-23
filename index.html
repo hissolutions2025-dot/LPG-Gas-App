@@ -7450,9 +7450,16 @@ function _countFlushQueue(){
   // device can commit/correct the same line more than once while offline, and
   // firing both upserts in parallel would let whichever network response lands
   // second silently win, possibly reverting a correction back to the stale value.
+  // defaultToNull:false - root cause found 2026-09-23 for a count stuck queued overnight,
+  // via the diagnostic logging added just above: supabase-js's default upsert behaviour
+  // coerces any key ABSENT from a row (e.g. a correction row, which deliberately omits
+  // updated_at/updated_by - see _stockCountToSharedRow) into an explicit NULL in the
+  // generated request, rather than leaving the column untouched/defaulted as the comments
+  // there assume. That explicit NULL then violates stock_counts.updated_at's NOT NULL
+  // constraint every single retry (23502), forever, with the row never clearing.
   q.reduce(function(p,entry){
     return p.then(function(){
-      return sb.from('stock_counts').upsert(entry.rows,{onConflict:'branch,date,count_type,state,size,brand'}).then(function(res){
+      return sb.from('stock_counts').upsert(entry.rows,{onConflict:'branch,date,count_type,state,size,brand',defaultToNull:false}).then(function(res){
         if(!res.error){_countQueueRemove(entry.id);_updateCountPendingBadge();}
         // any error: leave it queued, already-current in localStorage - retried next flush.
         // Diagnostic added 2026-09-23 after a real report of a count stuck "waiting to
@@ -7536,7 +7543,7 @@ function _stockCountsUpsert(freshRows){
   _stockCountsUpsertChain=_stockCountsUpsertChain.then(function(){
     function queueAndSwallow(){_countQueuePush(sharedRows);}
     try{
-      return sb.from('stock_counts').upsert(sharedRows,{onConflict:'branch,date,count_type,state,size,brand'}).then(function(res){
+      return sb.from('stock_counts').upsert(sharedRows,{onConflict:'branch,date,count_type,state,size,brand',defaultToNull:false}).then(function(res){
         if(res.error){
           console.error('stock_counts upsert failed, queuing:',res.error.message);
           queueAndSwallow();
