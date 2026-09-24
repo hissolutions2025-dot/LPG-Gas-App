@@ -12185,6 +12185,17 @@ function _updatePhotoQueuePendingBadge(){
 var PHOTO_QUEUE_SHEET={manifold:'Manifold',refill:'Refills',private:'Private',received:'Received',residual:'ResidualGas'};
 var PHOTO_QUEUE_LINK_FIELD={manifold:'PhotoLink',refill:'PhotoLinks',private:'PhotoLinks',received:'PhotoLinks',residual:'PhotoLinks'};
 var PHOTO_QUEUE_LOCAL_FIELD={manifold:'_photoLink',refill:'_photoLink',private:'photoLinks',received:'photoLinks',residual:'photoLinks'};
+// Shared "has a photo already reached this row?" label for the correction picker's photo
+// button - added 2026-09-24 so a Manager/Owner adjusting an entry can tell at a glance
+// instead of the button reading the same "+ Add/retry photo" text whether or not one
+// exists. Reuses PHOTO_QUEUE_LOCAL_FIELD (the exact field _photoQueueWriteBack itself
+// writes the confirmed link into) so this can never drift out of sync with what actually
+// reflects a successful write-back.
+function _corrPhotoButtonLabel(capType,row){
+  var linkField=PHOTO_QUEUE_LOCAL_FIELD[capType];
+  var has=linkField&&row&&row[linkField];
+  return has?'✓ Photo on file — tap to replace':'+ Add photo for this line';
+}
 // Writes an uploaded photo link set back onto an already-committed row, three places: the
 // local copy (so Review/History shows it immediately without waiting on anything else), the
 // Sheet row in place (adjustSheetRow - same mechanism the same-day Adjust tool already uses,
@@ -12804,14 +12815,18 @@ function corrStepLines(section){
       html+='<button type="button" class="sigClear" style="width:100%;margin-bottom:8px" onclick="corrOpenAddDailySalesLine()">+ Add Daily Sales line</button>';
     }
   }
-  // Daily Sales rows never had a photo field - only offer this for Refills/Private, and only
-  // inside the historical tool (corrCfg.histRec), never the same-day Adjust tools (Task 11
-  // already covers those via the live Review screen's own button).
-  var showPhoto=corrCfg.histRec&&(section==='Refills'||section==='Private');
+  // Daily Sales rows never had a photo field - not offered for that section. Every other
+  // section that DOES have one (Refills/Private/Residual - Manifold has its own picker
+  // below, Received its own group picker) now shows this in BOTH the same-day Adjust tools
+  // AND the 48-hour historical tool - was histRec-gated to the historical tool only until
+  // 2026-09-24, when a live report asked why a same-day correction couldn't see or replace
+  // an already-attached photo at all.
+  var showPhoto=(section==='Refills'||section==='Private'||section==='Residual');
+  var _photoCapType=showPhoto?_corrSectionCapType(section):null;
   lines.forEach(function(l,i){
     html+='<button class="sigClear" style="width:100%;margin-bottom:6px;text-align:left" onclick="corrStepEdit('+i+')">'+l.label+'</button>';
     if(showPhoto&&l.row&&l.row._rid){
-      html+='<button type="button" class="sigClear" style="width:100%;margin:-2px 0 8px;text-align:left;font-size:11px;opacity:.85" onclick="_corrOpenAddPhotoFor('+i+')">+ Add/retry photo for this line</button>';
+      html+='<button type="button" class="sigClear" style="width:100%;margin:-2px 0 8px;text-align:left;font-size:11px;opacity:.85" onclick="_corrOpenAddPhotoFor('+i+')">'+_corrPhotoButtonLabel(_photoCapType,l.row)+'</button>';
     }
   });
   if(!lines.length)html+='<div class="histEmpty">No populated lines in this section.</div>';
@@ -12857,15 +12872,21 @@ function corrStepReceivedGroups(){
       (ref?'<div style="font-size:11px;color:var(--muted);margin-top:4px">'+ref+'</div>':'')+
       '</button>';
   });
-  if(corrCfg.histRec){
-    var pgroups=_corrTodaysDeliveryGroups();
-    if(pgroups.length){
-      html+='<div style="font-size:12px;color:var(--muted);margin:10px 0 4px">Add/retry a delivery photo:</div>';
-      html+=pgroups.map(function(g){
-        var status=g.hasPhoto?'✓ photo on file':'— no photo';
-        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #EEF1F4;font-size:12px"><span>'+(g.supplier)+(g.invoiceNo?' · Inv '+g.invoiceNo:'')+' — '+status+'</span><button type="button" class="sigClear" style="padding:3px 8px;font-size:10px" onclick=\'_corrOpenAddPhotoForReceivedGroup('+JSON.stringify(g.rowRids)+')\'>+ Add/retry photo</button></div>';
-      }).join('');
-    }
+  // Was histRec-gated (historical tool only) until 2026-09-24 - same-day now shows this too,
+  // reusing rReview()'s own live-store groups (_rTodaysDeliveryGroups) + its own handler
+  // (_openAddPhotoForReceivedGroup, already live-store-safe - it was built for rReview,
+  // never touches corrCfg.histRec machinery) instead of the historical-snapshot pair, since
+  // corrCfg.store here is either the live store or the historical snapshot depending on
+  // which tool opened this picker - same branch-on-histRec pattern used throughout this file.
+  var pgroups=corrCfg.histRec?_corrTodaysDeliveryGroups():_rTodaysDeliveryGroups(corrCfg.branch);
+  if(pgroups.length){
+    html+='<div style="font-size:12px;color:var(--muted);margin:10px 0 4px">Add/retry a delivery photo:</div>';
+    html+=pgroups.map(function(g){
+      var hasPhoto=corrCfg.histRec?g.hasPhoto:!!g.photoLinks;
+      var status=hasPhoto?'✓ photo on file':'— no photo';
+      var handler=corrCfg.histRec?'_corrOpenAddPhotoForReceivedGroup':'_openAddPhotoForReceivedGroup';
+      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #EEF1F4;font-size:12px"><span>'+(g.supplier)+(g.invoiceNo?' · Inv '+g.invoiceNo:'')+' — '+status+'</span><button type="button" class="sigClear" style="padding:3px 8px;font-size:10px" onclick=\''+handler+'('+JSON.stringify(g.rowRids)+')\'>'+(hasPhoto?'+ Retry photo':'+ Add photo')+'</button></div>';
+    }).join('');
   }
   document.getElementById('corrBody').innerHTML=html;
 }
@@ -13137,8 +13158,10 @@ function corrStepManifoldList(){
   }
   lines.forEach(function(l,i){
     html+='<button class="sigClear" style="width:100%;margin-bottom:6px;text-align:left" onclick="corrStepManifoldEdit('+i+')">'+l.label+'</button>';
-    if(corrCfg.histRec&&l.row&&l.row._rid){
-      html+='<button type="button" class="sigClear" style="width:100%;margin:-2px 0 8px;text-align:left;font-size:11px;opacity:.85" onclick="_corrOpenAddPhotoFor('+i+')">+ Add/retry photo for this line</button>';
+    // Was histRec-gated (historical tool only) until 2026-09-24 - see corrStepLines' own
+    // comment on the identical change for Refills/Private/Residual.
+    if(l.row&&l.row._rid){
+      html+='<button type="button" class="sigClear" style="width:100%;margin:-2px 0 8px;text-align:left;font-size:11px;opacity:.85" onclick="_corrOpenAddPhotoFor('+i+')">'+_corrPhotoButtonLabel('manifold',l.row)+'</button>';
     }
   });
   if(!lines.length)html+='<div class="histEmpty">No populated lines in this section.</div>';
@@ -13324,7 +13347,7 @@ function _corrPersistHistRec(){
   _setHistRecLocal(histKey(corrCfg.histDs,corrCfg.histRec.branch),corrCfg.histRec);
 }
 function _corrSectionCapType(section){
-  return section==='Refills'?'refill':section==='Private'?'private':section==='Manifold'?'manifold':null;
+  return section==='Refills'?'refill':section==='Private'?'private':section==='Manifold'?'manifold':section==='Residual'?'residual':null;
 }
 // ---- "Add a new line" for the 48-hour historical tool, added 2026-09-21 after a real gap:
 // an operator's Manifold count never actually saved on a day that otherwise closed fine, and
@@ -13466,15 +13489,17 @@ function corrOpenAddCountLine(section){
     function(){corrStepLines(section);}
   );
 }
-// Manual add/retry photo for the 48-hour historical correction tool - only ever reachable
-// when corrCfg.histRec is set (see Step 1), so this never renders inside the same-day Adjust
-// tools, which already have their own manual-add button on the live Review screen (Task 11).
-// Reuses _pickPhotoFile (Task 11) for the picker itself. Beyond queuing the upload exactly
-// like Task 11 does, this ALSO pushes the raw photo onto rec.store's own row so the
-// historical view (which renders straight from rec.store - see the shared report table
-// builder around index.html ~13803-13818) shows it immediately, without waiting for the
-// background queue - the queue's own write-back only ever reaches the LIVE store[capType],
-// a separate, already-diverged copy from this closed day's frozen snapshot.
+// Manual add/retry photo, shared by the 48-hour historical correction tool AND (since
+// 2026-09-24) the same-day Adjust tools - corrCfg.histRec tells us which context we're in,
+// so both the persistence step below and _photoQueueAdd's date branch on it correctly.
+// Reuses _pickPhotoFile (Task 11) for the picker itself. In the historical case, this ALSO
+// pushes the raw photo onto rec.store's own row so the historical view (which renders
+// straight from rec.store - see the shared report table builder around index.html
+// ~13803-13818) shows it immediately, without waiting for the background queue - the
+// queue's own write-back only ever reaches the LIVE store[capType], a separate,
+// already-diverged copy from a closed day's frozen snapshot. Same-day rows don't need
+// that: row IS the live store[capType] entry already (corrLines never clones), so a plain
+// saveWorkingStore() is enough.
 function _corrOpenAddPhotoFor(i){
   var l=corrCfg._lines[i];
   var row=l&&l.row;
@@ -13482,11 +13507,11 @@ function _corrOpenAddPhotoFor(i){
   var capType=_corrSectionCapType(corrCfg._section);
   if(!capType)return;
   _pickPhotoFile(function(dataUri){
-    var photoField=(capType==='private'?'supplierPhoto':'photo');
+    var photoField=(capType==='private'?'supplierPhoto':capType==='residual'?'photos':'photo');
     (row[photoField]=row[photoField]||[]).push(dataUri);
-    var category=(capType==='manifold'?'Manifold':capType==='refill'?'Refill':'Private');
-    _photoQueueAdd({capType:capType,branch:corrCfg.branch,date:corrCfg.histDs,rowRid:row._rid,category:category,photos:[dataUri]});
-    _corrPersistHistRec();
+    var category=(capType==='manifold'?'Manifold':capType==='refill'?'Refill':capType==='residual'?'Residual':'Private');
+    _photoQueueAdd({capType:capType,branch:corrCfg.branch,date:(corrCfg.histDs||today),rowRid:row._rid,category:category,photos:[dataUri]});
+    if(corrCfg.histRec)_corrPersistHistRec();else saveWorkingStore();
     // Found in code review 2026-09-22: every OTHER mutation path in this tool (onApply,
     // corrAddModalSubmit, corrDeleteLine) was updated to also push to Supabase's
     // corrected_snapshot, specifically because loadSavedDayShared() re-fetches from Supabase
