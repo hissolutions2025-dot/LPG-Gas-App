@@ -4157,7 +4157,9 @@ async function residualSubmit(){
       _queuedPhotoCount++;
     });
     var rows=residualList.map(function(r){
-      return {Branch:r.Branch,Operator:operator,Role:role,Brand:r.Brand,Size:r.Size,GasType:r.GasType,CylScale:r.CylScale,CylTare:r.CylTare,Note:r.Note,PhotoLinks:(r.photoLinks||'')};
+      // RowId (v18 backend) - stamped above (alongside residualList) only for rows that
+      // have photos queued, same as every other capType; a photo-less row never needs one.
+      return {Branch:r.Branch,Operator:operator,Role:role,Brand:r.Brand,Size:r.Size,GasType:r.GasType,CylScale:r.CylScale,CylTare:r.CylTare,Note:r.Note,PhotoLinks:(r.photoLinks||''),RowId:(r._rid||'')};
     });
     var res=await apiPost('residualLog',{rows:rows});
     if(!res||!res.ok){toast((res&&res.msg)||'Could not submit residual gas',true);return;}
@@ -5058,12 +5060,40 @@ function _rid(){return 'r'+Date.now().toString(36)+Math.random().toString(36).sl
 // A row committed before backend v13 has no _rid and this silently no-ops for it (the local
 // fix + Adjustments log still happen regardless, exactly as before v13 existed) - there's
 // no reliable way to find that row on the sheet without an id to match on.
+// Returns a Promise<boolean> (never rejects) so callers that need to know whether the
+// sheet-side write actually succeeded - not just fire-and-forget it - can await/chain on
+// it. Previously this function never returned its own promise chain at all, so EVERY
+// caller got back plain `undefined` regardless of outcome - harmless for the same-day
+// Adjust callers (toast-only, nothing else depended on the result), but a real bug for
+// _photoQueueWriteBack (see its own comment) which needs to know whether to keep an entry
+// queued for retry. Adding `return` here is purely additive - no existing bare-statement
+// caller is affected by suddenly having a return value available.
 function adjustSheetRow(sheet,rowId,updates){
-  if(!rowId)return;
-  apiPost('adjustRow',{sheet:sheet,rowId:rowId,updates:updates}).then(function(res){
-    if(!res||!res.ok)toast('Correction saved locally, but could not update the '+sheet+' sheet row (it may predate row tracking) - see Adjustments tab',true);
+  if(!rowId)return Promise.resolve(true); // no id to match on (predates row tracking) - nothing to correct, not a failure
+  return apiPost('adjustRow',{sheet:sheet,rowId:rowId,updates:updates}).then(function(res){
+    var ok=!!(res&&res.ok);
+    if(!ok)toast('Correction saved locally, but could not update the '+sheet+' sheet row (it may predate row tracking) - see Adjustments tab',true);
+    return ok;
   }).catch(function(){
     toast('Correction saved locally, but could not reach the server to update the '+sheet+' sheet row',true);
+    return false;
+  });
+}
+// ResidualGas equivalent of adjustSheetRow - ResidualGas isn't part of the generic TABS
+// map (see PHOTO_QUEUE_SHEET's comment / _handleResidual's own comment on the backend), so
+// it can't go through apiPost('adjustRow',...); it has its own 'residualUpdate' backend
+// action instead (apps-script/gas-sales-v18.gs). Needs backend v18+ - on an older backend
+// this comes back as an ordinary {ok:false} (unknown type), which this already treats as a
+// normal failure (toast, retried by the photo queue), not a crash.
+function adjustResidualRow(rowId,updates){
+  if(!rowId)return Promise.resolve(true);
+  return apiPost('residualUpdate',{rowId:rowId,updates:updates}).then(function(res){
+    var ok=!!(res&&res.ok);
+    if(!ok)toast('Correction saved locally, but could not update the ResidualGas sheet row (it may predate row tracking, or the backend needs updating to v18) - see Adjustments tab',true);
+    return ok;
+  }).catch(function(){
+    toast('Correction saved locally, but could not reach the server to update the ResidualGas sheet row',true);
+    return false;
   });
 }
 // build row objects for each type from the committed data
@@ -12092,11 +12122,10 @@ function _updatePhotoQueuePendingBadge(){
     el.textContent=text;
   });
 }
-// Per-capType sheet/field mapping for photo write-back. sheet:null means "no known sheet-
-// level correction path yet" (Residual - see this plan's own "known gap" note); the write-
-// back still updates the local copy and (for the 4 with a mirror table) the live mirror, it
-// just skips the adjustSheetRow call for residual until the backend question is settled.
-var PHOTO_QUEUE_SHEET={manifold:'Manifold',refill:'Refills',private:'Private',received:'Received',residual:null};
+// Per-capType sheet/field mapping for photo write-back. residual:'ResidualGas' as of v18
+// (was null - see _photoQueueWriteBack's own comment on the earlier "known gap"; ResidualGas
+// now has its own RowId column and 'residualUpdate' backend action, apps-script/gas-sales-v18.gs).
+var PHOTO_QUEUE_SHEET={manifold:'Manifold',refill:'Refills',private:'Private',received:'Received',residual:'ResidualGas'};
 var PHOTO_QUEUE_LINK_FIELD={manifold:'PhotoLink',refill:'PhotoLinks',private:'PhotoLinks',received:'PhotoLinks',residual:'PhotoLinks'};
 var PHOTO_QUEUE_LOCAL_FIELD={manifold:'_photoLink',refill:'_photoLink',private:'photoLinks',received:'photoLinks',residual:'photoLinks'};
 // Writes an uploaded photo link set back onto an already-committed row, three places: the
@@ -12119,12 +12148,34 @@ function _photoQueueWriteBack(entry,links){
     if(row)row[localField]=links;
   });
   saveWorkingStore();
+  // Sheet-side write-back - genuinely awaited and its failure propagated now. Root-caused
+  // 2026-09-24 from a live report of Manifold photos never reaching the Photo Link column:
+  // adjustSheetRow(...) used to be called here fire-and-forget (its own return value
+  // discarded, and until the same fix above it didn't even RETURN its promise chain), so
+  // _photoQueueProcess removed this queue entry as soon as the much-faster live-mirror
+  // update below resolved - regardless of whether the Sheet update had even finished, let
+  // alone succeeded. A genuine Sheet-side failure (network blip, row not found) then had no
+  // retry and left no trace once its one-off toast disappeared. Now sheetWrite REJECTS if
+  // any row's sheet update fails, so the caller (_photoQueueProcess's outer .catch()) keeps
+  // this entry queued and retries, same as every other failure path there.
   var sheet=PHOTO_QUEUE_SHEET[entry.capType];
+  var sheetWrite=Promise.resolve();
   if(sheet){
     var linkField=PHOTO_QUEUE_LINK_FIELD[entry.capType];
     var updates={};updates[linkField]=links;
-    rowRids.forEach(function(rid){adjustSheetRow(sheet,rid,updates);});
+    // Residual isn't in the generic TABS map (own tab, own 'residualUpdate' action - see
+    // adjustResidualRow's comment) - every other capType goes through adjustSheetRow.
+    var writeOne=(entry.capType==='residual')
+      ? function(rid){return adjustResidualRow(rid,updates);}
+      : function(rid){return adjustSheetRow(sheet,rid,updates);};
+    sheetWrite=Promise.all(rowRids.map(writeOne)).then(function(results){
+      if(results.indexOf(false)>-1)throw new Error('Sheet row update failed for '+sheet+' (rowRids: '+rowRids.join(',')+')');
+    });
   }
+  var mirrorWrite=_photoQueueMirrorWrite(entry,links,rowRids,localField);
+  return Promise.all([sheetWrite,mirrorWrite]).then(function(){}); // rejects (keeping the entry queued) iff sheetWrite rejected
+}
+function _photoQueueMirrorWrite(entry,links,rowRids,localField){
   if(entry.capType==='manifold'){
     return _updateManifoldLiveRowFields(entry.rowRid,{_photoLink:links});
   }

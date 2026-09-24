@@ -1,6 +1,26 @@
 /**
- * GAS SALES - BOUND Apps Script v17 (v16 + Faulty Cylinders Date-Range Read)
+ * GAS SALES - BOUND Apps Script v18 (v17 + Residual Gas row tracking)
  * Lives INSIDE the master Google Sheet. Writes the full who/when/why schema.
+ *
+ * v18 changes vs v17:
+ *   1. RESIDUAL GAS ROW TRACKING: every other capture tab that supports a photo
+ *      (Refills, Private, Received, Manifold) has a RowId column and an 'adjustRow'
+ *      path that lets a same-day correction OR a background photo-upload write-back
+ *      correct the ORIGINAL sheet row in place - ResidualGas never had either, because
+ *      it isn't part of the generic TABS map (it's Model A - daily input, no lifecycle,
+ *      hand-rolled in _handleResidual, not routed through the generic writer in doPost).
+ *      Confirmed live 2026-09-24: a Residual Gas photo uploads to Drive fine and shows
+ *      in the app (via the capture_live_rows mirror), but the Photo Link(s) cell on the
+ *      ResidualGas sheet tab itself stays permanently blank forever - there was no
+ *      mechanism to ever write it there after the row's initial append (frontend's
+ *      PHOTO_QUEUE_SHEET.residual was literally set to null on purpose, a known,
+ *      documented gap until this version). Fixed the same way Transfers (v16) solved
+ *      the identical "own tab, not in the generic TABS map" problem: RESIDUAL_HEADERS/
+ *      RESIDUAL_KEYS gain a trailing RowId column (frontend now stamps one per
+ *      cylinder row, same _rid() used everywhere else), and a new 'residualUpdate'
+ *      action (_handleResidualUpdate, mirrors _handleTransferUpdate exactly) finds a
+ *      ResidualGas row by that id and updates only the named field(s) in place. Needs
+ *      applyV18Updates() run ONCE after pasting - see below.
  *
  * v17 changes vs v16:
  *   1. FAULTY CYLINDERS - DATE-RANGE READ: Phase 3's Date-Range Stock Balance report
@@ -192,14 +212,13 @@
  *
  * SETUP: Extensions > Apps Script > select all > delete > paste this whole file > Save >
  *        Deploy > Manage deployments > edit existing deployment > New version > Deploy.
- *        Confirm the /exec URL returns "Gas Sales v17 endpoint live".
- *        You're already on v16 live, and v17 needs NO migration function to run either -
- *        faultyListRange is a new read-only action on the existing Faulty sheet, no
- *        schema change, so there's nothing to run by hand for it.
+ *        Confirm the /exec URL returns "Gas Sales v18 endpoint live".
+ *        Then run applyV18Updates() ONCE (Run > select it from the function dropdown >
+ *        Run) to add the ResidualGas tab's new "Row Id" header cell.
  *        (If setting this up completely fresh: run the older one-off migrations first, in
  *        order - fixReconSheets() from v8, applyV9Updates(), applyV10Updates(),
  *        applyV11Updates(), applyV12Updates(), applyV13Updates(), protectRowIdColumns(),
- *        applyV15Updates() - v16 and v17 need nothing extra.)
+ *        applyV15Updates(), applyV18Updates() - v16 and v17 need nothing extra.)
  */
 
 var SECRET = '4bV-Qd9UwxAqaImpNUzBY6AKSU6qCriJ';
@@ -309,6 +328,12 @@ function doPost(e){
     // ===================== end v17 NEW =====================
     if(type==='residualLog'){
       return _handleResidual(body);
+    }
+    // v18: same in-place-update-only guarantee as _handleAdjustRow/_handleTransferUpdate -
+    // ResidualGas isn't in the generic TABS map (hand-rolled tab, see _handleResidual's own
+    // comment), so it needs its own action rather than routing through 'adjustRow'.
+    if(type==='residualUpdate'){
+      return _handleResidualUpdate(body);
     }
     if(type==='suppliersList'||type==='suppliersSave'||type==='suppliersRemove'){
       return _handleSuppliers(type, body);
@@ -462,7 +487,7 @@ function _photoLinksRichText(urls){
   return builder.build();
 }
 
-function doGet(){ return _json({ok:true,msg:'Gas Sales v17 endpoint live'}); }
+function doGet(){ return _json({ok:true,msg:'Gas Sales v18 endpoint live'}); }
 function _json(o){ return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
 
 // ===================== v4 NEW (v9: gains OperatorNote): FAULTY CYLINDERS =====================
@@ -604,16 +629,19 @@ function _handleFaultyListRange(body){
   return _json({ok:true, rows:rows});
 }
 
-// ===================== v4 NEW: RESIDUAL GAS (v13: gains PhotoLinks) =====================
+// ===================== v4 NEW: RESIDUAL GAS (v13: gains PhotoLinks, v18: gains RowId) =====
 // Sheet "ResidualGas" columns: Timestamp | Date | Time | Branch | Operator | Role |
-//   Brand | Size | GasType | CylScale | CylTare | Residual | Note | Photo Link(s)
+//   Brand | Size | GasType | CylScale | CylTare | Residual | Note | Photo Link(s) | Row Id
 // Model A: daily input, no lifecycle. residualLog appends one row per cylinder in the batch.
 // RESIDUAL_KEYS (v13) mirrors the generic TABS[] shape (field names, in column order, AFTER
 // the META block) purely so _writePhotoLinksRichText() - built for the generic TABS writer -
 // can be reused here too, even though this handler is otherwise hand-rolled, not routed
-// through the generic writer.
-var RESIDUAL_HEADERS = ['Timestamp','Date','Time','Branch','Operator','Role','Brand','Size','GasType','CylScale','CylTare','Residual','Note','Photo Link(s)'];
-var RESIDUAL_KEYS = ['Operator','Role','Brand','Size','GasType','CylScale','CylTare','Residual','Note','PhotoLinks'];
+// through the generic writer. v18: RowId appended (client-generated id, same _rid() every
+// other capture row already uses) so _handleResidualUpdate can find and correct a specific
+// row in place - a row committed before v18 has no RowId and simply can't be targeted this
+// way, same "predates row tracking" convention as the other 4 tabs since v13.
+var RESIDUAL_HEADERS = ['Timestamp','Date','Time','Branch','Operator','Role','Brand','Size','GasType','CylScale','CylTare','Residual','Note','Photo Link(s)','Row Id'];
+var RESIDUAL_KEYS = ['Operator','Role','Brand','Size','GasType','CylScale','CylTare','Residual','Note','PhotoLinks','RowId'];
 
 function _residualSheet(){
   var ss=_ss();
@@ -636,12 +664,45 @@ function _handleResidual(body){
   var out=rows.map(function(r){
     var scale=Number(r.CylScale)||0, tare=Number(r.CylTare)||0;
     var residual=Math.max(0, scale-tare);
-    return [now, dOnly, now, r.Branch||'', r.Operator||body.caller||'', r.Role||'', r.Brand||'', r.Size||'', r.GasType||'', scale, tare, residual, r.Note||'', r.PhotoLinks||''];
+    return [now, dOnly, now, r.Branch||'', r.Operator||body.caller||'', r.Role||'', r.Brand||'', r.Size||'', r.GasType||'', scale, tare, residual, r.Note||'', r.PhotoLinks||'', r.RowId||''];
   });
   var startRow=sh.getLastRow()+1;
   sh.getRange(startRow,1,out.length,out[0].length).setValues(out);
   _writePhotoLinksRichText(sh, startRow, rows, RESIDUAL_KEYS); // shortens the raw comma-joined URL(s) into linked "📷1, 📷2" cells, same as Received/Private/Manifold
   return _json({ok:true, wrote:out.length});
+}
+
+// ===================== v18 NEW: RESIDUAL GAS ROW UPDATE =====================
+// body: {rowId:'<the row's RowId>', updates:{FieldName:newValue, ...}}
+// Same shape and same in-place-update-only guarantee as _handleAdjustRow/_handleTransferUpdate
+// (never appends, so this can never double a row) - kept as its own function rather than
+// routed through _handleAdjustRow because ResidualGas isn't written through the generic
+// TABS-driven writer (residualLog writes it directly via _handleResidual above), even
+// though it shares the same RESIDUAL_KEYS array shape for column lookup.
+function _handleResidualUpdate(body){
+  if(!body.rowId) return _json({ok:false,error:'no rowId supplied'});
+  var sh=_residualSheet();
+  var ridIdx=RESIDUAL_KEYS.indexOf('RowId');
+  if(ridIdx===-1) return _json({ok:false,error:'ResidualGas has no RowId column - run applyV18Updates() first'});
+  var last=sh.getLastRow();
+  if(last<2) return _json({ok:false,error:'row not found (sheet is empty): '+body.rowId});
+  var ridCol=META.length+ridIdx+1;
+  var ids=sh.getRange(2,ridCol,last-1,1).getValues();
+  var rowIndex=-1;
+  for(var i=0;i<ids.length;i++){
+    if(String(ids[i][0])===String(body.rowId)){ rowIndex=i+2; break; }
+  }
+  if(rowIndex===-1) return _json({ok:false,error:'row not found for id: '+body.rowId});
+  var updates=body.updates||{};
+  var applied=[];
+  Object.keys(updates).forEach(function(k){
+    var kIdx=RESIDUAL_KEYS.indexOf(k);
+    if(kIdx===-1) return; // unknown field name - ignore it, don't fail the whole request over it
+    sh.getRange(rowIndex,META.length+kIdx+1).setValue(updates[k]);
+    applied.push(k);
+  });
+  if(applied.length===0) return _json({ok:false,error:'none of the given field names matched ResidualGas\'s columns'});
+  return _json({ok:true, rowIndex:rowIndex, applied:applied});
 }
 
 // ===================== v4 NEW: SUPPLIERS (Manage Suppliers / Stock Received / Private Refill) =====================
@@ -1216,6 +1277,24 @@ function applyV15Updates(){
   var col = META.length + idx + 1;
   var cell = sh.getRange(1, col);
   if(String(cell.getValue()||'').trim()==='') cell.setValue('Photo Link(s)');
+  cell.setFontWeight('bold');
+  SpreadsheetApp.flush();
+}
+
+// ===================== v18 NEW: RESIDUAL GAS ROW ID HEADER =====================
+// Run applyV18Updates() ONCE after pasting. Safe to run more than once (it only sets the
+// "Row Id" header cell on the ResidualGas tab if it isn't already there) - not a
+// row-inserting migration. Existing ResidualGas rows are left exactly as they are (blank
+// RowId = "predates row tracking" - same-day/background photo write-backs on those
+// specific rows just can't reach the sheet row directly, identical to how a pre-v13 row on
+// the other 4 tabs already behaves).
+function applyV18Updates(){
+  var sh = _residualSheet(); // creates the sheet with all headers (including Row Id) if missing
+  var idx = RESIDUAL_KEYS.indexOf('RowId');
+  if(idx===-1) return;
+  var col = META.length + idx + 1;
+  var cell = sh.getRange(1, col);
+  if(String(cell.getValue()||'').trim()==='') cell.setValue('Row Id');
   cell.setFontWeight('bold');
   SpreadsheetApp.flush();
 }
