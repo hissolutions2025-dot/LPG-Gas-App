@@ -1,6 +1,32 @@
 /**
- * GAS SALES - BOUND Apps Script v19 (v18 + Faulty Cylinders photo)
+ * GAS SALES - BOUND Apps Script v20 (v19 + code-review fixes)
  * Lives INSIDE the master Google Sheet. Writes the full who/when/why schema.
+ *
+ * v20 changes vs v19 (from an xhigh-effort code review of the v18/v19 diff):
+ *   1. FAULTY DATECLOSED CORRUPTION FIX: a photo-only faultyUpdate call (body has
+ *      {id,photoLink}, no status - exactly what adjustFaultyRow sends) fell back to the
+ *      row's EXISTING status (`body.status||hit.data[16]`), which re-evaluated `closing`
+ *      as true for an already-closed row and silently re-stamped DateClosed to "now" on
+ *      every photo retry - corrupting which date-range report a cylinder's booked gas
+ *      loss was counted in (_handleFaultyListRange buckets by DateClosed). Fixed by only
+ *      running the status/GasLoss/DateClosed logic at all when body.status is actually
+ *      present - a photo-only call now touches nothing but PhotoLink, matching the
+ *      "only apply what's named" convention the v19 UpliftDN/ReturnDN fix already used.
+ *   2. FAULTYLISTRANGE PHOTOLINK PARITY: faultyListOpen's row shape gained PhotoLink in
+ *      v19; faultyListRange (the date-range read added in v17) was missed - now matches.
+ *   3. RESIDUALGAS JOINS THE GENERIC TABS MECHANISM: v18 gave ResidualGas its own
+ *      bespoke _handleResidualUpdate, duplicating _handleAdjustRow's identical
+ *      find-row-by-RowId-then-setValue-named-fields logic (same problem Transfers/v16
+ *      already had). ResidualGas's sheet layout (META block + RESIDUAL_KEYS columns) is
+ *      structurally identical to every TABS-driven tab, so it didn't need its own
+ *      handler - it needed to be IN TABS. Added `TABS.ResidualGas=RESIDUAL_KEYS`;
+ *      _handleResidualUpdate and the 'residualUpdate' action are removed entirely.
+ *      Frontend's adjustResidualRow now delegates to the generic adjustSheetRow instead
+ *      of posting its own action. Faulty Cylinders was NOT folded in the same way - it's
+ *      identified by a server-generated ID (not a client RowId), has no META prefix, and
+ *      is found by a completely different column (1, not RowId at a computed offset) -
+ *      genuinely incompatible with the generic mechanism, not just unfactored.
+ *   No new migration function needed - schema is unchanged, this is pure logic.
  *
  * v19 changes vs v18:
  *   1. FAULTY CYLINDERS PHOTO: every other capture section (Refills, Private, Received,
@@ -228,10 +254,11 @@
  *
  * SETUP: Extensions > Apps Script > select all > delete > paste this whole file > Save >
  *        Deploy > Manage deployments > edit existing deployment > New version > Deploy.
- *        Confirm the /exec URL returns "Gas Sales v19 endpoint live".
- *        Then run applyV18Updates() AND applyV19Updates() ONCE each (Run > select from the
- *        function dropdown > Run) - the first adds the ResidualGas tab's "Row Id" header,
- *        the second adds the Faulty tab's "Photo Link" header.
+ *        Confirm the /exec URL returns "Gas Sales v20 endpoint live".
+ *        No new migration to run for v20 (pure logic fix). If this is a fresh deploy that
+ *        hasn't run them yet, run applyV18Updates() AND applyV19Updates() ONCE each (Run >
+ *        select from the function dropdown > Run) - the first adds the ResidualGas tab's
+ *        "Row Id" header, the second adds the Faulty tab's "Photo Link" header.
  *        (If setting this up completely fresh: run the older one-off migrations first, in
  *        order - fixReconSheets() from v8, applyV9Updates(), applyV10Updates(),
  *        applyV11Updates(), applyV12Updates(), applyV13Updates(), protectRowIdColumns(),
@@ -347,12 +374,10 @@ function doPost(e){
     if(type==='residualLog'){
       return _handleResidual(body);
     }
-    // v18: same in-place-update-only guarantee as _handleAdjustRow/_handleTransferUpdate -
-    // ResidualGas isn't in the generic TABS map (hand-rolled tab, see _handleResidual's own
-    // comment), so it needs its own action rather than routing through 'adjustRow'.
-    if(type==='residualUpdate'){
-      return _handleResidualUpdate(body);
-    }
+    // v20: 'residualUpdate' removed - ResidualGas is now in the generic TABS map (see
+    // TABS.ResidualGas below RESIDUAL_KEYS's declaration), so a same-day correction or a
+    // photo write-back for it now goes through the ordinary 'adjustRow' action, same as
+    // Refills/Private/Received/Manifold. _handleResidualUpdate is gone with it.
     if(type==='suppliersList'||type==='suppliersSave'||type==='suppliersRemove'){
       return _handleSuppliers(type, body);
     }
@@ -505,7 +530,7 @@ function _photoLinksRichText(urls){
   return builder.build();
 }
 
-function doGet(){ return _json({ok:true,msg:'Gas Sales v19 endpoint live'}); }
+function doGet(){ return _json({ok:true,msg:'Gas Sales v20 endpoint live'}); }
 function _json(o){ return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
 
 // ===================== v4 NEW (v9: gains OperatorNote; v19: gains PhotoLink) ==============
@@ -592,14 +617,26 @@ function _handleFaulty(type, body){
   if(type==='faultyUpdate'){
     var hit=_findFaultyRow(sh, body.id);
     if(!hit) return _json({ok:false, error:'faulty row not found: '+body.id});
-    var status=body.status||hit.data[16];
-    var nominal=hit.data[14], gasRemaining=hit.data[13];
-    var closing=(status==='Replaced'||status==='Not Replaced');
-    var gasLoss=hit.data[15];
-    if(status==='Not Replaced') gasLoss=Math.max(0, Number(nominal)-Number(gasRemaining));
-    if(status==='Replaced') gasLoss=0;
-    sh.getRange(hit.rowIndex,16,1,1).setValue(gasLoss);          // GasLoss
-    sh.getRange(hit.rowIndex,17,1,1).setValue(status);           // Status
+    // v20: status/GasLoss/DateClosed now only touched when body.status is ACTUALLY
+    // supplied - was previously `body.status||hit.data[16]`, falling back to the row's
+    // EXISTING status for a photo-only call (adjustFaultyRow sends {id,photoLink}, no
+    // status). That fallback made `closing` evaluate true again for an already-closed
+    // row on every single photo retry, silently re-stamping DateClosed to "now" even
+    // though nothing about the closure had changed - corrupting which date-range report
+    // (_handleFaultyListRange, bucketed by DateClosed) a cylinder's booked gas loss
+    // landed in. Same "only apply what's named" convention as the UpliftDN/ReturnDN fix
+    // just below, now applied to the field that actually mattered.
+    if(body.status!==undefined){
+      var status=body.status;
+      var nominal=hit.data[14], gasRemaining=hit.data[13];
+      var closing=(status==='Replaced'||status==='Not Replaced');
+      var gasLoss=hit.data[15];
+      if(status==='Not Replaced') gasLoss=Math.max(0, Number(nominal)-Number(gasRemaining));
+      if(status==='Replaced') gasLoss=0;
+      sh.getRange(hit.rowIndex,16,1,1).setValue(gasLoss);          // GasLoss
+      sh.getRange(hit.rowIndex,17,1,1).setValue(status);           // Status
+      if(closing) sh.getRange(hit.rowIndex,20,1,1).setValue(new Date()); // DateClosed
+    }
     // v19: UpliftDN/ReturnDN now only touched when actually supplied - was previously
     // ALWAYS overwritten with body.upliftDN||'' / body.returnDN||'' even when the caller
     // never meant to touch them (harmless for the register's own Save button, which always
@@ -608,7 +645,6 @@ function _handleFaulty(type, body){
     // adds, which has no reason to know or send either field).
     if(body.upliftDN!==undefined) sh.getRange(hit.rowIndex,18,1,1).setValue(body.upliftDN); // UpliftDN
     if(body.returnDN!==undefined) sh.getRange(hit.rowIndex,19,1,1).setValue(body.returnDN); // ReturnDN
-    if(closing) sh.getRange(hit.rowIndex,20,1,1).setValue(new Date()); // DateClosed
     // v19: only touched when actually supplied, so an ordinary status/DN save (the
     // register's own "Save" button, which never sends photoLink at all) can never blank an
     // already-uploaded link - same "only apply what's named" convention _handleAdjustRow/
@@ -662,7 +698,8 @@ function _handleFaultyListRange(body){
       timestamp: row[1] instanceof Date ? Utilities.formatDate(row[1],tz,'yyyy-MM-dd') : String(row[1]||'').slice(0,10),
       Branch:row[2], Brand:row[4], Size:row[5], Qty:row[6], State:row[7],
       GasRemaining:row[13], Nominal:row[14], GasLoss:row[15], Status:row[16],
-      dateClosed: dateClosed instanceof Date ? Utilities.formatDate(dateClosed,tz,'yyyy-MM-dd') : (dateClosed?String(dateClosed).slice(0,10):'')
+      dateClosed: dateClosed instanceof Date ? Utilities.formatDate(dateClosed,tz,'yyyy-MM-dd') : (dateClosed?String(dateClosed).slice(0,10):''),
+      PhotoLink:row[21] // v20: parity fix - faultyListOpen gained this in v19, this sibling read was missed
     };
   });
   return _json({ok:true, rows:rows});
@@ -681,6 +718,13 @@ function _handleFaultyListRange(body){
 // way, same "predates row tracking" convention as the other 4 tabs since v13.
 var RESIDUAL_HEADERS = ['Timestamp','Date','Time','Branch','Operator','Role','Brand','Size','GasType','CylScale','CylTare','Residual','Note','Photo Link(s)','Row Id'];
 var RESIDUAL_KEYS = ['Operator','Role','Brand','Size','GasType','CylScale','CylTare','Residual','Note','PhotoLinks','RowId'];
+// v20: registers ResidualGas with the generic TABS-driven update mechanism
+// (_handleAdjustRow) - its sheet layout (META block + these columns, in this order) is
+// structurally identical to every other TABS tab, so the bespoke _handleResidualUpdate
+// this diff used to have (same find-by-RowId-then-setValue logic, just duplicated) is
+// gone; a same-day correction or photo write-back for Residual now goes through the
+// ordinary 'adjustRow' action like Refills/Private/Received/Manifold already do.
+TABS.ResidualGas = RESIDUAL_KEYS;
 
 function _residualSheet(){
   var ss=_ss();
@@ -709,39 +753,6 @@ function _handleResidual(body){
   sh.getRange(startRow,1,out.length,out[0].length).setValues(out);
   _writePhotoLinksRichText(sh, startRow, rows, RESIDUAL_KEYS); // shortens the raw comma-joined URL(s) into linked "📷1, 📷2" cells, same as Received/Private/Manifold
   return _json({ok:true, wrote:out.length});
-}
-
-// ===================== v18 NEW: RESIDUAL GAS ROW UPDATE =====================
-// body: {rowId:'<the row's RowId>', updates:{FieldName:newValue, ...}}
-// Same shape and same in-place-update-only guarantee as _handleAdjustRow/_handleTransferUpdate
-// (never appends, so this can never double a row) - kept as its own function rather than
-// routed through _handleAdjustRow because ResidualGas isn't written through the generic
-// TABS-driven writer (residualLog writes it directly via _handleResidual above), even
-// though it shares the same RESIDUAL_KEYS array shape for column lookup.
-function _handleResidualUpdate(body){
-  if(!body.rowId) return _json({ok:false,error:'no rowId supplied'});
-  var sh=_residualSheet();
-  var ridIdx=RESIDUAL_KEYS.indexOf('RowId');
-  if(ridIdx===-1) return _json({ok:false,error:'ResidualGas has no RowId column - run applyV18Updates() first'});
-  var last=sh.getLastRow();
-  if(last<2) return _json({ok:false,error:'row not found (sheet is empty): '+body.rowId});
-  var ridCol=META.length+ridIdx+1;
-  var ids=sh.getRange(2,ridCol,last-1,1).getValues();
-  var rowIndex=-1;
-  for(var i=0;i<ids.length;i++){
-    if(String(ids[i][0])===String(body.rowId)){ rowIndex=i+2; break; }
-  }
-  if(rowIndex===-1) return _json({ok:false,error:'row not found for id: '+body.rowId});
-  var updates=body.updates||{};
-  var applied=[];
-  Object.keys(updates).forEach(function(k){
-    var kIdx=RESIDUAL_KEYS.indexOf(k);
-    if(kIdx===-1) return; // unknown field name - ignore it, don't fail the whole request over it
-    sh.getRange(rowIndex,META.length+kIdx+1).setValue(updates[k]);
-    applied.push(k);
-  });
-  if(applied.length===0) return _json({ok:false,error:'none of the given field names matched ResidualGas\'s columns'});
-  return _json({ok:true, rowIndex:rowIndex, applied:applied});
 }
 
 // ===================== v4 NEW: SUPPLIERS (Manage Suppliers / Stock Received / Private Refill) =====================

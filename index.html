@@ -4203,23 +4203,34 @@ async function residualSubmit(){
     // Manifold/Refill/Private/Received's _rid is stamped unconditionally at commit time,
     // not just when there's a photo to write back later.
     residualList.forEach(function(r){r._rid=r._rid||_rid();});
-    var _queuedPhotoCount=0;
-    residualList.filter(function(r){return (r.photos||[]).length;}).forEach(function(r){
-      _photoQueueAdd({capType:'residual',branch:r.Branch,date:today,rowRid:r._rid,category:'Residual',photos:r.photos});
-      _queuedPhotoCount++;
-    });
     var rows=residualList.map(function(r){
       return {Branch:r.Branch,Operator:operator,Role:role,Brand:r.Brand,Size:r.Size,GasType:r.GasType,CylScale:r.CylScale,CylTare:r.CylTare,Note:r.Note,PhotoLinks:(r.photoLinks||''),RowId:(r._rid||'')};
     });
     var res=await apiPost('residualLog',{rows:rows});
     if(!res||!res.ok){toast((res&&res.msg)||'Could not submit residual gas',true);return;}
+    // Photo queuing moved to AFTER residualLog confirms (code-review fix, 2026-09-24) - was
+    // queued before this await, so a failed/timed-out residualLog left an orphaned photo
+    // entry referencing a row that never actually reached the sheet: every retry would get
+    // "row not found for id" forever, stuck in the queue with no way to resolve. Now a
+    // photo is only ever queued once its row is confirmed to exist.
+    var _queuedPhotoCount=0;
+    residualList.filter(function(r){return (r.photos||[]).length;}).forEach(function(r){
+      _photoQueueAdd({capType:'residual',branch:r.Branch,date:today,rowRid:r._rid,category:'Residual',photos:r.photos});
+      _queuedPhotoCount++;
+    });
     toast('Residual gas submitted ('+(res.wrote!==undefined?res.wrote:rows.length)+')'+(_queuedPhotoCount?(' · '+_queuedPhotoCount+' photo(s) uploading in background'):''));
     // Keep a local, persisted copy of what was just sent so the operator can see it under
     // "Already logged today" - this app has no way to read the backend sheet back, so this is
     // "what this device sent today", cleared naturally the same way every other section's
     // working-day data is (new day/branch working-store key).
     var committedRows=residualList.map(function(r){
-      return {Branch:r.Branch,Brand:r.Brand,Size:r.Size,GasType:r.GasType,CylScale:r.CylScale,CylTare:r.CylTare,Residual:r.Residual,Note:r.Note,_operator:operator,_date:today,_committed:true,_rid:(r._rid||_rid())};
+      // photos/_time added (code-review fix, 2026-09-24) - every other section's committed
+      // rows retain their raw pending photo array (so the report can show an immediate
+      // same-device thumbnail before the upload confirms a link) and a _time stamp (so the
+      // same-day Adjust picker's "Captured by X · time" byline isn't blank) - this row
+      // literal was missing both, unlike Refill/Manifold's Object.assign-based commit which
+      // keeps them without needing to think about it.
+      return {Branch:r.Branch,Brand:r.Brand,Size:r.Size,GasType:r.GasType,CylScale:r.CylScale,CylTare:r.CylTare,Residual:r.Residual,Note:r.Note,photos:r.photos,_operator:operator,_time:nowStamp(),_date:today,_committed:true,_rid:(r._rid||_rid())};
     });
     store.residual=(store.residual||[]).concat(committedRows);
     _pushCaptureLiveRows('residual',committedRows,committedRows[0]&&committedRows[0].Branch);
@@ -5135,16 +5146,16 @@ function adjustSheetRow(sheet,rowId,updates){
 // action instead (apps-script/gas-sales-v18.gs). Needs backend v18+ - on an older backend
 // this comes back as an ordinary {ok:false} (unknown type), which this already treats as a
 // normal failure (toast, retried by the photo queue), not a crash.
+// v20 (code-review fix): ResidualGas now rides the generic TABS/adjustRow mechanism on
+// the backend (apps-script/gas-sales-v20.gs - TABS.ResidualGas, _handleResidualUpdate
+// removed), so this is now a thin delegate to adjustSheetRow instead of its own
+// near-duplicate apiPost('residualUpdate',...) implementation. Name/signature kept
+// unchanged so its 2 existing call sites (_photoQueueWriteBack, openResidualAdjust) don't
+// need to change. Needs backend v20 - on the still-live v19 backend this 404s the same
+// way any other unrecognized action does (ok:false), already handled by adjustSheetRow's
+// own toast/retry path, not a crash.
 function adjustResidualRow(rowId,updates){
-  if(!rowId)return Promise.resolve(true);
-  return apiPost('residualUpdate',{rowId:rowId,updates:updates}).then(function(res){
-    var ok=!!(res&&res.ok);
-    if(!ok)toast('Correction saved locally, but could not update the ResidualGas sheet row (it may predate row tracking, or the backend needs updating to v18) - see Adjustments tab',true);
-    return ok;
-  }).catch(function(){
-    toast('Correction saved locally, but could not reach the server to update the ResidualGas sheet row',true);
-    return false;
-  });
+  return adjustSheetRow('ResidualGas',rowId,updates);
 }
 // Faulty Cylinders' photo write-back - v19. Faulty is identified by a server-generated id
 // (F-nnn), not a client _rid, and corrected via faultyUpdate's own {id,status,upliftDN,
@@ -8367,9 +8378,15 @@ function _rTodaysDeliveryGroups(br){
   });
   return Object.keys(groups).map(function(k){return groups[k];});
 }
-function _openAddPhotoForReceivedGroup(rowRids){
+// brOverride/dateOverride (code-review fix, 2026-09-24): this now also runs from inside
+// the generic same-day correction modal (corrStepReceivedGroups), which has its own
+// corrCfg.branch/today that isn't guaranteed to equal the live rBranch/today globals this
+// function originally hardcoded (safe only by coincidence today, since the sole same-day
+// entry point happens to open while they match). Explicit params, defaulting to the
+// original globals so rReview's own call site (which has none to pass) is unaffected.
+function _openAddPhotoForReceivedGroup(rowRids,brOverride,dateOverride){
   _pickPhotoFile(function(dataUri){
-    _photoQueueAdd({capType:'received',branch:rBranch,date:today,rowRids:rowRids,category:'Received',photos:[dataUri]});
+    _photoQueueAdd({capType:'received',branch:(brOverride||rBranch),date:(dateOverride||today),rowRids:rowRids,category:'Received',photos:[dataUri]});
     toast('Photo queued — uploading in background');
     _rUpdateSessionCounter();
   });
@@ -12256,7 +12273,12 @@ var PHOTO_QUEUE_LOCAL_FIELD={manifold:'_photoLink',refill:'_photoLink',private:'
 function _corrPhotoButtonLabel(capType,row){
   var linkField=PHOTO_QUEUE_LOCAL_FIELD[capType];
   var has=linkField&&row&&row[linkField];
-  return has?'✓ Photo on file — tap to replace':'+ Add photo for this line';
+  // Casing aligned with Received/Faulty's own "✓ photo on file" status text (code-review
+  // fix, 2026-09-24) - was "✓ Photo on file", the only capitalized instance of this phrase
+  // among 3-4 near-duplicate copies across the app. Full layout unification (this is a
+  // combined status+action button; Received/Faulty use a separate status span + button)
+  // wasn't attempted - lower-value than the risk of restructuring an already-verified UI.
+  return has?'✓ photo on file — tap to replace':'+ Add photo for this line';
 }
 // Writes an uploaded photo link set back onto an already-committed row, three places: the
 // local copy (so Review/History shows it immediately without waiting on anything else), the
@@ -12293,17 +12315,22 @@ function _photoQueueWriteBack(entry,links){
   if(sheet){
     var linkField=PHOTO_QUEUE_LINK_FIELD[entry.capType];
     var updates={};updates[linkField]=links;
-    // Residual/Faulty aren't in the generic TABS map (own tab, own update action - see
-    // adjustResidualRow's/adjustFaultyRow's own comments) - every other capType goes
-    // through adjustSheetRow. Faulty's own wire shape takes the links directly, not an
-    // {updates} object (see adjustFaultyRow).
-    var writeOne=(entry.capType==='residual')
-      ? function(rid){return adjustResidualRow(rid,updates);}
-      : (entry.capType==='faulty')
+    // Faulty is the only capType still special-cased here (code-review fix, 2026-09-24:
+    // Residual's special case was removed - now that ResidualGas is in the generic TABS
+    // map, PHOTO_QUEUE_SHEET.residual='ResidualGas' already makes the plain adjustSheetRow
+    // branch below correct for it, same as Refill/Private/Manifold/Received). Faulty
+    // genuinely can't join that path - it's identified by a server-generated ID with no
+    // META prefix, not a RowId - so its wire shape takes the links directly, not an
+    // {updates} object (see adjustFaultyRow's own comment).
+    var writeOne=(entry.capType==='faulty')
       ? function(rid){return adjustFaultyRow(rid,links);}
       : function(rid){return adjustSheetRow(sheet,rid,updates);};
     sheetWrite=Promise.all(rowRids.map(writeOne)).then(function(results){
-      if(results.indexOf(false)>-1)throw new Error('Sheet row update failed for '+sheet+' (rowRids: '+rowRids.join(',')+')');
+      // .some(r=>r!==true), not indexOf(false) (code-review fix) - indexOf only ever
+      // catches a literal `false`; a future writer that resolves `undefined` on some path
+      // would have slipped past unnoticed and been treated as success, reintroducing the
+      // exact silent-drop bug class this whole rewrite exists to prevent.
+      if(results.some(function(r){return r!==true;}))throw new Error('Sheet row update failed for '+sheet+' (rowRids: '+rowRids.join(',')+')');
     });
   }
   var mirrorWrite=_photoQueueMirrorWrite(entry,links,rowRids,localField);
@@ -12790,10 +12817,15 @@ function corrLines(st,section,br){
     // the figure a manager actually knows when re-checking a mistake (a re-weigh found X kg
     // left), and CylTare (the cylinder's own known empty weight) is fixed, with CylScale
     // back-computed (Residual+CylTare) so the three stay arithmetically consistent. Note
-    // store.residual uses capitalized keys (Brand/Size/...) matching the Sheet's own column
-    // names directly, unlike every other section's lowerCamelCase shape - not touched here,
-    // just mirrored as-is.
-    (st.residual||[]).filter(inBr).forEach(function(r,idx){
+    // store.residual uses capitalized keys (Brand/Size/Branch/...) matching the Sheet's own
+    // column names directly, unlike every other section's lowerCamelCase shape - so the
+    // shared inBr() (which checks lowercase r.branch) would silently match every branch's
+    // rows here, not just the requested one (code-review fix, 2026-09-24: r.branch is
+    // always undefined on a residual row, so inBr's `!r.branch` short-circuits true
+    // unconditionally). Currently masked because openResidualAdjust pre-filters its store
+    // to one branch before calling here - fixed at the source anyway so this section is
+    // branch-safe on its own, not just by a caller's coincidence.
+    (st.residual||[]).filter(function(r){return !r.Branch||!br||r.Branch===br;}).forEach(function(r,idx){
       out.push({label:r.Brand+' '+r.Size+' \u00b7 '+(r.GasType||'')+' \u00b7 Residual='+r.Residual+'kg'+(r.Note?(' \u00b7 '+r.Note):''), get:function(){return r.Residual;}, set:function(v){r.Residual=v;r.CylScale=num(v)+num(r.CylTare);}, tag:'Residual '+r.Brand+' '+r.Size+' #'+(idx+1), row:r});
     });
   } else if(section==='Daily Sales'){
@@ -12956,7 +12988,11 @@ function corrStepReceivedGroups(){
       var hasPhoto=corrCfg.histRec?g.hasPhoto:!!g.photoLinks;
       var status=hasPhoto?'✓ photo on file':'— no photo';
       var handler=corrCfg.histRec?'_corrOpenAddPhotoForReceivedGroup':'_openAddPhotoForReceivedGroup';
-      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #EEF1F4;font-size:12px"><span>'+(g.supplier)+(g.invoiceNo?' · Inv '+g.invoiceNo:'')+' — '+status+'</span><button type="button" class="sigClear" style="padding:3px 8px;font-size:10px" onclick=\''+handler+'('+JSON.stringify(g.rowRids)+')\'>'+(hasPhoto?'+ Retry photo':'+ Add photo')+'</button></div>';
+      // Explicit corrCfg.branch/today args for the same-day path (code-review fix,
+      // 2026-09-24) - _openAddPhotoForReceivedGroup no longer trusts the live rBranch
+      // global to match the day/branch actually being corrected here.
+      var extraArgs=corrCfg.histRec?'':(','+JSON.stringify(corrCfg.branch)+','+JSON.stringify(today));
+      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #EEF1F4;font-size:12px"><span>'+(g.supplier)+(g.invoiceNo?' · Inv '+g.invoiceNo:'')+' — '+status+'</span><button type="button" class="sigClear" style="padding:3px 8px;font-size:10px" onclick=\''+handler+'('+JSON.stringify(g.rowRids)+extraArgs+')\'>'+(hasPhoto?'+ Retry photo':'+ Add photo')+'</button></div>';
     }).join('');
   }
   document.getElementById('corrBody').innerHTML=html;
@@ -15151,6 +15187,10 @@ function buildCountDocAsync(src){
     var recvRows=(st.received||[]).filter(inBr);
     if(recvRows.length){
       var dGroups={},dOrder=[];
+      // recvPhotoLinks/recvRawPhotos accumulated in this SAME pass now (code-review fix,
+      // 2026-09-24) - was a separate second recvRows.forEach further down purely to collect
+      // photo links, re-scanning every row a second time just to build these two arrays.
+      var recvPhotoLinks=[],recvRawPhotos=[];
       recvRows.forEach(function(r){
         var key=r.size+'|'+(r.invoiceNo||'')+'|'+(r.deliveryNote||'')+'|'+(r.supplier||'');
         if(!dGroups[key]){dGroups[key]={size:r.size,invoiceNo:r.invoiceNo,deliveryNote:r.deliveryNote,supplier:r.supplier,recv:{},ret:{},reason:''};dOrder.push(key);}
@@ -15158,6 +15198,8 @@ function buildCountDocAsync(src){
         if(num(r.fullIn)>0)g.recv[r.brand]=(g.recv[r.brand]||0)+num(r.fullIn);
         if(num(r.emptyOut)>0)g.ret[r.brand]=(g.ret[r.brand]||0)+num(r.emptyOut);
         if(r.overrideReason&&!g.reason)g.reason=r.overrideReason;
+        if(r.photoLinks)String(r.photoLinks).split(',').map(function(u){return u.trim();}).filter(Boolean).forEach(function(u){if(recvPhotoLinks.indexOf(u)===-1)recvPhotoLinks.push(u);});
+        (Array.isArray(r.photos)?r.photos:[]).forEach(function(p){if(recvRawPhotos.indexOf(p)===-1)recvRawPhotos.push(p);});
       });
       var grandFullIn=0, grandEmptyOut=0;
       var recvTrs=dOrder.map(function(key){
@@ -15180,11 +15222,6 @@ function buildCountDocAsync(src){
       var recvGrandRow='<tr style="background:var(--navy);color:#fff;font-weight:800"><td colspan="2">Total \u2014 all deliveries</td><td class="n">'+grandFullIn+'</td><td class="n">'+grandEmptyOut+'</td><td colspan="3"></td></tr>';
       rows+='<h2>Stock Received</h2><table><tr><th>Size</th><th>Brand</th><th>Full In</th><th>Empty Out</th><th colspan="3">Delivery ref</th></tr>'+recvTrs+recvGrandRow+'</table>'+
       '<div class="callout">Total gas received (Full in only): <b>\u2248 '+_receivedFullInKg(st,_b).toFixed(2)+' kg</b></div>';
-      var recvPhotoLinks=[],recvRawPhotos=[];
-      recvRows.forEach(function(r){
-        if(r.photoLinks)String(r.photoLinks).split(',').map(function(u){return u.trim();}).filter(Boolean).forEach(function(u){if(recvPhotoLinks.indexOf(u)===-1)recvPhotoLinks.push(u);});
-        (Array.isArray(r.photos)?r.photos:[]).forEach(function(p){if(recvRawPhotos.indexOf(p)===-1)recvRawPhotos.push(p);});
-      });
       if(recvPhotoLinks.length)rows+='<div style="margin-top:6px"><b>Invoice / delivery note photo(s):</b> '+recvPhotoLinks.map(function(u,i){return '<a href="'+u+'" target="_blank" style="text-decoration:none;font-size:16px">📷'+(recvPhotoLinks.length>1?(i+1):'')+'</a>';}).join(' ')+'</div>';
       else if(recvRawPhotos.length)rows+='<div style="margin-top:6px"><b>Invoice / delivery note photo(s):</b><br>'+recvRawPhotos.map(function(s){return '<img src="'+s+'" style="max-height:70px;border-radius:4px;margin:2px">';}).join('')+'</div>';
     }
@@ -15721,29 +15758,28 @@ function buildCountCSVAsync(src){
     // ---- Stock Received, grouped by delivery ----
     if(recvRows.length){
       var dGroups={},dOrder=[];
+      // g.photoLinks accumulated in this same pass now (code-review fix, 2026-09-24) - was
+      // a separate second recvRows.forEach (_recvPhotoByKey) purely to re-derive the same
+      // grouping key just to attach a photo link to it.
       recvRows.forEach(function(r){
         var key=r.size+'|'+(r.invoiceNo||'')+'|'+(r.deliveryNote||'')+'|'+(r.supplier||'');
-        if(!dGroups[key]){dGroups[key]={size:r.size,invoiceNo:r.invoiceNo,deliveryNote:r.deliveryNote,supplier:r.supplier,recv:{},ret:{},reason:''};dOrder.push(key);}
+        if(!dGroups[key]){dGroups[key]={size:r.size,invoiceNo:r.invoiceNo,deliveryNote:r.deliveryNote,supplier:r.supplier,recv:{},ret:{},reason:'',photoLinks:''};dOrder.push(key);}
         var g=dGroups[key];
         if(num(r.fullIn)>0)g.recv[r.brand]=(g.recv[r.brand]||0)+num(r.fullIn);
         if(num(r.emptyOut)>0)g.ret[r.brand]=(g.ret[r.brand]||0)+num(r.emptyOut);
         if(r.overrideReason&&!g.reason)g.reason=r.overrideReason;
+        if(r.photoLinks&&!g.photoLinks)g.photoLinks=r.photoLinks;
       });
       section('Stock Received');
       row('Size','Brand','Full In','Empty Out','Supplier','Invoice #','Delivery Note #','Photo');
       var grandFullIn=0,grandEmptyOut=0;
-      var _recvPhotoByKey={};
-      recvRows.forEach(function(r){
-        var k=r.size+'|'+(r.invoiceNo||'')+'|'+(r.deliveryNote||'')+'|'+(r.supplier||'');
-        if(r.photoLinks&&!_recvPhotoByKey[k])_recvPhotoByKey[k]=r.photoLinks;
-      });
       dOrder.forEach(function(key){
         var g=dGroups[key];
         var brands=Object.keys(g.recv).concat(Object.keys(g.ret).filter(function(b){return g.recv[b]===undefined;}));
         var fullTot=Object.keys(g.recv).reduce(function(s,b){return s+g.recv[b];},0);
         var emptyTot=Object.keys(g.ret).reduce(function(s,b){return s+g.ret[b];},0);
         grandFullIn+=fullTot;grandEmptyOut+=emptyTot;
-        var photoTxt=_csvPhoto(_recvPhotoByKey[key]);
+        var photoTxt=_csvPhoto(g.photoLinks);
         brands.forEach(function(b){row(g.size,b,g.recv[b]||0,g.ret[b]||0,g.supplier||'',g.invoiceNo||'',g.deliveryNote||'',photoTxt);});
         var diff=fullTot-emptyTot;
         row('Balance - '+g.size,'','',diff===0?'balanced':((diff>0?'+':'')+diff+' ('+(diff>0?'more full in':'more empty out')+')'),g.supplier||'',g.invoiceNo||'',g.deliveryNote||'',g.reason||'');
