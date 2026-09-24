@@ -542,6 +542,7 @@
   <div class="cgRow" style="margin-bottom:10px"><label>Branch</label><div class="cgToggle">
     <button class="cgTg on" id="rgbr-Helderberg" onclick="residualSetBranch('Helderberg')">Helderberg</button>
     <button class="cgTg" id="rgbr-Kleinmond" onclick="residualSetBranch('Kleinmond')">Kleinmond</button></div></div>
+  <button type="button" id="rgAdjustLink" class="adjustTab" style="display:none" onclick="openResidualAdjust()">✎ Adjust an already-committed entry (today only)</button>
 
   <div class="histSection"><h4>Add a cylinder</h4>
     <div class="adminRow">
@@ -4119,6 +4120,12 @@ function renderResidualCommitted(){
   var box=document.getElementById('residualCommittedBox');
   if(!wrap||!box)return;
   var rows=residualCommittedToday(residualBranch||branch);
+  // Same-day adjustment link - see openResidualAdjust(). Only offered while there's
+  // something committed today for this branch to actually adjust, and the day hasn't been
+  // closed yet - same "hasCommittedToday && !loadSavedDay" gate renderGrid() already uses
+  // for capAdjustLink.
+  var _ral=document.getElementById('rgAdjustLink');
+  if(_ral)_ral.style.display=(rows.length && !loadSavedDay(today,residualBranch||branch))?'block':'none';
   if(!rows.length){wrap.style.display='none';box.innerHTML='';return;}
   wrap.style.display='block';
   var total=rows.reduce(function(s,r){return s+(r.Residual||0);},0);
@@ -4150,15 +4157,17 @@ async function residualSubmit(){
     // confirmed to exist there yet (see this plan's own header note). Until that's confirmed,
     // a residual row's photo can still be added/retried manually (Task 12) even if the
     // background queue's write-back can't reach the sheet.
+    // RowId stamped on EVERY row now (not just photo-bearing ones) - openResidualAdjust()
+    // needs every committed row to have reached the sheet with an id, the same way
+    // Manifold/Refill/Private/Received's _rid is stamped unconditionally at commit time,
+    // not just when there's a photo to write back later.
+    residualList.forEach(function(r){r._rid=r._rid||_rid();});
     var _queuedPhotoCount=0;
     residualList.filter(function(r){return (r.photos||[]).length;}).forEach(function(r){
-      r._rid=r._rid||_rid();
       _photoQueueAdd({capType:'residual',branch:r.Branch,date:today,rowRid:r._rid,category:'Residual',photos:r.photos});
       _queuedPhotoCount++;
     });
     var rows=residualList.map(function(r){
-      // RowId (v18 backend) - stamped above (alongside residualList) only for rows that
-      // have photos queued, same as every other capType; a photo-less row never needs one.
       return {Branch:r.Branch,Operator:operator,Role:role,Brand:r.Brand,Size:r.Size,GasType:r.GasType,CylScale:r.CylScale,CylTare:r.CylTare,Note:r.Note,PhotoLinks:(r.photoLinks||''),RowId:(r._rid||'')};
     });
     var res=await apiPost('residualLog',{rows:rows});
@@ -9057,6 +9066,38 @@ function _openCapAdjustReal(jumpToRid){
     }
   });
 }
+// Same-day correction for Residual Gas - same pattern as openCapAdjust()'s
+// _openCapAdjustReal above, added 2026-09-24 once Residual finally had a RowId + a working
+// row-update path (apps-script/gas-sales-v18.gs's residualUpdate action) to correct the
+// actual sheet row through, not just the local copy + Adjustments side-note. Residual isn't
+// part of CAP{} (own bespoke screen, like Received/Count), so this doesn't reuse
+// openCapAdjust's plumbing - it calls the shared openCorrection() modal directly instead,
+// exactly like openReceivedAdjust()/openCountAdjust() already do for their own sections.
+function openResidualAdjust(jumpToRid){
+  var _adjBranch=residualBranch||branch;
+  if(loadSavedDay(today,_adjBranch)){toast('Day already closed for '+_adjBranch+' - use the correction tool from Count History instead',true);return;}
+  var todaysStore={residual:(store.residual||[]).filter(function(r){return r.Branch===_adjBranch && (r._date||today)===today;})};
+  openCorrection({
+    title:'Adjust Residual Gas — '+_adjBranch+' (today, before close)',
+    store:todaysStore, branch:_adjBranch, sections:['Residual'], jumpToRid:jumpToRid||null,
+    onApply:function(sel,oldVal,newVal,reason,auth){
+      syncPush('Adjustments',[{date:today,branch:_adjBranch,Kind:'SameDayResidualAdjustment',Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:auth.name+' ('+auth.level+')'}]);
+      saveWorkingStore();
+      auditLog('Residual Gas adjusted (same day)',_adjBranch+' '+sel.tag+': '+oldVal+' → '+newVal+' by '+auth.name+' - '+reason,{was:oldVal},{now:newVal},'success',_adjBranch);
+      // Correct the ORIGINAL sheet row in place (adjustResidualRow, not adjustSheetRow -
+      // ResidualGas isn't in the generic TABS map) plus the capture_live_rows mirror, same
+      // "not just a local fix + side-note" reasoning openCapAdjust already applies to
+      // Manifold/Refill/Private.
+      if(sel.row&&sel.row._rid){
+        adjustResidualRow(sel.row._rid,{Residual:newVal,CylScale:sel.row.CylScale});
+        _updateCaptureLiveRowFields('residual',sel.row._rid,{Residual:newVal,CylScale:sel.row.CylScale,_correctedFrom:oldVal,_correctedBy:auth.name,_correctedTime:nowStamp()});
+      }
+    },
+    afterClose:function(){
+      renderResidualCommitted();
+    }
+  });
+}
 // Same-day correction for Stock Count - same pattern as openReceivedAdjust()/openCapAdjust()
 // above, but Count never used the CAP_ADJUST_SECTION/openCapAdjust plumbing: a single day
 // always has BOTH an Opening and a Closing count (two sections at once, not one fixed section
@@ -12661,6 +12702,17 @@ function corrLines(st,section,br){
       // get/set kept here only so a row can still be located by _rid (jumpToRid) and so the
       // picker label reflects the live value - they're not used to apply an edit.
       out.push({label:(r.stage||'Opening')+' \u00b7 '+r.cyl+' \u00b7 '+(r.brand||'?')+' '+(r.gasType||'?')+' \u00b7 scale '+r.scale+'kg tare '+r.tare+'kg (edit)'+_rejTxt, get:function(){return r.gasLeft;}, set:function(v){r.gasLeft=v;r.scale=num(v)+num(r.tare);}, tag:'Manifold '+(r.stage||'Opening')+' '+r.cyl, row:r});
+    });
+  } else if(section==='Residual'){
+    // Residual (kg) is the anchor field, same reasoning as Manifold's GasLeft above: it's
+    // the figure a manager actually knows when re-checking a mistake (a re-weigh found X kg
+    // left), and CylTare (the cylinder's own known empty weight) is fixed, with CylScale
+    // back-computed (Residual+CylTare) so the three stay arithmetically consistent. Note
+    // store.residual uses capitalized keys (Brand/Size/...) matching the Sheet's own column
+    // names directly, unlike every other section's lowerCamelCase shape - not touched here,
+    // just mirrored as-is.
+    (st.residual||[]).filter(inBr).forEach(function(r,idx){
+      out.push({label:r.Brand+' '+r.Size+' \u00b7 '+(r.GasType||'')+' \u00b7 Residual='+r.Residual+'kg'+(r.Note?(' \u00b7 '+r.Note):''), get:function(){return r.Residual;}, set:function(v){r.Residual=v;r.CylScale=num(v)+num(r.CylTare);}, tag:'Residual '+r.Brand+' '+r.Size+' #'+(idx+1), row:r});
     });
   } else if(section==='Daily Sales'){
     // Unlike every section above, Daily Sales was never folded into this day's store_snapshot
