@@ -363,6 +363,7 @@
     <button id="userMenuBtn" onclick="toggleUserMenu(event)" aria-label="User menu">&#128100;</button>
     <div id="userMenu" class="userMenu">
       <button onclick="closeUserMenu();changeMyPw()">Change my password</button>
+      <button id="switchBranchBtn" style="display:none" onclick="closeUserMenu();switchBranch()">Switch branch</button>
       <button onclick="closeUserMenu();switchUser()">Switch user</button>
       <button class="danger" onclick="closeUserMenu();signOut()">Sign out</button>
     </div>
@@ -5569,6 +5570,22 @@ function logout(){
 }
 function switchUser(){logout();toast('Signed out — next user can sign in');}
 function signOut(){if(confirm('Sign out now?'))logout();}
+// Lets a Manager/Owner (or a multi-branch Operator) flip their working branch mid-session
+// without a full sign-out/sign-in round trip - instant, no re-auth, since they're already
+// authenticated as themselves. Per-screen branch toggles (Stock Count, Manifold, etc.) already
+// let a Manager/Owner VIEW either branch on demand; this changes the session's own default
+// branch (the `branch` global applyBranchLock and every screen's own open*() seed from), which
+// is what actually locks an Operator to one branch for the rest of their session.
+function switchBranch(){
+  var mine=myBranches();
+  if(mine.length<2)return; // menu button is hidden in this case too - defensive only
+  var next=mine.filter(function(b){return b!==branch;})[0]||mine[0];
+  var prev=branch;
+  branch=next;
+  auditLog('Branch switched','Now working '+next+' (was '+prev+')');
+  toast('Switched to '+next);
+  goHome();
+}
 
 // ===== IDLE LOCK - auto-locks the app after a few minutes of inactivity to stop "pocket
 // edits" (accidental taps changing counts while the device is put away, unattended, without
@@ -5735,7 +5752,15 @@ function renderLandingHeader(){
 }
 function toggleUserMenu(ev){
   if(ev)ev.stopPropagation();
+  var btn=document.getElementById('switchBranchBtn');
+  if(btn)btn.style.display=(myBranches().length>1)?'block':'none';
   document.getElementById('userMenu').classList.toggle('show');
+}
+// Branches the CURRENT signed-in user may work - same Owner/else pattern already used by
+// faultyRegisterBranches() for its own branch toggle, generalised here since Switch branch
+// needs it too and it's plain wrong to special-case Owner's ['Helderberg','Kleinmond'] twice.
+function myBranches(){
+  return (role==='Owner') ? ['Helderberg','Kleinmond'] : (_curUser().branches||[]);
 }
 function closeUserMenu(){document.getElementById('userMenu').classList.remove('show');}
 document.addEventListener('click',function(ev){
