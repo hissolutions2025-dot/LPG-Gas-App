@@ -4974,7 +4974,11 @@ function _pwPeekEnd(btn){
   var input=btn.previousElementSibling;
   if(input)input.type='password';
 }
-function nowStamp(){var d=new Date();function p(n){return (n<10?'0':'')+n;}return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());}
+// Formats a Date in the DEVICE's own local time (South Africa for every real user here, no
+// DST to worry about) as 'YYYY-MM-DD HH:MM:SS' - defaults to now, but takes any Date so callers
+// converting a UTC timestamptz column back from Supabase (new Date(row.ts)) get the same
+// correctly-local formatting instead of re-slicing the raw UTC ISO string.
+function nowStamp(d){d=d||new Date();function p(n){return (n<10?'0':'')+n;}return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());}
 
 // ===== AUDIT LOG =====
 // Writes straight to Supabase's audit_log table (insert-only under RLS - see
@@ -5278,7 +5282,7 @@ function renderAuditRangeResults(){
     return '<div class="brandCard" style="margin-bottom:8px">'+
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'+
       '<div><b style="color:var(--navy)">'+e.action+'</b>'+failTag+riskTag+'<div style="font-size:12px;color:var(--ink);margin-top:2px">'+(e.detail||'')+'</div>'+change+'</div>'+
-      '<div style="font-size:10px;color:var(--muted);text-align:right;white-space:nowrap">'+e.ts.replace('T',' ').slice(0,19)+'</div></div>'+
+      '<div style="font-size:10px;color:var(--muted);text-align:right;white-space:nowrap">'+nowStamp(new Date(e.ts))+'</div></div>'+
       '<div style="font-size:11px;color:var(--steel);font-weight:700;margin-top:6px">'+e.user_name_snapshot+(e.role_snapshot?' ('+e.role_snapshot+')':'')+(e.branch?' · '+e.branch:'')+'</div>'+
       '</div>';
   }).join('');
@@ -7408,7 +7412,7 @@ function rbRenderReport(bal,xero){
       '<p style="font-size:11px;color:#777;margin:-4px 0 8px">Closing Full count (this range\'s end) vs whatever Xero reports - type Xero\'s figure per size and save. Blank = not yet entered, no comparison shown.</p>'+
       '<table class="htable"><tr><th>Size</th><th>Captured</th><th>Xero</th><th>Diff</th></tr>'+xeroRows+'</table>'+
       (xeroDiffFlags.length?('<div class="callout" style="color:#C0392B;font-weight:700">⚠ Doesn\'t match Xero, worth investigating:<br>'+xeroDiffFlags.join('<br>')+'</div>'):'')+
-      (xero&&xero.enteredBy?('<p style="font-size:11px;color:#777">Last entered by '+xero.enteredBy+' — '+(xero.enteredAt||'').replace('T',' ').slice(0,16)+'</p>'):'')+
+      (xero&&xero.enteredBy?('<p style="font-size:11px;color:#777">Last entered by '+xero.enteredBy+' — '+(xero.enteredAt?nowStamp(new Date(xero.enteredAt)).slice(0,16):'')+'</p>'):'')+
       '<button class="saveBtn" onclick="rbSaveXeroCounts()">Save Xero counts</button>';
   }
   return html;
