@@ -103,7 +103,7 @@
   body[data-view="verifiedTakeView"] #verifiedTakeView,
   body[data-view="rangeBalanceView"] #rangeBalanceView,
   body[data-view="dailySalesView"] #dailySalesView{display:block !important;}
-  #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(calc(100% + 40px));background:var(--ok);color:#fff;padding:14px 22px;border-radius:12px;font-weight:700;font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.25);transition:transform .3s;z-index:70;max-width:90%;text-align:center;}
+  #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(calc(100% + 40px));background:var(--ok);color:#fff;padding:14px 22px;border-radius:12px;font-weight:700;font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.25);transition:transform .3s;z-index:70;max-width:90%;text-align:center;cursor:pointer;}
   /* Dismiss slides by the toast's OWN height (+ margin), not a fixed 80px - a fixed offset
      hid a short one-line toast fine but left a tall, wrapped multi-line message (e.g. the
      Manifold hard-ceiling warning) still partly visible at the bottom of a phone screen even
@@ -1274,7 +1274,7 @@
   <button class="sigClear" style="width:100%;margin-top:8px" onclick="overrideResolveCancel()">Cancel</button>
 </div></div>
 
-<div id="toast"></div>
+<div id="toast" onclick="dismissToast()"></div>
 
 <!-- IDLE LOCK OVERLAY - covers the entire app after inactivity to prevent "pocket edits".
      Not a logout: the underlying view/draft state is left completely untouched underneath -
@@ -16118,15 +16118,21 @@ function exportData(){
 // Blurring the focused field before every toast (not just this one call site) is the fix -
 // a toast fired while a text field is focused rendered invisible/clipped on a phone, since
 // the on-screen keyboard sits on top of everything in the viewport with no CSS z-index able
-// to reach above it, and its own 1800ms fade timer kept running the whole time it was
-// hidden, so it looked "stuck"/"not disappearing" once the keyboard eventually closed and
-// the (by-then fading or already-faded) toast became visible. Found and fixed narrowly for
-// one modal first; this generalizes it to the ~80 other validation-style toast() calls
-// across every capture/admin screen that have the exact same risk, since the root cause was
-// never specific to that one modal.
-var tT;function toast(msg,err){
+// to reach above it.
+// Auto-dismiss removed 2026-09-24, per explicit request - a toast now stays up until
+// tapped (dismissToast(), wired via the #toast element's own onclick), instead of fading
+// on a fixed 1800ms timer that was too fast to reliably read on a busy shop floor. This
+// also fully retires the old "timer kept running while the toast was hidden behind the
+// on-screen keyboard, so it looked stuck once the keyboard closed" class of bug the
+// previous version of this comment described - with no timer at all, there's nothing left
+// to keep running in the background.
+function toast(msg,err){
   if(document.activeElement&&document.activeElement.blur)document.activeElement.blur();
-  var t=document.getElementById('toast');t.textContent=msg;t.className='show'+(err?' err':'');clearTimeout(tT);tT=setTimeout(function(){t.className=err?'err':'';},1800);
+  var t=document.getElementById('toast');t.textContent=msg;t.className='show'+(err?' err':'');
+}
+function dismissToast(){
+  var t=document.getElementById('toast');
+  if(t)t.className=(t.className.indexOf('err')>-1)?'err':''; // drop 'show' only, same end state the old auto-fade left it in
 }
 document.body.setAttribute('data-view','login');
 function _bootApp(){
