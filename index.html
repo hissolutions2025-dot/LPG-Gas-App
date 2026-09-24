@@ -2325,36 +2325,48 @@ function _updateManifoldLiveRowOverrideStatus(rowRid,status,note){
 // update the mirror row"), but that means the correction was invisible to every OTHER
 // device and to the report (both read manifold_live_rows, never the correcting device's own
 // local store) - reported 2026-09-14 as "I did the adjustment but it won't let me commit".
+// Live 2026-09-24: was resolving (not rejecting) on EVERY failure branch below (select
+// error, no matching row yet, update error) - just a console.error, then a normal
+// resolve. Called from _photoQueueMirrorWrite as one half of
+// Promise.all([sheetWrite,mirrorWrite]) in _photoQueueWriteBack, so a silently-resolved
+// failure here meant the whole write-back looked successful even when the mirror update
+// never actually happened - the Sheet got the photo link (that side was already fixed to
+// reject-on-failure), but the live mirror (what the report/cross-device views read before
+// a day closes) silently never did, with the queue entry removed as if it had. Now
+// rejects on every failure path instead, so the caller correctly keeps retrying. The
+// two same-day-correction call sites that don't care about the outcome (fire-and-forget)
+// now explicitly .catch(()=>{}) rather than relying on this always resolving.
 function _updateManifoldLiveRowFields(rowRid,fields){
   if(!rowRid)return Promise.resolve();
   return sb.from('manifold_live_rows').select('id,row').eq('row_id',rowRid).then(function(res){
-    if(res.error){console.error('_updateManifoldLiveRowFields select failed:',res.error.message);return;}
-    if(!res.data||!res.data.length){console.error('_updateManifoldLiveRowFields: no manifold_live_rows match for row_id',rowRid,'- mirror row not updated (may not have finished syncing yet)');return;}
+    if(res.error){console.error('_updateManifoldLiveRowFields select failed:',res.error.message);throw new Error('manifold_live_rows select failed: '+res.error.message);}
+    if(!res.data||!res.data.length){console.error('_updateManifoldLiveRowFields: no manifold_live_rows match for row_id',rowRid,'- mirror row not updated yet, will retry');throw new Error('no manifold_live_rows match for row_id '+rowRid);}
     return Promise.all(res.data.map(function(rec){
       var updatedRow=Object.assign({},rec.row,fields);
       return sb.from('manifold_live_rows').update({row:updatedRow}).eq('id',rec.id).then(function(ures){
-        if(ures.error)console.error('_updateManifoldLiveRowFields update failed:',ures.error.message);
+        if(ures.error){console.error('_updateManifoldLiveRowFields update failed:',ures.error.message);throw new Error('manifold_live_rows update failed: '+ures.error.message);}
       });
     }));
-  },function(e){console.error('_updateManifoldLiveRowFields rejected:',e&&e.message);});
+  },function(e){console.error('_updateManifoldLiveRowFields rejected:',e&&e.message);throw e;});
 }
 // Generic capture_live_rows mirror updater, added 2026-09-18 for the photo upload queue -
 // mirrors _updateManifoldLiveRowFields exactly (match by row_id, merge fields into the row
-// JSON blob) but for the shared refill/private/received/residual table instead of Manifold's
-// own dedicated one. kind must be passed since row_id alone isn't guaranteed unique across
-// different capture types.
+// JSON blob, and - since 2026-09-24 - reject rather than silently resolve on failure, see
+// that function's own comment) but for the shared refill/private/received/residual table
+// instead of Manifold's own dedicated one. kind must be passed since row_id alone isn't
+// guaranteed unique across different capture types.
 function _updateCaptureLiveRowFields(kind,rowRid,fields){
   if(!rowRid)return Promise.resolve();
   return sb.from('capture_live_rows').select('id,row').eq('kind',kind).eq('row_id',rowRid).then(function(res){
-    if(res.error){console.error('_updateCaptureLiveRowFields select failed:',res.error.message);return;}
-    if(!res.data||!res.data.length){console.error('_updateCaptureLiveRowFields: no capture_live_rows match for kind',kind,'row_id',rowRid,'- mirror row not updated (may not have finished syncing yet)');return;}
+    if(res.error){console.error('_updateCaptureLiveRowFields select failed:',res.error.message);throw new Error('capture_live_rows select failed: '+res.error.message);}
+    if(!res.data||!res.data.length){console.error('_updateCaptureLiveRowFields: no capture_live_rows match for kind',kind,'row_id',rowRid,'- mirror row not updated yet, will retry');throw new Error('no capture_live_rows match for kind '+kind+' row_id '+rowRid);}
     return Promise.all(res.data.map(function(rec){
       var updatedRow=Object.assign({},rec.row,fields);
       return sb.from('capture_live_rows').update({row:updatedRow}).eq('id',rec.id).then(function(ures){
-        if(ures.error)console.error('_updateCaptureLiveRowFields update failed:',ures.error.message);
+        if(ures.error){console.error('_updateCaptureLiveRowFields update failed:',ures.error.message);throw new Error('capture_live_rows update failed: '+ures.error.message);}
       });
     }));
-  },function(e){console.error('_updateCaptureLiveRowFields rejected:',e&&e.message);});
+  },function(e){console.error('_updateCaptureLiveRowFields rejected:',e&&e.message);throw e;});
 }
 function resolvePendingOverride(id,decision){
   if(!(role==='Manager'||role==='Owner')){toast('Manager or Owner only',true);return;}
@@ -9133,7 +9145,7 @@ function _openCapAdjustReal(jumpToRid){
           else if(sel.field==='gasType')liveFields.gasType=newVal;
           else if(sel.field==='scale'){liveFields.scale=newVal;liveFields.gasLeft=sel.row.gasLeft;}
           else if(sel.field==='tare'){liveFields.tare=newVal;liveFields.gasLeft=sel.row.gasLeft;}
-          _updateManifoldLiveRowFields(sel.row._rid,liveFields);
+          _updateManifoldLiveRowFields(sel.row._rid,liveFields).catch(function(){}); // fire-and-forget here - see that function's own comment on why it now rejects on failure
         }
       }
     },
@@ -9167,7 +9179,7 @@ function openResidualAdjust(jumpToRid){
       // Manifold/Refill/Private.
       if(sel.row&&sel.row._rid){
         adjustResidualRow(sel.row._rid,{Residual:newVal,CylScale:sel.row.CylScale});
-        _updateCaptureLiveRowFields('residual',sel.row._rid,{Residual:newVal,CylScale:sel.row.CylScale,_correctedFrom:oldVal,_correctedBy:auth.name,_correctedTime:nowStamp()});
+        _updateCaptureLiveRowFields('residual',sel.row._rid,{Residual:newVal,CylScale:sel.row.CylScale,_correctedFrom:oldVal,_correctedBy:auth.name,_correctedTime:nowStamp()}).catch(function(){}); // fire-and-forget here - see that function's own comment on why it now rejects on failure
       }
     },
     afterClose:function(){

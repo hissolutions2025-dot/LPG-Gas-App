@@ -1,6 +1,25 @@
 /**
- * GAS SALES - BOUND Apps Script v20 (v19 + code-review fixes)
+ * GAS SALES - BOUND Apps Script v21 (v20 + photo link shortening fix)
  * Lives INSIDE the master Google Sheet. Writes the full who/when/why schema.
+ *
+ * v21 changes vs v20 (confirmed live from a real Residual Gas photo test right after
+ * deploying v20 - reported "only one of two test pics show" and "normally a camera icon
+ * shows... in all the sheets" instead of the raw link):
+ *   1. PHOTO LINK SHORTENING ON adjustRow: _handleAdjustRow (the generic row-update path
+ *      every background photo-upload write-back now goes through - Manifold/Refill/
+ *      Private/Received/Residual, all of them, not just Residual) wrote PhotoLinks/
+ *      PhotoLink as a raw comma-joined URL via plain setValue - never the shortened
+ *      "📷1, 📷2" rich-text link every other photo cell in the sheet gets. Only the very
+ *      FIRST commit (through the generic TABS append writer's own
+ *      _writePhotoLinksRichText call) was ever shortened; any photo that arrived later
+ *      via the background queue's write-back (which is how EVERY photo arrives, by
+ *      design - see the v18/v19 changelog) never was. Fixed by applying the same
+ *      shortening _writePhotoLinksRichText already does, inline in _handleAdjustRow's
+ *      per-field update loop.
+ * (The "only one of two test pics" symptom was this same bug, not a second photo
+ * actually missing - both URLs were present in the cell as raw comma-joined text, just
+ * easy to misread as one long link without the shortened "📷1, 📷2" format making it
+ * obvious there were two.)
  *
  * v20 changes vs v19 (from an xhigh-effort code review of the v18/v19 diff):
  *   1. FAULTY DATECLOSED CORRUPTION FIX: a photo-only faultyUpdate call (body has
@@ -254,10 +273,11 @@
  *
  * SETUP: Extensions > Apps Script > select all > delete > paste this whole file > Save >
  *        Deploy > Manage deployments > edit existing deployment > New version > Deploy.
- *        Confirm the /exec URL returns "Gas Sales v20 endpoint live".
- *        No new migration to run for v20 (pure logic fix). If this is a fresh deploy that
- *        hasn't run them yet, run applyV18Updates() AND applyV19Updates() ONCE each (Run >
- *        select from the function dropdown > Run) - the first adds the ResidualGas tab's
+ *        Confirm the /exec URL returns "Gas Sales v21 endpoint live".
+ *        No new migration to run for v21 either (pure logic fix, same as v20). If this is
+ *        a fresh deploy that hasn't run them yet, run applyV18Updates() AND
+ *        applyV19Updates() ONCE each (Run > select from the function dropdown > Run) -
+ *        the first adds the ResidualGas tab's
  *        "Row Id" header, the second adds the Faulty tab's "Photo Link" header.
  *        (If setting this up completely fresh: run the older one-off migrations first, in
  *        order - fixReconSheets() from v8, applyV9Updates(), applyV10Updates(),
@@ -530,7 +550,7 @@ function _photoLinksRichText(urls){
   return builder.build();
 }
 
-function doGet(){ return _json({ok:true,msg:'Gas Sales v20 endpoint live'}); }
+function doGet(){ return _json({ok:true,msg:'Gas Sales v21 endpoint live'}); }
 function _json(o){ return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
 
 // ===================== v4 NEW (v9: gains OperatorNote; v19: gains PhotoLink) ==============
@@ -921,7 +941,22 @@ function _handleAdjustRow(body){
     var kIdx=keys.indexOf(k);
     if(kIdx===-1) return; // unknown field name for this tab - ignore it, don't fail the whole request over it
     var cellCol=META.length+kIdx+1;
-    sh.getRange(rowIndex,cellCol).setValue(updates[k]);
+    // v21: PhotoLinks/PhotoLink writes through this path (every background photo-upload
+    // write-back - Manifold/Refill/Private/Received/Residual all go through adjustRow)
+    // were landing as a raw, unshortened comma-joined URL, never the linked "📷1, 📷2"
+    // rich text every OTHER photo cell in the sheet uses - only the very first commit
+    // (via the generic TABS writer's own _writePhotoLinksRichText call right after
+    // insert) ever got shortened; any LATER correction to that same cell through this
+    // generic update path never did. Confirmed live 2026-09-24 on ResidualGas. Same
+    // shortening now applied here too, so a photo added after the fact looks the same as
+    // one that was already linked at commit time.
+    if(k==='PhotoLinks'||k==='PhotoLink'){
+      var _cell=sh.getRange(rowIndex,cellCol);
+      var _urls=String(updates[k]||'').split(',').map(function(u){return u.trim();}).filter(Boolean);
+      if(_urls.length) _cell.setRichTextValue(_photoLinksRichText(_urls)); else _cell.setValue('');
+    } else {
+      sh.getRange(rowIndex,cellCol).setValue(updates[k]);
+    }
     applied.push(k);
   });
   if(applied.length===0) return _json({ok:false,error:'none of the given field names matched this sheet\'s columns'});
