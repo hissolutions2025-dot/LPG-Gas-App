@@ -14817,6 +14817,28 @@ function buildCountDocAsync(src){
   function inBr(r){return !r.branch||!_b||r.branch===_b;}
   function cell(obj){if(!obj)return '\u2014';return Object.keys(obj).map(function(b){return b+' \u00d7 '+obj[b];}).join('<br>');}
   function totalOf(obj){if(!obj)return 0;return Object.keys(obj).reduce(function(a,b){return a+obj[b];},0);}
+  // Renders a row's photo cell from the CONFIRMED, uploaded link (linkVal - _photoLink/
+  // photoLinks/PhotoLink) rather than the raw pre-upload local array (photo/photos/
+  // supplierPhoto). Root-caused 2026-09-24 from a live report that photos weren't showing
+  // in the daily report: every photo cell here previously read ONLY the raw local array,
+  // which is (a) stripped from a closed/historical day's persisted record entirely
+  // (_HEAVY_PHOTO_FIELDS - deliberately, to avoid localStorage bloat) and (b) never
+  // populated on any device other than the one that actually took the photo in the first
+  // place - so a report built from a closed day, or from a different device, showed
+  // nothing for a photo that had genuinely uploaded and was sitting on Drive the whole
+  // time. linkVal survives both of those (synced via the Sheet/Supabase, never stripped
+  // locally), so it's tried first; the raw array is only a same-device, not-yet-uploaded
+  // fallback so a photo captured seconds ago still shows something before its upload
+  // finishes, rather than a blank cell in the meantime.
+  function _rptPhotoCell(linkVal,rawArray){
+    if(linkVal){
+      var urls=String(linkVal).split(',').map(function(u){return u.trim();}).filter(Boolean);
+      if(urls.length)return urls.map(function(u,i){return '<a href="'+u+'" target="_blank" style="text-decoration:none;font-size:14px">\ud83d\udcf7'+(urls.length>1?(i+1):'')+'</a>';}).join(' ');
+    }
+    var ph=Array.isArray(rawArray)?rawArray:[];
+    if(ph.length)return ph.map(function(s){return '<img src="'+s+'" style="max-height:40px;border-radius:4px;margin:1px">';}).join('');
+    return '\u2014';
+  }
   // Live-refresh before building, same gap History just had (2026-09-07): st is normally the
   // live global `store` (src===_todaySrc()) - pulling fresh Received/Refill/Private/Residual/
   // Manifold rows into it here means the report is correct even when built from a device that
@@ -15158,9 +15180,13 @@ function buildCountDocAsync(src){
       var recvGrandRow='<tr style="background:var(--navy);color:#fff;font-weight:800"><td colspan="2">Total \u2014 all deliveries</td><td class="n">'+grandFullIn+'</td><td class="n">'+grandEmptyOut+'</td><td colspan="3"></td></tr>';
       rows+='<h2>Stock Received</h2><table><tr><th>Size</th><th>Brand</th><th>Full In</th><th>Empty Out</th><th colspan="3">Delivery ref</th></tr>'+recvTrs+recvGrandRow+'</table>'+
       '<div class="callout">Total gas received (Full in only): <b>\u2248 '+_receivedFullInKg(st,_b).toFixed(2)+' kg</b></div>';
-      var recvPhotos=[];
-      recvRows.forEach(function(r){(Array.isArray(r.photos)?r.photos:[]).forEach(function(p){if(recvPhotos.indexOf(p)===-1)recvPhotos.push(p);});});
-      if(recvPhotos.length)rows+='<div style="margin-top:6px"><b>Invoice / delivery note photo(s):</b><br>'+recvPhotos.map(function(s){return '<img src="'+s+'" style="max-height:70px;border-radius:4px;margin:2px">';}).join('')+'</div>';
+      var recvPhotoLinks=[],recvRawPhotos=[];
+      recvRows.forEach(function(r){
+        if(r.photoLinks)String(r.photoLinks).split(',').map(function(u){return u.trim();}).filter(Boolean).forEach(function(u){if(recvPhotoLinks.indexOf(u)===-1)recvPhotoLinks.push(u);});
+        (Array.isArray(r.photos)?r.photos:[]).forEach(function(p){if(recvRawPhotos.indexOf(p)===-1)recvRawPhotos.push(p);});
+      });
+      if(recvPhotoLinks.length)rows+='<div style="margin-top:6px"><b>Invoice / delivery note photo(s):</b> '+recvPhotoLinks.map(function(u,i){return '<a href="'+u+'" target="_blank" style="text-decoration:none;font-size:16px">📷'+(recvPhotoLinks.length>1?(i+1):'')+'</a>';}).join(' ')+'</div>';
+      else if(recvRawPhotos.length)rows+='<div style="margin-top:6px"><b>Invoice / delivery note photo(s):</b><br>'+recvRawPhotos.map(function(s){return '<img src="'+s+'" style="max-height:70px;border-radius:4px;margin:2px">';}).join('')+'</div>';
     }
 
     // ---- Refills ----
@@ -15171,7 +15197,7 @@ function buildCountDocAsync(src){
     if(rf.length){
       var rfTot=rf.reduce(function(a,r){return a+num(r.pumped);},0);
       rows+='<h2>Refills</h2><table><tr><th>Size</th><th>Brand</th><th>Gas</th><th>Pumped</th><th>Seal #</th><th>Notes</th><th>Photo</th></tr>'+
-        rf.map(function(r){var ph=Array.isArray(r.photo)?r.photo:[];return '<tr><td class="sz">'+r.size+'</td><td>'+r.brand+'</td><td>'+r.gasType+'</td><td class="n">'+(+r.pumped).toFixed(2)+'</td><td>'+(r.seal||'\u2014')+'</td><td>'+(r.notes||'\u2014')+'</td><td>'+(ph.length?ph.map(function(s){return '<img src="'+s+'" style="max-height:40px;border-radius:4px;margin:1px">';}).join(''):'\u2014')+'</td></tr>';}).join('')+
+        rf.map(function(r){return '<tr><td class="sz">'+r.size+'</td><td>'+r.brand+'</td><td>'+r.gasType+'</td><td class="n">'+(+r.pumped).toFixed(2)+'</td><td>'+(r.seal||'\u2014')+'</td><td>'+(r.notes||'\u2014')+'</td><td>'+_rptPhotoCell(r._photoLink,r.photo)+'</td></tr>';}).join('')+
         '<tr><td colspan="3"><b>Total pumped</b></td><td class="n"><b>'+rfTot.toFixed(2)+'</b></td><td colspan="3"></td></tr></table>';
     }
 
@@ -15181,17 +15207,16 @@ function buildCountDocAsync(src){
       var pvTot=pv.reduce(function(a,r){return a+num(r.pumped);},0);
       var pvUsTot=pv.filter(function(r){return r.filledBy!=='Supplier';}).reduce(function(a,r){return a+num(r.pumped);},0);
       rows+='<h2>Private Refills</h2><table><tr><th>Cyl brand</th><th>Gas</th><th>Pumped</th><th>Customer / notes</th><th>Filled by</th><th>Invoice photo</th></tr>'+
-        pv.map(function(r){var cb=(r.cylBrand==='Other'&&r.otherBrand)?('Other: '+r.otherBrand):(r.cylBrand||'\u2014');var ph=Array.isArray(r.supplierPhoto)?r.supplierPhoto:[];return '<tr><td>'+cb+'</td><td>'+(r.gasType||'')+'</td><td class="n">'+(+r.pumped).toFixed(2)+'</td><td>'+(r.customer||'\u2014')+'</td><td>'+(r.filledBy==='Supplier'?('Supplier'+(r.fillSupplier?(' \u2014 '+privateSupplierName(r)):'')):'Us')+'</td><td>'+(ph.length?ph.map(function(s){return '<img src="'+s+'" style="max-height:40px;border-radius:4px;margin:1px">';}).join(''):'\u2014')+'</td></tr>';}).join('')+
+        pv.map(function(r){var cb=(r.cylBrand==='Other'&&r.otherBrand)?('Other: '+r.otherBrand):(r.cylBrand||'\u2014');return '<tr><td>'+cb+'</td><td>'+(r.gasType||'')+'</td><td class="n">'+(+r.pumped).toFixed(2)+'</td><td>'+(r.customer||'\u2014')+'</td><td>'+(r.filledBy==='Supplier'?('Supplier'+(r.fillSupplier?(' \u2014 '+privateSupplierName(r)):'')):'Us')+'</td><td>'+_rptPhotoCell(r.photoLinks,r.supplierPhoto)+'</td></tr>';}).join('')+
         '<tr><td colspan="2"><b>Total kg pumped</b></td><td class="n"><b>'+pvTot.toFixed(2)+'</b></td><td colspan="3" style="font-size:11px;color:#777;font-weight:normal">'+pvUsTot.toFixed(2)+'kg filled by us \u2014 counted toward Manifold balance below; supplier-filled is not</td></tr></table>';
     }
 
     // ---- Manifold weights ----
     var man=(st.manifold||[]).filter(inBr);
     if(man.length){
-      function _photoCell(m){var ph=Array.isArray(m.photo)?m.photo:[];return ph.length?ph.map(function(s){return '<img src="'+s+'" style="max-height:40px;border-radius:4px;margin:1px">';}).join(''):'\u2014';}
       rows+='<h2>Manifold \u2014 Cylinder Weights</h2><table><tr><th>Stage</th><th>Cyl</th><th>Gas</th><th>Scale</th><th>Tare</th><th>Left</th><th>Condition</th><th>Note</th><th>Photo</th></tr>';
       ['Opening','Removed','Added','Closing'].forEach(function(stg){
-        man.filter(function(m){return (m.stage||'Opening')===stg;}).forEach(function(m){rows+='<tr><td><b>'+stg+'</b></td><td>'+m.cyl+'</td><td>'+(m.gasType||'')+(m._openingGasTypeFlag?' <span style="color:#B5533B" title="Did not match yesterday\'s Closing gas type when saved">\u26a0</span>':'')+'</td><td class="n">'+(+m.scale).toFixed(2)+'</td><td class="n">'+(+m.tare).toFixed(2)+(m._tareFlag?' <span style="color:#B5533B" title="Did not match this slot\'s expected tare when saved">\u26a0</span>':'')+'</td><td class="n">'+(+m.gasLeft).toFixed(2)+((m._residualFlag||m._openingGasLeftFlag)?' <span style="color:#B5533B" title="'+(m._residualFlag?'Leftover gas confirmed on removal - logged in Residual Gas':'Did not match yesterday\'s Closing gas left when saved')+'">\u26a0</span>':'')+'</td><td>'+(m.cylState||'\u2014')+'</td><td>'+(m.notes||'\u2014')+'</td><td>'+_photoCell(m)+'</td></tr>';});
+        man.filter(function(m){return (m.stage||'Opening')===stg;}).forEach(function(m){rows+='<tr><td><b>'+stg+'</b></td><td>'+m.cyl+'</td><td>'+(m.gasType||'')+(m._openingGasTypeFlag?' <span style="color:#B5533B" title="Did not match yesterday\'s Closing gas type when saved">\u26a0</span>':'')+'</td><td class="n">'+(+m.scale).toFixed(2)+'</td><td class="n">'+(+m.tare).toFixed(2)+(m._tareFlag?' <span style="color:#B5533B" title="Did not match this slot\'s expected tare when saved">\u26a0</span>':'')+'</td><td class="n">'+(+m.gasLeft).toFixed(2)+((m._residualFlag||m._openingGasLeftFlag)?' <span style="color:#B5533B" title="'+(m._residualFlag?'Leftover gas confirmed on removal - logged in Residual Gas':'Did not match yesterday\'s Closing gas left when saved')+'">\u26a0</span>':'')+'</td><td>'+(m.cylState||'\u2014')+'</td><td>'+(m.notes||'\u2014')+'</td><td>'+_rptPhotoCell(m._photoLink,m.photo)+'</td></tr>';});
       });
       rows+='</table>';
     }
@@ -15212,9 +15237,9 @@ function buildCountDocAsync(src){
           '<tr><td><b>Manifold balance (Gas out \u2212 Pumped)</b></td><td class="n"><b>'+(bal.diff>0?'+':'')+bal.diff.toFixed(2)+' kg '+(bal.balanced?'\u2713':'\u26a0')+'</b></td></tr></table>';
       }
       if(faultyTot.count){
-        rows+='<h3 style="font-size:13px;color:#1F3A5F;margin:14px 0 4px">Faulty Cylinders \u2014 gas at risk (currently Faulty-Held)</h3><table><tr><th>Size</th><th>Brand</th><th>Reason</th><th>Gas at risk</th></tr>'+
-          faultyRows.map(function(r){return '<tr><td class="sz">'+(r.Size||'')+'</td><td>'+(r.Brand||'')+'</td><td>'+(r.FaultReason||'')+(r.FaultDetail?(': '+r.FaultDetail):'')+'</td><td class="n">'+num(r.GasLoss).toFixed(2)+'</td></tr>';}).join('')+
-          '<tr><td colspan="3"><b>Total gas at risk</b></td><td class="n"><b>'+faultyTot.gasLoss.toFixed(2)+'</b></td></tr></table>';
+        rows+='<h3 style="font-size:13px;color:#1F3A5F;margin:14px 0 4px">Faulty Cylinders \u2014 gas at risk (currently Faulty-Held)</h3><table><tr><th>Size</th><th>Brand</th><th>Reason</th><th>Gas at risk</th><th>Photo</th></tr>'+
+          faultyRows.map(function(r){return '<tr><td class="sz">'+(r.Size||'')+'</td><td>'+(r.Brand||'')+'</td><td>'+(r.FaultReason||'')+(r.FaultDetail?(': '+r.FaultDetail):'')+'</td><td class="n">'+num(r.GasLoss).toFixed(2)+'</td><td>'+_rptPhotoCell(r.PhotoLink,null)+'</td></tr>';}).join('')+
+          '<tr><td colspan="3"><b>Total gas at risk</b></td><td class="n"><b>'+faultyTot.gasLoss.toFixed(2)+'</b></td><td></td></tr></table>';
       }
       if(man.length&&faultyTot.count){
         var totalUnexplained=bal.diff+faultyTot.gasLoss;
@@ -15228,9 +15253,9 @@ function buildCountDocAsync(src){
     // ---- Residual Gas ----
     var residualRows=(st.residual||[]).filter(function(r){return !r.Branch||!_b||r.Branch===_b;});
     if(residualRows.length){
-      rows+='<h2>Residual Gas</h2><table><tr><th>Size</th><th>Brand</th><th>Residual</th><th>Note</th></tr>'+
-        residualRows.map(function(r){return '<tr><td class="sz">'+r.Size+'</td><td>'+r.Brand+'</td><td class="n">'+num(r.Residual).toFixed(2)+'</td><td>'+(r.Note||'\u2014')+'</td></tr>';}).join('')+
-        '<tr><td colspan="2"><b>Total residual</b></td><td class="n"><b>'+residual.kg.toFixed(2)+'</b></td><td></td></tr></table>'+
+      rows+='<h2>Residual Gas</h2><table><tr><th>Size</th><th>Brand</th><th>Residual</th><th>Note</th><th>Photo</th></tr>'+
+        residualRows.map(function(r){return '<tr><td class="sz">'+r.Size+'</td><td>'+r.Brand+'</td><td class="n">'+num(r.Residual).toFixed(2)+'</td><td>'+(r.Note||'\u2014')+'</td><td>'+_rptPhotoCell(r.photoLinks,null)+'</td></tr>';}).join('')+
+        '<tr><td colspan="2"><b>Total residual</b></td><td class="n"><b>'+residual.kg.toFixed(2)+'</b></td><td colspan="2"></td></tr></table>'+
         '<p style="font-size:11px;color:#777">Kept separate from the main gas total below - this is partial/leftover gas, not sellable packaged stock. The '+residual.count+' cylinder shell(s) themselves are counted in Total cylinder shells.</p>';
     }
 
@@ -15527,6 +15552,9 @@ function buildCountCSVAsync(src){
   function row(){out.push(Array.prototype.slice.call(arguments));}
   function blank(){out.push([]);}
   function section(title){blank();row(title.toUpperCase());}
+  // CSV equivalent of buildCountDocAsync's _rptPhotoCell - a cell here is plain text, so this
+  // is just the confirmed link(s) as-is (opens fine from Sheets/Excel), or blank if none.
+  function _csvPhoto(linkVal){return linkVal?String(linkVal).split(',').map(function(u){return u.trim();}).filter(Boolean).join('; '):'';}
   var _liveFetch=(st===store)?Promise.all([
     _fetchManifoldLiveRows(_b,src.date),
     _fetchCaptureLiveRows('received','received',_b,src.date),
@@ -15684,9 +15712,9 @@ function buildCountCSVAsync(src){
     var manLatestRows=Object.keys(manLatestBySlot).sort().map(function(k){return manLatestBySlot[k];});
     if(manLatestRows.length){
       section('Manifold - Cylinders on Hand');
-      row('Slot','Stage','Brand','Gas','Weight (kg)','Condition','Note');
+      row('Slot','Stage','Brand','Gas','Weight (kg)','Condition','Note','Photo');
       var manLatestTotalKg=0;
-      manLatestRows.forEach(function(m){manLatestTotalKg+=num(m.gasLeft);row(m.cyl,m.stage||'Opening',m.brand||'',m.gasType||'',(+m.gasLeft).toFixed(2),m.cylState||'',m.notes||'');});
+      manLatestRows.forEach(function(m){manLatestTotalKg+=num(m.gasLeft);row(m.cyl,m.stage||'Opening',m.brand||'',m.gasType||'',(+m.gasLeft).toFixed(2),m.cylState||'',m.notes||'',_csvPhoto(m._photoLink));});
       row('Total on manifold (latest reading per slot, kg)',manLatestTotalKg.toFixed(2));
     }
 
@@ -15702,15 +15730,21 @@ function buildCountCSVAsync(src){
         if(r.overrideReason&&!g.reason)g.reason=r.overrideReason;
       });
       section('Stock Received');
-      row('Size','Brand','Full In','Empty Out','Supplier','Invoice #','Delivery Note #');
+      row('Size','Brand','Full In','Empty Out','Supplier','Invoice #','Delivery Note #','Photo');
       var grandFullIn=0,grandEmptyOut=0;
+      var _recvPhotoByKey={};
+      recvRows.forEach(function(r){
+        var k=r.size+'|'+(r.invoiceNo||'')+'|'+(r.deliveryNote||'')+'|'+(r.supplier||'');
+        if(r.photoLinks&&!_recvPhotoByKey[k])_recvPhotoByKey[k]=r.photoLinks;
+      });
       dOrder.forEach(function(key){
         var g=dGroups[key];
         var brands=Object.keys(g.recv).concat(Object.keys(g.ret).filter(function(b){return g.recv[b]===undefined;}));
         var fullTot=Object.keys(g.recv).reduce(function(s,b){return s+g.recv[b];},0);
         var emptyTot=Object.keys(g.ret).reduce(function(s,b){return s+g.ret[b];},0);
         grandFullIn+=fullTot;grandEmptyOut+=emptyTot;
-        brands.forEach(function(b){row(g.size,b,g.recv[b]||0,g.ret[b]||0,g.supplier||'',g.invoiceNo||'',g.deliveryNote||'');});
+        var photoTxt=_csvPhoto(_recvPhotoByKey[key]);
+        brands.forEach(function(b){row(g.size,b,g.recv[b]||0,g.ret[b]||0,g.supplier||'',g.invoiceNo||'',g.deliveryNote||'',photoTxt);});
         var diff=fullTot-emptyTot;
         row('Balance - '+g.size,'','',diff===0?'balanced':((diff>0?'+':'')+diff+' ('+(diff>0?'more full in':'more empty out')+')'),g.supplier||'',g.invoiceNo||'',g.deliveryNote||'',g.reason||'');
       });
@@ -15721,18 +15755,18 @@ function buildCountCSVAsync(src){
     // ---- Refills ----
     if(rf.length){
       section('Refills');
-      row('Size','Brand','Gas','Pumped (kg)','Seal #','Notes');
-      rf.forEach(function(r){row(r.size,r.brand,r.gasType||'',(+r.pumped).toFixed(2),r.seal||'',r.notes||'');});
+      row('Size','Brand','Gas','Pumped (kg)','Seal #','Notes','Photo');
+      rf.forEach(function(r){row(r.size,r.brand,r.gasType||'',(+r.pumped).toFixed(2),r.seal||'',r.notes||'',_csvPhoto(r._photoLink));});
       row('Total pumped (kg)',rfTot.toFixed(2));
     }
 
     // ---- Private Refills ----
     if(pv.length){
       section('Private Refills');
-      row('Cyl Brand','Gas','Pumped (kg)','Customer / Notes','Filled By','Supplier');
+      row('Cyl Brand','Gas','Pumped (kg)','Customer / Notes','Filled By','Supplier','Photo');
       pv.forEach(function(r){
         var cb=(r.cylBrand==='Other'&&r.otherBrand)?('Other: '+r.otherBrand):(r.cylBrand||'');
-        row(cb,r.gasType||'',(+r.pumped).toFixed(2),r.customer||'',(r.filledBy==='Supplier'?'Supplier':'Us'),(r.filledBy==='Supplier'&&r.fillSupplier)?privateSupplierName(r):'');
+        row(cb,r.gasType||'',(+r.pumped).toFixed(2),r.customer||'',(r.filledBy==='Supplier'?'Supplier':'Us'),(r.filledBy==='Supplier'&&r.fillSupplier)?privateSupplierName(r):'',_csvPhoto(r.photoLinks));
       });
       row('Total kg pumped',pvTot.toFixed(2),'By us (counts toward Manifold balance): '+pvUsTot.toFixed(2)+'kg');
     }
@@ -15740,10 +15774,10 @@ function buildCountCSVAsync(src){
     // ---- Manifold weights (full history, every stage) ----
     if(man.length){
       section('Manifold - Cylinder Weights');
-      row('Stage','Cyl','Gas','Scale','Tare','Left (kg)','Condition','Note');
+      row('Stage','Cyl','Gas','Scale','Tare','Left (kg)','Condition','Note','Photo');
       ['Opening','Removed','Added','Closing'].forEach(function(stg){
         man.filter(function(m){return (m.stage||'Opening')===stg;}).forEach(function(m){
-          row(stg,m.cyl,m.gasType||'',(+m.scale).toFixed(2),(+m.tare).toFixed(2),(+m.gasLeft).toFixed(2),m.cylState||'',m.notes||'');
+          row(stg,m.cyl,m.gasType||'',(+m.scale).toFixed(2),(+m.tare).toFixed(2),(+m.gasLeft).toFixed(2),m.cylState||'',m.notes||'',_csvPhoto(m._photoLink));
         });
       });
     }
@@ -15766,8 +15800,8 @@ function buildCountCSVAsync(src){
       if(faultyTot.count){
         blank();
         row('Faulty Cylinders - gas at risk (currently Faulty-Held)');
-        row('Size','Brand','Reason','Gas at risk (kg)');
-        faultyRows.forEach(function(r){row(r.Size||'',r.Brand||'',(r.FaultReason||'')+(r.FaultDetail?(': '+r.FaultDetail):''),num(r.GasLoss).toFixed(2));});
+        row('Size','Brand','Reason','Gas at risk (kg)','Photo');
+        faultyRows.forEach(function(r){row(r.Size||'',r.Brand||'',(r.FaultReason||'')+(r.FaultDetail?(': '+r.FaultDetail):''),num(r.GasLoss).toFixed(2),_csvPhoto(r.PhotoLink));});
         row('Total gas at risk (kg)',faultyTot.gasLoss.toFixed(2));
       }
       if(man.length&&faultyTot.count){
@@ -15783,8 +15817,8 @@ function buildCountCSVAsync(src){
     // ---- Residual Gas ----
     if(residualRows.length){
       section('Residual Gas');
-      row('Size','Brand','Residual (kg)','Note');
-      residualRows.forEach(function(r){row(r.Size,r.Brand,num(r.Residual).toFixed(2),r.Note||'');});
+      row('Size','Brand','Residual (kg)','Note','Photo');
+      residualRows.forEach(function(r){row(r.Size,r.Brand,num(r.Residual).toFixed(2),r.Note||'',_csvPhoto(r.photoLinks));});
       row('Total residual (kg)',residual.kg.toFixed(2),residual.count+' cylinder shell(s) - counted in Total Cylinder Shells');
     }
 
