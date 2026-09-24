@@ -12105,11 +12105,27 @@ function _photoQueueRemove(id){
   if(typeof _capUpdateSessionCounter==='function')_capUpdateSessionCounter();
   if(typeof _rUpdateSessionCounter==='function')_rUpdateSessionCounter();
 }
+// Human-readable "what row was this" fragment shared by both audit lines below.
+function _photoQueueAuditRowTag(e){
+  var rid=(e.rowRids||[e.rowRid]).filter(Boolean).join(',');
+  return (e.capType||'?')+' '+(e.branch||'?')+(rid?(' row '+rid):'');
+}
 function _photoQueueMarkAttempt(id,err){
   var q=_photoQueueLoad();
   var e=q.filter(function(x){return x.id===id;})[0];
   if(!e)return;
   e.attempts=(e.attempts||0)+1;e.lastAttemptAt=nowStamp();e.lastError=err||null;
+  // Audit-logged ONCE per entry, not on every retry - this can legitimately retry every 45s
+  // for hours (offline overnight, a genuinely stuck row), and nobody wants an Audit Log
+  // entry every 45s for that. Added 2026-09-24 after a real incident where, after the fact,
+  // nobody could tell whether a photo write-back had ever actually failed at all (see the
+  // same date's fix to _photoQueueWriteBack's own silent-drop bug) - the pending badge +
+  // this one persistent line are now the lasting signal something needs attention, while the
+  // queue keeps quietly retrying in the background exactly as before.
+  if(!e._audited){
+    e._audited=true;
+    auditLog('Photo upload failed',_photoQueueAuditRowTag(e)+' - '+(err||'unknown error'),undefined,undefined,'failure',e.branch);
+  }
   _photoQueueSave(q);
 }
 function _updatePhotoQueuePendingBadge(){
@@ -12205,6 +12221,10 @@ function _photoQueueProcess(startIndex){
       return;
     }
     return _photoQueueWriteBack(entry,links).then(function(){
+      // One Audit Log line per successfully-written-back entry - added 2026-09-24 alongside
+      // the matching failure line in _photoQueueMarkAttempt, so "did this photo ever reach
+      // the Sheet" is answerable from the Audit Log afterward instead of needing a live test.
+      auditLog('Photo uploaded',_photoQueueAuditRowTag(entry)+' - '+links.split(',').filter(Boolean).length+' photo(s)',undefined,undefined,'success',entry.branch);
       _photoQueueRemove(entry.id);
       _photoQueueBusy=false;
       _photoQueueProcess(); // queue shrank - restart from 0 rather than reasoning about shifted indices
