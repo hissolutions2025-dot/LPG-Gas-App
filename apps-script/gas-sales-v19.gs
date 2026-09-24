@@ -1,6 +1,22 @@
 /**
- * GAS SALES - BOUND Apps Script v18 (v17 + Residual Gas row tracking)
+ * GAS SALES - BOUND Apps Script v19 (v18 + Faulty Cylinders photo)
  * Lives INSIDE the master Google Sheet. Writes the full who/when/why schema.
+ *
+ * v19 changes vs v18:
+ *   1. FAULTY CYLINDERS PHOTO: every other capture section (Refills, Private, Received,
+ *      Manifold, Residual) can attach a photo - Faulty Cylinders never could (the capture
+ *      form literally had a disabled "Photo evidence — coming soon" checkbox). Faulty is
+ *      structurally different from those 5: it's identified by a server-generated id
+ *      (F-nnn from _nextFaultyId, not a client _rid), and corrected in place via
+ *      faultyUpdate rather than the generic adjustRow/RowId mechanism, so it needed its
+ *      own small adaptation of the same photo-queue pattern rather than reusing
+ *      residualUpdate/adjustRow verbatim: FAULTY_HEADERS gains a trailing PhotoLink
+ *      column; faultyLog writes it (blank until a photo actually finishes uploading, same
+ *      as every other section); faultyListOpen now returns it so the Open Register can
+ *      show a photo status; faultyUpdate accepts an optional photoLink in its body and
+ *      writes it alongside Status/UpliftDN/ReturnDN, using the SAME find-by-id row lookup
+ *      it already does - no new schema concept, just one more optional field on an
+ *      existing update path. Needs applyV19Updates() run ONCE after pasting - see below.
  *
  * v18 changes vs v17:
  *   1. RESIDUAL GAS ROW TRACKING: every other capture tab that supports a photo
@@ -212,13 +228,15 @@
  *
  * SETUP: Extensions > Apps Script > select all > delete > paste this whole file > Save >
  *        Deploy > Manage deployments > edit existing deployment > New version > Deploy.
- *        Confirm the /exec URL returns "Gas Sales v18 endpoint live".
- *        Then run applyV18Updates() ONCE (Run > select it from the function dropdown >
- *        Run) to add the ResidualGas tab's new "Row Id" header cell.
+ *        Confirm the /exec URL returns "Gas Sales v19 endpoint live".
+ *        Then run applyV18Updates() AND applyV19Updates() ONCE each (Run > select from the
+ *        function dropdown > Run) - the first adds the ResidualGas tab's "Row Id" header,
+ *        the second adds the Faulty tab's "Photo Link" header.
  *        (If setting this up completely fresh: run the older one-off migrations first, in
  *        order - fixReconSheets() from v8, applyV9Updates(), applyV10Updates(),
  *        applyV11Updates(), applyV12Updates(), applyV13Updates(), protectRowIdColumns(),
- *        applyV15Updates(), applyV18Updates() - v16 and v17 need nothing extra.)
+ *        applyV15Updates(), applyV18Updates(), applyV19Updates() - v16 and v17 need
+ *        nothing extra.)
  */
 
 var SECRET = '4bV-Qd9UwxAqaImpNUzBY6AKSU6qCriJ';
@@ -487,21 +505,25 @@ function _photoLinksRichText(urls){
   return builder.build();
 }
 
-function doGet(){ return _json({ok:true,msg:'Gas Sales v18 endpoint live'}); }
+function doGet(){ return _json({ok:true,msg:'Gas Sales v19 endpoint live'}); }
 function _json(o){ return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
 
-// ===================== v4 NEW (v9: gains OperatorNote): FAULTY CYLINDERS =====================
+// ===================== v4 NEW (v9: gains OperatorNote; v19: gains PhotoLink) ==============
 // Sheet "Faulty" columns:
 //   ID | Timestamp | Branch | Operator | Brand | Size | Qty | State | SealNumber |
 //   FaultReason | FaultDetail | CylScale | CylTare | GasRemaining | Nominal | GasLoss |
-//   Status | UpliftDN | ReturnDN | DateClosed | OperatorNote
+//   Status | UpliftDN | ReturnDN | DateClosed | OperatorNote | PhotoLink
 //
 // - faultyLog: appends a row, Status starts 'Faulty-Held'. GasLoss stays blank until closed.
+//   PhotoLink starts blank too - same as every other section, the photo itself only exists
+//   once the id comes back and the background queue's upload+write-back finish.
 // - faultyListOpen: returns rows where Status is not Replaced/Not Replaced.
-// - faultyUpdate: updates Status/UpliftDN/ReturnDN by id. Setting Status to Replaced or
-//   Not Replaced stamps DateClosed; Not Replaced also finalises GasLoss = max(0, Nominal - GasRemaining)
-//   (the actual booked loss - Replaced never books a loss).
-var FAULTY_HEADERS = ['ID','Timestamp','Branch','Operator','Brand','Size','Qty','State','SealNumber','FaultReason','FaultDetail','CylScale','CylTare','GasRemaining','Nominal','GasLoss','Status','UpliftDN','ReturnDN','DateClosed','OperatorNote'];
+// - faultyUpdate: updates Status/UpliftDN/ReturnDN by id, and now optionally PhotoLink too
+//   (only touched when body.photoLink is actually present, so a plain status/DN save never
+//   blanks an existing link). Setting Status to Replaced or Not Replaced stamps DateClosed;
+//   Not Replaced also finalises GasLoss = max(0, Nominal - GasRemaining) (the actual booked
+//   loss - Replaced never books a loss).
+var FAULTY_HEADERS = ['ID','Timestamp','Branch','Operator','Brand','Size','Qty','State','SealNumber','FaultReason','FaultDetail','CylScale','CylTare','GasRemaining','Nominal','GasLoss','Status','UpliftDN','ReturnDN','DateClosed','OperatorNote','PhotoLink'];
 var FAULTY_NOMINAL = {'5kg':5,'9kg':9,'12kg':12,'14kg':14,'19kg':19,'48kg-SV':48,'48kg-DV':48,'14kg-FLT':14,'19kg-FLT':19,'8kg-Prop':8,'18kg-Prop':18,'45kg-Prop-SV':45,'45kg-Prop-DV':45};
 
 function _faultySheet(){
@@ -546,7 +568,7 @@ function _handleFaulty(type, body){
     var gasRemaining=Math.max(0, scale-tare);
     var nominal=FAULTY_NOMINAL[r.Size]||0;
     sh.appendRow([id, new Date(), r.Branch||'', r.Operator||body.caller||'', r.Brand||'', r.Size||'', r.Qty||1, r.State||'',
-      r.SealNumber||'', r.FaultReason||'', r.FaultDetail||'', scale, tare, gasRemaining, nominal, '', 'Faulty-Held', '', '', '', r.OperatorNote||'']);
+      r.SealNumber||'', r.FaultReason||'', r.FaultDetail||'', scale, tare, gasRemaining, nominal, '', 'Faulty-Held', '', '', '', r.OperatorNote||'', r.PhotoLink||'']);
     return _json({ok:true, id:id});
   }
 
@@ -561,7 +583,7 @@ function _handleFaulty(type, body){
       return {
         id:row[0], Branch:row[2], Brand:row[4], Size:row[5], Qty:row[6],
         FaultReason:row[9], FaultDetail:row[10], GasLoss:row[15], Status:row[16],
-        UpliftDN:row[17], ReturnDN:row[18], OperatorNote:row[20]
+        UpliftDN:row[17], ReturnDN:row[18], OperatorNote:row[20], PhotoLink:row[21]
       };
     });
     return _json({ok:true, rows:rows});
@@ -578,9 +600,26 @@ function _handleFaulty(type, body){
     if(status==='Replaced') gasLoss=0;
     sh.getRange(hit.rowIndex,16,1,1).setValue(gasLoss);          // GasLoss
     sh.getRange(hit.rowIndex,17,1,1).setValue(status);           // Status
-    sh.getRange(hit.rowIndex,18,1,1).setValue(body.upliftDN||''); // UpliftDN
-    sh.getRange(hit.rowIndex,19,1,1).setValue(body.returnDN||''); // ReturnDN
+    // v19: UpliftDN/ReturnDN now only touched when actually supplied - was previously
+    // ALWAYS overwritten with body.upliftDN||'' / body.returnDN||'' even when the caller
+    // never meant to touch them (harmless for the register's own Save button, which always
+    // sends both fields from its own inputs regardless of whether they changed - but would
+    // have silently blanked a real DN value on the new photo-only update call this version
+    // adds, which has no reason to know or send either field).
+    if(body.upliftDN!==undefined) sh.getRange(hit.rowIndex,18,1,1).setValue(body.upliftDN); // UpliftDN
+    if(body.returnDN!==undefined) sh.getRange(hit.rowIndex,19,1,1).setValue(body.returnDN); // ReturnDN
     if(closing) sh.getRange(hit.rowIndex,20,1,1).setValue(new Date()); // DateClosed
+    // v19: only touched when actually supplied, so an ordinary status/DN save (the
+    // register's own "Save" button, which never sends photoLink at all) can never blank an
+    // already-uploaded link - same "only apply what's named" convention _handleAdjustRow/
+    // _handleResidualUpdate already use for their `updates` objects. Shortened to the same
+    // linked "📷1, 📷2" rich text every other tab's Photo Link(s) cell already uses
+    // (_photoLinksRichText, v11) rather than a raw comma-joined URL.
+    if(body.photoLink!==undefined){
+      var _photoCell=sh.getRange(hit.rowIndex,22,1,1);
+      var _urls=String(body.photoLink||'').split(',').map(function(u){return u.trim();}).filter(Boolean);
+      if(_urls.length) _photoCell.setRichTextValue(_photoLinksRichText(_urls)); else _photoCell.setValue('');
+    }
     return _json({ok:true});
   }
 
@@ -1295,6 +1334,22 @@ function applyV18Updates(){
   var col = META.length + idx + 1;
   var cell = sh.getRange(1, col);
   if(String(cell.getValue()||'').trim()==='') cell.setValue('Row Id');
+  cell.setFontWeight('bold');
+  SpreadsheetApp.flush();
+}
+
+// ===================== v19 NEW: FAULTY CYLINDERS PHOTO LINK HEADER =====================
+// Run applyV19Updates() ONCE after pasting. Safe to run more than once (it only sets the
+// "PhotoLink" header cell on the Faulty tab if it isn't already there) - not a
+// row-inserting migration. Existing Faulty rows are left exactly as they are (blank
+// PhotoLink = no photo was ever captured for that row, which is simply true - the column
+// didn't exist yet to hold one).
+function applyV19Updates(){
+  var sh = _faultySheet(); // creates the sheet with all headers (including PhotoLink) if missing
+  var idx = FAULTY_HEADERS.indexOf('PhotoLink');
+  if(idx===-1) return;
+  var cell = sh.getRange(1, idx+1); // Faulty has no META block prefix - FAULTY_HEADERS IS the full column list
+  if(String(cell.getValue()||'').trim()==='') cell.setValue('PhotoLink');
   cell.setFontWeight('bold');
   SpreadsheetApp.flush();
 }

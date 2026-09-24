@@ -1076,7 +1076,10 @@
         <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Only an actual loss if this cylinder is later marked <b>Not Replaced</b> in the register.</div>
         <label class="mLabel">Operator note</label>
         <textarea class="mField" id="fcNote" rows="2" placeholder="Optional note"></textarea>
-        <div style="font-size:11px;color:var(--muted);margin:8px 0"><input type="checkbox" disabled style="vertical-align:middle"> Photo evidence — coming soon</div>
+        <label class="mLabel">Photo (optional)</label>
+        <input type="file" accept="image/*" capture="environment" id="fcPhotoInput" style="display:none" onchange="fcPhotoPick(this)">
+        <button type="button" class="photoBtn" id="fcPhotoBtn" onclick="document.getElementById('fcPhotoInput').click()">📷 Add photo (0/2)</button>
+        <div id="fcPhotoThumb" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap"></div>
         <button class="saveBtn" id="faultySubmitBtn" onclick="faultySubmit()">Log faulty cylinder</button>
       </div>
     </div>
@@ -3849,7 +3852,13 @@ function faultySubmit(){
   if(fsBtn){fsBtn.disabled=true;fsBtn.style.opacity='.6';}
   apiPost('faultyLog',{row:row}).then(function(res){
     if(!res||!res.ok){toast((res&&res.msg)||'Could not log faulty cylinder',true);return;}
-    toast('Faulty cylinder logged'+(res.id?(' — '+res.id):''));
+    // Photo queued only AFTER a real id comes back - unlike every other section, Faulty is
+    // identified by a server-generated id (F-nnn), never known client-side before this
+    // point, so there's nothing to attach the photo to until now.
+    if(fcPhoto.length&&res.id){
+      _photoQueueAdd({capType:'faulty',branch:row.Branch,date:today,rowRid:res.id,category:'Faulty',photos:fcPhoto.slice()});
+    }
+    toast('Faulty cylinder logged'+(res.id?(' — '+res.id):'')+(fcPhoto.length?' · photo uploading in background':''));
     auditLog('Faulty cylinder logged',row.Branch+' — '+row.Brand+' '+row.Size+' ×'+row.Qty+' ('+row.State+') — '+row.FaultReason+(row.FaultDetail?(': '+row.FaultDetail):'')+(res.id?(' — '+res.id):''),null,null,'success',row.Branch);
     faultyResetForm();
   }).catch(function(){toast('Network error — check your connection',true);})
@@ -3861,8 +3870,26 @@ function faultyResetForm(){
   document.getElementById('fcBrand').value='Afrox';document.getElementById('fcBrandOther').value='';
   document.getElementById('fcReason').value='Leaking valve';document.getElementById('fcReasonOther').value='';
   var sizeEl=document.getElementById('fcSize');if(sizeEl&&sizeEl.options.length)sizeEl.selectedIndex=0;
+  fcPhoto=[];fcRenderPhotoThumbs();
   faultyBrandChanged();faultyReasonChanged();faultySetState('Full');faultyCalcUpdate();
 }
+// One faulty cylinder's photo(s) - same picker pattern as Residual's rgPhoto (v19, added
+// alongside the backend's new Faulty PhotoLink column). Reset after every successful log
+// (faultyResetForm above), same as every other section's pending-photo array.
+var fcPhoto=[];
+function fcPhotoPick(input){
+  var f=input.files&&input.files[0];if(!f){return;}
+  if(fcPhoto.length>=2){toast('Max 2 photos per cylinder',true);input.value='';return;}
+  _pickPhotoOrFallback(f,function(dataUri){fcPhoto.push(dataUri);fcRenderPhotoThumbs();});
+  input.value='';
+}
+function fcRenderPhotoThumbs(){
+  var t=document.getElementById('fcPhotoThumb');
+  if(t)t.innerHTML=fcPhoto.map(function(src,i){return '<span style="position:relative;display:inline-block"><img src="'+src+'" style="max-height:60px;border-radius:8px;border:1px solid var(--line)"><button type="button" class="sigClear" style="padding:2px 6px;position:absolute;top:-6px;right:-6px;border-radius:50%" onclick="fcRemovePhoto('+i+')">×</button></span>';}).join('');
+  var btn=document.getElementById('fcPhotoBtn');
+  if(btn){btn.textContent='📷 Add photo ('+fcPhoto.length+'/2)';btn.disabled=(fcPhoto.length>=2);btn.style.opacity=(fcPhoto.length>=2)?'.5':'1';}
+}
+function fcRemovePhoto(i){fcPhoto.splice(i,1);fcRenderPhotoThumbs();}
 // ---- Open register ----
 // The register always shows exactly ONE branch at a time — see _faultyVisibleRows().
 function faultyRegisterBranches(){
@@ -3908,6 +3935,7 @@ function renderFaultyRegister(){
         '<span style="font-size:11px;color:var(--muted)">'+(r.Branch||'')+' · '+id+'</span></div>'+
       '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">'+(r.FaultReason||'')+(r.FaultDetail?(' — '+r.FaultDetail):'')+' · Gas loss risk: '+(r.GasLoss!==undefined&&r.GasLoss!==''?r.GasLoss:'—')+'kg</div>'+
       (r.OperatorNote?('<div style="font-size:11px;color:var(--steel);margin-bottom:6px;font-style:italic">Note: '+r.OperatorNote+'</div>'):'')+
+      '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #EEF1F4;font-size:12px;margin-bottom:6px"><span>'+(r.PhotoLink?'✓ photo on file':'— no photo')+'</span><button type="button" class="sigClear" style="padding:3px 8px;font-size:10px" onclick="faultyAddPhoto(\''+id+'\')">'+(r.PhotoLink?'+ Retry photo':'+ Add photo')+'</button></div>'+
       '<div class="adminRow"><div class="grow"><label class="mLabel" style="font-size:11px">Status</label>'+
         '<select class="mField frStatus" data-id="'+id+'">'+['Faulty-Held','Uplifted','Replaced','Not Replaced'].map(function(s){return '<option'+(r.Status===s?' selected':'')+'>'+s+'</option>';}).join('')+'</select></div></div>'+
       '<div class="adminRow">'+
@@ -3931,6 +3959,19 @@ function faultySaveRow(id){
     auditLog('Faulty cylinder updated',(_row.Branch||faultyRegisterBranch)+' — '+(_row.Brand||'')+' '+(_row.Size||'')+' — '+(_row.Status||'?')+' → '+newStatus+' — '+id,null,null,'success',_row.Branch||faultyRegisterBranch);
     faultyLoadRegister();
   }).catch(function(){toast('Network error — check your connection',true);});
+}
+// Add/retry a photo for an already-logged Faulty row - v19, same pattern as
+// _openAddPhotoForReceivedGroup (live store, no historical-tool machinery involved).
+// Doesn't force a register reload afterward - the upload/write-back happens in the
+// background (queued, not instant), so an immediate reload would just re-fetch the same
+// "no photo yet" state; the toast is the confirmation, same as every other section's
+// same-day photo queue.
+function faultyAddPhoto(id){
+  var row=faultyRegisterRows.filter(function(r){return (r.id||r.ID)===id;})[0];
+  _pickPhotoFile(function(dataUri){
+    _photoQueueAdd({capType:'faulty',branch:(row&&row.Branch)||faultyRegisterBranch,date:today,rowRid:id,category:'Faulty',photos:[dataUri]});
+    toast('Photo queued — uploading in background');
+  });
 }
 
 // ===== RESIDUAL GAS (main section) =====
@@ -5102,6 +5143,25 @@ function adjustResidualRow(rowId,updates){
     return ok;
   }).catch(function(){
     toast('Correction saved locally, but could not reach the server to update the ResidualGas sheet row',true);
+    return false;
+  });
+}
+// Faulty Cylinders' photo write-back - v19. Faulty is identified by a server-generated id
+// (F-nnn), not a client _rid, and corrected via faultyUpdate's own {id,status,upliftDN,
+// returnDN,photoLink} wire shape (not the generic {sheet,rowId,updates} one adjustSheetRow/
+// adjustResidualRow use) - so this can't just reuse either of those verbatim, only mirror
+// the same success/failure/toast contract they both already provide. Deliberately sends
+// ONLY id+photoLink, no status/upliftDN/returnDN - the backend now only touches fields it
+// actually receives (fixed in the same v19 pass, see gas-sales-v19.gs), so this can never
+// blank an existing Uplift/Return DN it has no business touching.
+function adjustFaultyRow(id,photoLink){
+  if(!id)return Promise.resolve(true);
+  return apiPost('faultyUpdate',{id:id,photoLink:photoLink}).then(function(res){
+    var ok=!!(res&&res.ok);
+    if(!ok)toast('Correction saved locally, but could not update the Faulty sheet row (backend may need updating to v19) - see Adjustments tab',true);
+    return ok;
+  }).catch(function(){
+    toast('Correction saved locally, but could not reach the server to update the Faulty sheet row',true);
     return false;
   });
 }
@@ -12179,12 +12239,14 @@ function _updatePhotoQueuePendingBadge(){
     el.textContent=text;
   });
 }
-// Per-capType sheet/field mapping for photo write-back. residual:'ResidualGas' as of v18
-// (was null - see _photoQueueWriteBack's own comment on the earlier "known gap"; ResidualGas
-// now has its own RowId column and 'residualUpdate' backend action, apps-script/gas-sales-v18.gs).
-var PHOTO_QUEUE_SHEET={manifold:'Manifold',refill:'Refills',private:'Private',received:'Received',residual:'ResidualGas'};
-var PHOTO_QUEUE_LINK_FIELD={manifold:'PhotoLink',refill:'PhotoLinks',private:'PhotoLinks',received:'PhotoLinks',residual:'PhotoLinks'};
-var PHOTO_QUEUE_LOCAL_FIELD={manifold:'_photoLink',refill:'_photoLink',private:'photoLinks',received:'photoLinks',residual:'photoLinks'};
+// Per-capType sheet/field mapping for photo write-back. residual:'ResidualGas' as of v18,
+// faulty:'Faulty' as of v19 (both were null/absent before - see _photoQueueWriteBack's own
+// comment on the earlier "known gap"). faulty's LOCAL_FIELD is never actually read (no
+// store.faulty/local cache exists - see _photoQueueMirrorWrite), kept here only so this map
+// stays a complete, consistent per-capType lookup.
+var PHOTO_QUEUE_SHEET={manifold:'Manifold',refill:'Refills',private:'Private',received:'Received',residual:'ResidualGas',faulty:'Faulty'};
+var PHOTO_QUEUE_LINK_FIELD={manifold:'PhotoLink',refill:'PhotoLinks',private:'PhotoLinks',received:'PhotoLinks',residual:'PhotoLinks',faulty:'PhotoLink'};
+var PHOTO_QUEUE_LOCAL_FIELD={manifold:'_photoLink',refill:'_photoLink',private:'photoLinks',received:'photoLinks',residual:'photoLinks',faulty:'PhotoLink'};
 // Shared "has a photo already reached this row?" label for the correction picker's photo
 // button - added 2026-09-24 so a Manager/Owner adjusting an entry can tell at a glance
 // instead of the button reading the same "+ Add/retry photo" text whether or not one
@@ -12231,10 +12293,14 @@ function _photoQueueWriteBack(entry,links){
   if(sheet){
     var linkField=PHOTO_QUEUE_LINK_FIELD[entry.capType];
     var updates={};updates[linkField]=links;
-    // Residual isn't in the generic TABS map (own tab, own 'residualUpdate' action - see
-    // adjustResidualRow's comment) - every other capType goes through adjustSheetRow.
+    // Residual/Faulty aren't in the generic TABS map (own tab, own update action - see
+    // adjustResidualRow's/adjustFaultyRow's own comments) - every other capType goes
+    // through adjustSheetRow. Faulty's own wire shape takes the links directly, not an
+    // {updates} object (see adjustFaultyRow).
     var writeOne=(entry.capType==='residual')
       ? function(rid){return adjustResidualRow(rid,updates);}
+      : (entry.capType==='faulty')
+      ? function(rid){return adjustFaultyRow(rid,links);}
       : function(rid){return adjustSheetRow(sheet,rid,updates);};
     sheetWrite=Promise.all(rowRids.map(writeOne)).then(function(results){
       if(results.indexOf(false)>-1)throw new Error('Sheet row update failed for '+sheet+' (rowRids: '+rowRids.join(',')+')');
@@ -12247,6 +12313,11 @@ function _photoQueueMirrorWrite(entry,links,rowRids,localField){
   if(entry.capType==='manifold'){
     return _updateManifoldLiveRowFields(entry.rowRid,{_photoLink:links});
   }
+  // Faulty has no capture_live_rows mirror (or any live-store cache at all - see
+  // _photoQueueWriteBack's top no-op for it) - the Open Register re-fetches fresh from
+  // faultyListOpen every time it's opened, which already includes PhotoLink once the sheet
+  // write above lands. Nothing else to update here.
+  if(entry.capType==='faulty')return Promise.resolve();
   var mf={_committed:true};mf[localField]=links;
   return Promise.all(rowRids.map(function(rid){return _updateCaptureLiveRowFields(entry.capType,rid,mf);}));
 }
