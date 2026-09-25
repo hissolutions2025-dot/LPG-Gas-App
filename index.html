@@ -15745,6 +15745,71 @@ function buildCountDocAsync(src){
       '<tr><td><b>= Total cylinder shells</b></td><td class="n"><b>'+grandShellCount+'</b></td></tr></table>'+
       '<p style="font-size:11px;color:#777">The \u2248 estimate figures come from Stock Count\'s tally (quantity \u00d7 nominal size - Count never weighs an individual cylinder). Manifold and Faulty Cylinder figures are actually weighed at capture time.</p>';
 
+    // ---- Recommended Stock Order & Recommended Extra Cylinder Allocation ----
+    // Advisory reorder guidance at the foot of the report, computed from the Manager-set Stock
+    // Thresholds (minFullHold / maxThreshold) and Extra Allocation (replenishBelow) config for
+    // THIS branch, against today's Closing counts. Per size + brand (thresholds are set per
+    // brand). Colour = urgency of each size/brand's recommended number: red = below the minimum
+    // (urgent), amber = below the target (top up), green = at/above target (fine). Only shown
+    // once a Closing count exists for the branch - before that the numbers are premature - and
+    // only for size/brands that actually have the relevant threshold configured. Uses the same
+    // thresholdFor()/C_FULLBRANDS sources the Stock Thresholds & Extra Allocation admin tabs and
+    // the Home-screen badges already read, so a recommendation here can never disagree with them.
+    var _recHasClosing=ALLSIZES.some(function(sz){return totalOf(counts.Closing.Full[sz])||totalOf(counts.Closing.Empty[sz]);});
+    function _recCellStyle(level){
+      if(level==='red')return 'background:#FBE7E8;color:#C0392B;font-weight:800;text-align:center';
+      if(level==='amber')return 'background:#FBF0DD;color:#B9761F;font-weight:800;text-align:center';
+      return 'background:#E5F5EB;color:#1E8449;font-weight:800;text-align:center';
+    }
+    if(_recHasClosing){
+      var _recBrands=C_FULLBRANDS[_b]||['Other'];
+      // Recommended Stock Order - order FULL cylinders up to the certified maximum (maxThreshold).
+      var _orderRows='';
+      ALLSIZES.forEach(function(sz){
+        _recBrands.forEach(function(brand){
+          var th=thresholdFor(_b,sz,brand);
+          if(!(th.maxThreshold>0))return; // no order target set for this size/brand
+          var closeF=(counts.Closing.Full[sz]&&counts.Closing.Full[sz][brand])||0;
+          var order=Math.max(0,th.maxThreshold-closeF);
+          var level=(th.minFullHold>0&&closeF<th.minFullHold)?'red':(closeF<th.maxThreshold?'amber':'green');
+          _orderRows+='<tr><td class="sz">'+sz+'</td><td>'+brand+'</td>'+
+            '<td class="n">'+closeF+'</td><td class="n">'+(th.minFullHold||'\u2014')+'</td><td class="n">'+th.maxThreshold+'</td>'+
+            '<td style="'+_recCellStyle(level)+'">'+order+'</td></tr>';
+        });
+      });
+      if(_orderRows){
+        rows+='<h2>Recommended Stock Order</h2>'+
+          '<p style="font-size:11px;color:#777;margin:2px 0 6px">Full cylinders to order per size &amp; brand to bring '+_b+'\u2019s Closing Full stock up to its certified maximum. '+
+          '<b style="color:#C0392B">Red</b> = below minimum (urgent) &middot; <b style="color:#B9761F">Amber</b> = below max, top up &middot; <b style="color:#1E8449">Green</b> = at/above max, none needed.</p>'+
+          '<table><tr><th>Size</th><th>Brand</th><th>Closing Full</th><th>Min</th><th>Max</th><th>Order to Max</th></tr>'+_orderRows+'</table>';
+      }
+      // Recommended Extra Cylinder Allocation - replenish the rotating shell pool (Full+Empty)
+      // back up to its Replenish Below target. (extraAllocThreshold is deliberately NOT used
+      // here - per its own config note it's a net-cylinder-exchange creep tolerance for the
+      // Date-Range Balance report, not a stock level.)
+      var _allocRows='';
+      ALLSIZES.forEach(function(sz){
+        _recBrands.forEach(function(brand){
+          var th=thresholdFor(_b,sz,brand);
+          if(!(th.replenishBelow>0))return; // no replenish target set for this size/brand
+          var closeF=(counts.Closing.Full[sz]&&counts.Closing.Full[sz][brand])||0;
+          var closeE=(counts.Closing.Empty[sz]&&counts.Closing.Empty[sz][brand])||0;
+          var pool=closeF+closeE;
+          var extra=Math.max(0,th.replenishBelow-pool);
+          var level=(pool<th.replenishBelow*0.5)?'red':(pool<th.replenishBelow?'amber':'green');
+          _allocRows+='<tr><td class="sz">'+sz+'</td><td>'+brand+'</td>'+
+            '<td class="n">'+pool+'</td><td class="n">'+th.replenishBelow+'</td>'+
+            '<td style="'+_recCellStyle(level)+'">'+extra+'</td></tr>';
+        });
+      });
+      if(_allocRows){
+        rows+='<h2>Recommended Extra Cylinder Allocation</h2>'+
+          '<p style="font-size:11px;color:#777;margin:2px 0 6px">Extra cylinders to allocate per size &amp; brand to replenish '+_b+'\u2019s rotating shell pool (Closing Full + Empty) up to its Replenish Below target. '+
+          '<b style="color:#C0392B">Red</b> = under half the target (critical) &middot; <b style="color:#B9761F">Amber</b> = below target &middot; <b style="color:#1E8449">Green</b> = at/above target.</p>'+
+          '<table><tr><th>Size</th><th>Brand</th><th>Shell Pool (Full+Empty)</th><th>Replenish Below</th><th>Extra to Allocate</th></tr>'+_allocRows+'</table>';
+      }
+    }
+
     var times=(st.count||[]).filter(inBr).map(function(r){return r._time;}).filter(Boolean).sort();
     var timeRange=times.length?(times[0]+(times.length>1?' \u2192 '+times[times.length-1]:'')):'\u2014';
     var sig=src.sig||{};
