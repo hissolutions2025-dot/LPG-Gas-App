@@ -364,6 +364,7 @@
     <div id="userMenu" class="userMenu">
       <button onclick="closeUserMenu();changeMyPw()">Change my password</button>
       <button id="switchBranchBtn" style="display:none" onclick="closeUserMenu();switchBranch()">Switch branch</button>
+      <button id="reconcilePhotosBtn" style="display:none" onclick="closeUserMenu();reconcilePhotos({manual:true})">Recover missing photos</button>
       <button onclick="closeUserMenu();switchUser()">Switch user</button>
       <button class="danger" onclick="closeUserMenu();signOut()">Sign out</button>
     </div>
@@ -5541,6 +5542,19 @@ function _finishLogin(u,b){
   _updateCloseDayPendingBadge();
   _photoQueueProcess();
   _updatePhotoQueuePendingBadge();
+  // Cloud photo reconciler - drains any photo that reached the cloud but never got its Sheet
+  // link, completely independent of whichever phone captured it. Manager/Owner only (gated
+  // inside reconcilePhotos too), fire-and-forget so it never blocks login, and throttled to at
+  // most once per 30 min per device (a tiny timestamp - the pending lookup is cheap, but this
+  // avoids two quick re-logins both grinding the same backlog). Delayed slightly so it doesn't
+  // compete with the initial sync/flush burst above for the connection.
+  if(role==='Manager'||role==='Owner'){
+    var _lastRec=0; try{_lastRec=parseInt(localStorage.getItem('gs_last_photo_reconcile')||'0',10)||0;}catch(e){}
+    if(Date.now()-_lastRec > 30*60*1000){
+      try{localStorage.setItem('gs_last_photo_reconcile',String(Date.now()));}catch(e){}
+      setTimeout(function(){reconcilePhotos({manual:false}).catch(function(){});},4000);
+    }
+  }
   _countFlushQueue();
   _updateCountPendingBadge();
   _updateMinFullHoldBadge();
@@ -5758,6 +5772,10 @@ function toggleUserMenu(ev){
   if(ev)ev.stopPropagation();
   var btn=document.getElementById('switchBranchBtn');
   if(btn)btn.style.display=(myBranches().length>1)?'block':'none';
+  // "Recover missing photos" - Manager/Owner only (they're the ones with a reason to make sure
+  // every count's photo evidence is on file, and the reconciler is gated to their role anyway).
+  var rbtn=document.getElementById('reconcilePhotosBtn');
+  if(rbtn)rbtn.style.display=(role==='Manager'||role==='Owner')?'block':'none';
   document.getElementById('userMenu').classList.toggle('show');
 }
 // Branches the CURRENT signed-in user may work - same Owner/else pattern already used by
@@ -10664,17 +10682,6 @@ async function _capCommitReal(){
     if(capType==='manifold' || capType==='private'){
       var photoKey = capType==='private' ? 'supplierPhoto' : 'photo';
       var category = capType==='manifold'?'Manifold':'Private';
-      // TEMP DIAGNOSTIC 2026-09-25 - Manifold PhotoLink never reaching the Sheet, on any date,
-      // with an empty photo queue afterward (ruling out an upload/write-back/retry failure -
-      // _photoQueueAdd is either never being called here, or called with an empty photo array).
-      // console.log alone needed a phone's DevTools open to read, which isn't a realistic ask
-      // for a real capture on a real shift - moved into the Audit Log instead (auditLog already
-      // writes straight to Supabase, no console/DevTools access needed, and this is exactly the
-      // tool already used to check for "Photo uploaded"/"Photo upload failed" lines). One
-      // compact line per commit, not one per row, to avoid flooding the log. Remove once the
-      // actual cause is found.
-      auditLog('Photo queue diag', capType+' freshRows='+freshRows.length+' photoKey="'+photoKey+'" ['+
-        freshRows.map(function(r){return (r._rid||'?')+':'+((r[photoKey]||[]).length)+'photo(s)';}).join(', ')+']');
       freshRows.filter(function(r){return (r[photoKey]||[]).length;}).forEach(function(r){
         _photoQueueAdd({capType:capType,branch:capBranch,date:today,rowRid:r._rid,category:category,photos:r[photoKey]});
         _queuedThisCommit++;
@@ -12537,6 +12544,95 @@ document.addEventListener('visibilitychange',function(){
   if(document.visibilityState==='visible' && _photoQueueLoad().length)_photoQueueProcess();
 });
 window.addEventListener('online',_closeDayFlushQueue);
+
+// ===== CLOUD PHOTO RECONCILER (2026-09-25) =====
+// Root fix for the recurring "photos don't reach the Sheet" problem. Every capture already
+// commits its FULL row - including the raw resized photo bytes - into manifold_live_rows /
+// capture_live_rows (a reliable network write). The SEPARATE upload-to-Drive-then-write-link
+// step used to run only on the capturing phone and could silently fail (a full localStorage
+// blocking the queue's persistence), leaving photo bytes safe in the cloud but never linked
+// into the Sheet. The daily report still showed the raw thumbnails from the cloud row, which
+// masked the failure. Confirmed 2026-09-25 by querying production: dozens of rows across every
+// section had photo bytes in the cloud with no Sheet link.
+//
+// This reconciler drains those stragglers by re-driving the upload FROM the cloud copy, so it
+// is completely independent of the capturing phone: any Manager/Owner login (or the manual
+// "Recover missing photos" menu item) finds every row that still needs a link, uploads its
+// bytes to Drive, and writes the link back to the Sheet AND the cloud mirror (which marks the
+// row done so it is never reprocessed). Reuses the exact same tested write-back helpers the
+// live photo queue uses (adjustSheetRow / _updateManifoldLiveRowFields / _updateCaptureLiveRowFields).
+// The pending lookup is a lightweight Postgres function (pending_photo_uploads, see the matching
+// migration) that returns only descriptors - never the base64 - so a pass is cheap even when
+// nothing is pending.
+var _PHOTO_CATEGORY={manifold:'Manifold',refill:'Refill',private:'Private',received:'Received',residual:'Residual'};
+var _reconcileBusy=false;
+function reconcilePhotos(opts){
+  opts=opts||{};
+  // Manager/Owner only - both because they're the ones responsible for the evidence being
+  // complete, and because the write-back touches the shared Sheet/mirror.
+  if(role!=='Manager' && role!=='Owner'){ if(opts.manual)toast('Only a Manager or Owner can recover missing photos',true); return Promise.resolve({skipped:true}); }
+  if(_reconcileBusy){ if(opts.manual)toast('Already recovering photos — hang on…'); return Promise.resolve({skipped:true}); }
+  _reconcileBusy=true;
+  var recovered=0, failed=0, total=0;
+  return sb.rpc('pending_photo_uploads').then(function(res){
+    if(res.error)throw new Error('pending_photo_uploads rpc failed: '+res.error.message);
+    var pending=res.data||[];
+    total=pending.length;
+    if(opts.manual)toast(total?('Recovering '+total+' missing photo set(s)…'):'No missing photos — all counts have their evidence on file');
+    // Sequential (chained), never parallel - 60+ simultaneous Drive uploads on a shop-floor
+    // connection helps nobody; one at a time, same discipline the live queue already uses.
+    return pending.reduce(function(chain,d){
+      return chain.then(function(){
+        return _reconcileOnePhoto(d).then(
+          function(ok){ if(ok)recovered++; else failed++; },
+          function(){ failed++; }
+        );
+      });
+    }, Promise.resolve());
+  }).then(function(){
+    _reconcileBusy=false;
+    if(total>0)auditLog('Photos reconciled', recovered+' recovered, '+failed+' still pending, of '+total+' missing - cloud photo reconciler', undefined, undefined, failed>0&&recovered===0?'failure':'success');
+    if(opts.manual)toast(total? (recovered+' photo set(s) recovered'+(failed?(' · '+failed+' still pending, will retry'):'')) : 'No missing photos to recover', total>0&&recovered===0);
+    return {total:total,recovered:recovered,failed:failed};
+  },function(e){
+    _reconcileBusy=false;
+    console.error('reconcilePhotos failed:',e&&e.message);
+    if(opts.manual)toast('Could not check for missing photos — '+(e&&e.message||'error'),true);
+    return {error:true};
+  });
+}
+function _reconcileOnePhoto(d){
+  // d: {tbl,id,row_id,kind,branch,date,photo_field,photo_count} from pending_photo_uploads()
+  if(!d.row_id){return Promise.resolve(false);} // can't write a link back without a RowId to match on the Sheet
+  return sb.from(d.tbl).select('row').eq('id',d.id).single().then(function(res){
+    if(res.error||!res.data)throw new Error('could not fetch row '+d.id);
+    var rowObj=res.data.row||{};
+    // Another device (or a prior pass) may have linked this row between the rpc list and now -
+    // if so, skip, so we never upload a duplicate to Drive or overwrite a good link.
+    if((rowObj._photoLink&&String(rowObj._photoLink).trim())||(rowObj.photoLinks&&String(rowObj.photoLinks).trim()))return false;
+    var photos=rowObj[d.photo_field]||[];
+    if(!photos.length)return false;
+    var category=_PHOTO_CATEGORY[d.kind]||'Other';
+    return uploadPhotoSet(category, d.branch, photos).then(function(links){
+      if(!links)return false; // upload failed this attempt - left pending, next pass retries
+      var sheet=PHOTO_QUEUE_SHEET[d.kind];
+      var linkField=PHOTO_QUEUE_LINK_FIELD[d.kind];
+      var localField=PHOTO_QUEUE_LOCAL_FIELD[d.kind];
+      var sheetUpdates={}; sheetUpdates[linkField]=links;
+      var sheetWrite=sheet?adjustSheetRow(sheet,d.row_id,sheetUpdates):Promise.resolve(true);
+      var mirrorWrite;
+      if(d.kind==='manifold'){
+        mirrorWrite=_updateManifoldLiveRowFields(d.row_id,{_photoLink:links});
+      } else {
+        var mf={_committed:true}; mf[localField]=links;
+        mirrorWrite=_updateCaptureLiveRowFields(d.kind,d.row_id,mf);
+      }
+      // sheetWrite resolves true/false; mirrorWrite rejects on failure (propagates to caller's
+      // catch -> counted as failed, left pending). Recovered only if the Sheet write succeeded.
+      return Promise.all([sheetWrite,mirrorWrite]).then(function(r){return r[0]===true;});
+    });
+  });
+}
 // Zeroes every capture area's leftover UNCOMMITTED draft for a branch+day, once Close Day is
 // done - committed rows were already cleared from store[k] (see the two call sites below),
 // but a still-open draft in capData/cData/rData/residualList (typed but never hit Commit)
