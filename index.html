@@ -12431,6 +12431,20 @@ function _photoQueueProcess(startIndex){
 // it's empty). Also called once more from doLogin()/_finishLogin() in Task 4.
 window.addEventListener('online',function(){_photoQueueProcess();});
 setInterval(function(){if(_photoQueueLoad().length)_photoQueueProcess();},45000);
+// Root-caused 2026-09-25 from a live report of Manifold photos reaching the live mirror (so
+// the report showed them) but never the Sheet: a Manifold Opening committed on a phone, then
+// the phone was locked/backgrounded almost immediately after - browsers throttle or fully
+// suspend setInterval in a hidden tab (this is standard behavior on iOS Safari/WebKit and
+// Android Chrome, not a bug in this app), so the 45s ticker above stops firing the moment the
+// app leaves the foreground. The 'online' listener doesn't help either - the phone never went
+// offline, it just wasn't visible. With no other trigger, a still-queued entry sits untouched
+// until that SAME device is either signed out/back in or brought back to the foreground long
+// enough for a genuinely-firing interval tick - which may not happen again for hours, if the
+// operator's next action is a different app entirely. Retrying the instant the tab becomes
+// visible again closes that gap without waiting on either of the other two triggers.
+document.addEventListener('visibilitychange',function(){
+  if(document.visibilityState==='visible' && _photoQueueLoad().length)_photoQueueProcess();
+});
 window.addEventListener('online',_closeDayFlushQueue);
 // Zeroes every capture area's leftover UNCOMMITTED draft for a branch+day, once Close Day is
 // done - committed rows were already cleared from store[k] (see the two call sites below),
