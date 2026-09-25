@@ -10667,12 +10667,15 @@ async function _capCommitReal(){
       // TEMP DIAGNOSTIC 2026-09-25 - Manifold PhotoLink never reaching the Sheet, on any date,
       // with an empty photo queue afterward (ruling out an upload/write-back/retry failure -
       // _photoQueueAdd is either never being called here, or called with an empty photo array).
-      // Logs exactly what this block sees for each fresh row so the next real capture pins down
-      // which of those two it is. Remove once the actual cause is found.
-      console.log('[photo-queue diag] capType='+capType+' photoKey='+photoKey+' freshRows='+freshRows.length,
-        freshRows.map(function(r){return {rid:r._rid,cyl:r.cyl,hasPhotoKey:(photoKey in r),photoVal:r[photoKey],photoLen:(r[photoKey]||[]).length};}));
+      // console.log alone needed a phone's DevTools open to read, which isn't a realistic ask
+      // for a real capture on a real shift - moved into the Audit Log instead (auditLog already
+      // writes straight to Supabase, no console/DevTools access needed, and this is exactly the
+      // tool already used to check for "Photo uploaded"/"Photo upload failed" lines). One
+      // compact line per commit, not one per row, to avoid flooding the log. Remove once the
+      // actual cause is found.
+      auditLog('Photo queue diag', capType+' freshRows='+freshRows.length+' photoKey="'+photoKey+'" ['+
+        freshRows.map(function(r){return (r._rid||'?')+':'+((r[photoKey]||[]).length)+'photo(s)';}).join(', ')+']');
       freshRows.filter(function(r){return (r[photoKey]||[]).length;}).forEach(function(r){
-        console.log('[photo-queue diag] queueing photo for rid='+r._rid+' count='+r[photoKey].length);
         _photoQueueAdd({capType:capType,branch:capBranch,date:today,rowRid:r._rid,category:category,photos:r[photoKey]});
         _queuedThisCommit++;
       });
