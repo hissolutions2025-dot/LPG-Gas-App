@@ -10664,7 +10664,15 @@ async function _capCommitReal(){
     if(capType==='manifold' || capType==='private'){
       var photoKey = capType==='private' ? 'supplierPhoto' : 'photo';
       var category = capType==='manifold'?'Manifold':'Private';
+      // TEMP DIAGNOSTIC 2026-09-25 - Manifold PhotoLink never reaching the Sheet, on any date,
+      // with an empty photo queue afterward (ruling out an upload/write-back/retry failure -
+      // _photoQueueAdd is either never being called here, or called with an empty photo array).
+      // Logs exactly what this block sees for each fresh row so the next real capture pins down
+      // which of those two it is. Remove once the actual cause is found.
+      console.log('[photo-queue diag] capType='+capType+' photoKey='+photoKey+' freshRows='+freshRows.length,
+        freshRows.map(function(r){return {rid:r._rid,cyl:r.cyl,hasPhotoKey:(photoKey in r),photoVal:r[photoKey],photoLen:(r[photoKey]||[]).length};}));
       freshRows.filter(function(r){return (r[photoKey]||[]).length;}).forEach(function(r){
+        console.log('[photo-queue diag] queueing photo for rid='+r._rid+' count='+r[photoKey].length);
         _photoQueueAdd({capType:capType,branch:capBranch,date:today,rowRid:r._rid,category:category,photos:r[photoKey]});
         _queuedThisCommit++;
       });
