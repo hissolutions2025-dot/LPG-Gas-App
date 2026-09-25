@@ -12231,8 +12231,22 @@ function _photoQueueLoad(){
   catch(e){console.error('Photo upload queue was corrupted and could not be read:',e.message);return [];}
 }
 function _photoQueueSave(q){
-  try{localStorage.setItem(_photoQueueKey(),JSON.stringify(q));}
-  catch(e){console.error('Could not save the photo upload queue:',e.message);}
+  var json=JSON.stringify(q);
+  try{
+    localStorage.setItem(_photoQueueKey(),json);
+  }catch(e){
+    // Same retry-after-prune pattern as _setHistRecLocal (localStorage quota is origin-wide,
+    // not per-key - an unrelated bloated key elsewhere can block this small write). See
+    // saveWorkingStore()'s comment for the root-cause writeup this fix was part of - a queue
+    // entry that fails to save here was never actually queued at all, silently, with nothing
+    // in the Audit Log to show it (every existing failure audit line lives downstream, inside
+    // _photoQueueProcess, which an entry that never made it into storage can never reach).
+    if(_pruneOldLocalHistory()>0){
+      try{localStorage.setItem(_photoQueueKey(),json);return;}
+      catch(e2){console.error('Photo upload queue still over quota after pruning old history:',e2.message);}
+    } else console.error('Could not save the photo upload queue:',e.message);
+    auditLog('Photo queue save failed','localStorage quota exceeded even after pruning old history - '+q.length+' entrie(s) in this write were lost',undefined,undefined,'failure');
+  }
 }
 // capType: 'manifold'|'refill'|'private'|'received'|'residual'
 // category: the same string uploadPhotoSet already takes (Manifold/Refill/Private/Received/Residual)
@@ -12576,6 +12590,9 @@ function histKey(date,br){return 'gs_hist_'+date+'_'+br;}
 // independently, writing back a small link string once done - so the raw blob never needed
 // to be duplicated into this record at all. A JSON.stringify replacer is the cheapest way to
 // drop them (skips a named key anywhere in the tree, no separate clone/pass needed).
+// 2026-09-25: also used by saveWorkingStore() below, not just historical records - the name is
+// now narrower than its use, kept as-is rather than touching every existing call site for a
+// rename. See saveWorkingStore()'s own comment for why.
 var _HEAVY_PHOTO_FIELDS={photo:1,supplierPhoto:1,photos:1};
 function _stringifyHistRecForStorage(rec){
   return JSON.stringify(rec,function(key,value){return _HEAVY_PHOTO_FIELDS.hasOwnProperty(key)?undefined:value;});
@@ -12756,7 +12773,29 @@ function saveWorkingStore(){
     // against; drawing/re-signing still requires re-entering a password after any reload.
     slice._sigData={sigOp:sigData.sigOp,sigMgr:sigData.sigMgr};
     slice._sigSignedBy={sigOp:sigSignedBy.sigOp,sigMgr:sigSignedBy.sigMgr};
-    localStorage.setItem(workKey(today,branch),JSON.stringify(slice));
+    // Root-caused 2026-09-25: Manifold photos never reaching the Sheet, on any date, with the
+    // upload queue verified empty right after commit and zero Audit Log trace of any upload
+    // attempt ever being made. Traced to _photoQueueSave() silently swallowing a
+    // QuotaExceededError - this function is called on every commit (line 10719 etc.), and
+    // used to persist every row's raw un-stripped photo (up to 2 per Manifold cylinder) into
+    // this SAME localStorage key, growing all day, every day, with no cleanup until Close Day.
+    // localStorage quota is origin-wide, not per-key, so this key alone could push the whole
+    // origin over quota well before _photoQueueAdd's own (much smaller, per-photo) write ever
+    // got a turn - same failure shape as the documented 2026-09-14 history-record incident
+    // this function's stripping helper was originally built for (see _stringifyHistRecForStorage's
+    // own comment). Safe to strip here specifically: every call site of saveWorkingStore() runs
+    // AFTER that row's own photo has already been queued for upload (_photoQueueAdd already has
+    // its own independent copy by then) - confirmed by checking every call site, none happen
+    // between a row entering store[capType] and its photo being queued.
+    var json=_stringifyHistRecForStorage(slice);
+    try{
+      localStorage.setItem(workKey(today,branch),json);
+    }catch(e){
+      if(_pruneOldLocalHistory()>0){
+        try{localStorage.setItem(workKey(today,branch),json);}
+        catch(e2){console.error('saveWorkingStore still over quota after pruning old history:',e2.message);}
+      } else console.error('saveWorkingStore hit quota, nothing prunable:',e.message);
+    }
   }catch(e){}
 }
 function loadWorkingStore(){
