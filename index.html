@@ -12226,26 +12226,54 @@ function _updateCloseDayPendingBadge(){
 // committed its actual data - a queue entry existing here never means data is at risk, only
 // that its photo(s) haven't finished uploading yet.
 function _photoQueueKey(){return 'gs_photo_upload_queue';}
+// THE real root cause (found 2026-09-25, after several wrong theories): the queue lived ONLY
+// in localStorage. localStorage quota is origin-wide, and this app writes raw base64 photos
+// into other keys all day (gs_work_*, gs_draft_*, gs_hist_*), so on a device that's been used
+// for a while the origin can sit at quota - at which point _photoQueueSave's setItem throws,
+// the entry is silently never persisted, and since EVERY existing "Photo uploaded"/"Photo
+// upload failed" audit line is written downstream inside _photoQueueProcess (which only ever
+// sees what's in storage), a photo that never got persisted leaves ZERO trace anywhere: empty
+// queue, empty audit log, blank PhotoLink column - exactly the reported symptom, on every
+// Manifold capture, on a device with a full origin. Meanwhile the photo BYTES still reached
+// Supabase (manifold_live_rows stores the whole row incl. the raw photo), which is why the
+// daily report still showed the thumbnails - masking the failure.
+//
+// Fix: the queue is now authoritative IN MEMORY (_photoQueueMem, a plain JS array, no quota),
+// with localStorage as a best-effort persistence mirror ONLY (for surviving a reload). A photo
+// queued this session now ALWAYS processes regardless of localStorage state, and _photoQueueAdd
+// kicks off the upload immediately rather than waiting on the 45s ticker - so in the normal
+// online case the photo is on Drive and written back to the Sheet within seconds of commit,
+// long before quota could matter. localStorage stripping fixes (saveWorkingStore, below) still
+// stand as defense-in-depth against the bloat that caused this, but the queue no longer DEPENDS
+// on localStorage having room.
+var _photoQueueMem=null; // null = not yet hydrated from localStorage this session
 function _photoQueueLoad(){
-  try{return JSON.parse(localStorage.getItem(_photoQueueKey())||'[]');}
-  catch(e){console.error('Photo upload queue was corrupted and could not be read:',e.message);return [];}
+  if(_photoQueueMem===null){
+    // First access this session - hydrate from localStorage so entries persisted by a PRIOR
+    // session (before a reload/re-login) are picked back up. After this, _photoQueueMem is the
+    // single source of truth and localStorage is only ever written to, never read again.
+    try{_photoQueueMem=JSON.parse(localStorage.getItem(_photoQueueKey())||'[]');}
+    catch(e){console.error('Photo upload queue was corrupted and could not be read:',e.message);_photoQueueMem=[];}
+    if(!Array.isArray(_photoQueueMem))_photoQueueMem=[];
+  }
+  return _photoQueueMem;
 }
 function _photoQueueSave(q){
+  // In-memory copy is authoritative and can never fail - this is what makes the queue immune to
+  // a full localStorage. The localStorage write below is best-effort persistence only; if it
+  // fails, the entries are still safely held in _photoQueueMem and will still process this
+  // session (only cross-reload durability is affected, and the bytes are in Supabase anyway).
+  _photoQueueMem=q;
   var json=JSON.stringify(q);
   try{
     localStorage.setItem(_photoQueueKey(),json);
   }catch(e){
-    // Same retry-after-prune pattern as _setHistRecLocal (localStorage quota is origin-wide,
-    // not per-key - an unrelated bloated key elsewhere can block this small write). See
-    // saveWorkingStore()'s comment for the root-cause writeup this fix was part of - a queue
-    // entry that fails to save here was never actually queued at all, silently, with nothing
-    // in the Audit Log to show it (every existing failure audit line lives downstream, inside
-    // _photoQueueProcess, which an entry that never made it into storage can never reach).
+    // Best-effort prune+retry (localStorage quota is origin-wide - an unrelated bloated key can
+    // block this write). Failure here no longer loses the entry - _photoQueueMem still holds it.
     if(_pruneOldLocalHistory()>0){
-      try{localStorage.setItem(_photoQueueKey(),json);return;}
-      catch(e2){console.error('Photo upload queue still over quota after pruning old history:',e2.message);}
-    } else console.error('Could not save the photo upload queue:',e.message);
-    auditLog('Photo queue save failed','localStorage quota exceeded even after pruning old history - '+q.length+' entrie(s) in this write were lost',undefined,undefined,'failure');
+      try{localStorage.setItem(_photoQueueKey(),json);}
+      catch(e2){console.error('Photo upload queue could not be persisted to localStorage (held in memory, will still upload):',e2.message);}
+    } else console.error('Photo upload queue could not be persisted to localStorage (held in memory, will still upload):',e.message);
   }
 }
 // capType: 'manifold'|'refill'|'private'|'received'|'residual'
@@ -12281,6 +12309,12 @@ function _photoQueueAdd(entry){
   q.push(entry);
   _photoQueueSave(q);
   _updatePhotoQueuePendingBadge();
+  // Kick the upload immediately rather than waiting up to 45s for the interval ticker. In the
+  // normal online case this puts the photo on Drive and writes the link back to the Sheet
+  // within a few seconds of commit. _photoQueueProcess is busy-guarded and async (fire-and-
+  // forget), so calling it here per-add is safe: the first add starts it, any further adds in
+  // the same commit no-op on the busy guard, and process drains the whole queue itself.
+  _photoQueueProcess();
 }
 function _photoQueueRemove(id){
   var q=_photoQueueLoad().filter(function(e){return e.id!==id;});
