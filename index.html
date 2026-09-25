@@ -12397,6 +12397,24 @@ function _photoQueueMirrorWrite(entry,links,rowRids,localField){
 // the exact same "partial success is still success" behavior the old at-commit-time blocking
 // path already had (this isn't a new leniency, just preserving what existed).
 var _photoQueueBusy=false;
+// Root-caused 2026-09-25: even after signing out and back in (which flushes the queue again
+// via _finishLogin), a Manifold Opening's photos still never reached the Sheet - sign-out is
+// a same-tab SPA state reset (logout() below, no location.reload()), so a JS-level flag from
+// BEFORE the sign-out survives it untouched. _photoQueueBusy is set true here and only ever
+// reset back to false inside uploadPhotoSet(...)'s own .then()/.catch() continuations below -
+// if that promise chain never settles at all (a mobile OS suspending a fetch mid-flight when
+// the tab is backgrounded, rather than cleanly erroring it, is a real and undocumented-by-spec
+// browser behavior, not something this app can prevent), _photoQueueBusy is stuck true for the
+// rest of that tab's lifetime. Every later trigger - the online listener, the 45s interval,
+// the new visibilitychange listener, even a full sign-out/sign-in - all just call
+// _photoQueueProcess() again, which silently no-ops forever on the `if(_photoQueueBusy)return;`
+// guard below. A stuck flag, not a Sheet-write failure, is what actually explains "still not
+// there after signing out and back in" - the retry was never running at all.
+// Fixed with a timeout safety net: a 60s watchdog force-completes this attempt (as a failure,
+// retried like any other) if the real promise chain hasn't settled by then, so a hung request
+// can delay the NEXT attempt by at most 60s instead of wedging the queue permanently. `settled`
+// guards against the original promise finishing late (after the watchdog already moved on) and
+// running its completion logic a second time.
 function _photoQueueProcess(startIndex){
   if(_photoQueueBusy)return;
   var q=_photoQueueLoad();
@@ -12404,14 +12422,26 @@ function _photoQueueProcess(startIndex){
   if(idx>=q.length)return;
   var entry=q[idx];
   _photoQueueBusy=true;
+  var settled=false;
+  var watchdog=setTimeout(function(){
+    if(settled)return;
+    settled=true;
+    _photoQueueMarkAttempt(entry.id,'timed out waiting for a response (60s) - possibly backgrounded mid-request');
+    _photoQueueBusy=false;
+    _photoQueueProcess(idx+1);
+  },60000);
   uploadPhotoSet(entry.category,entry.branch,entry.photos).then(function(links){
+    if(settled)return; // watchdog already fired and moved on - don't process this a second time
     if(!links){
+      settled=true;clearTimeout(watchdog);
       _photoQueueMarkAttempt(entry.id,'no photo(s) uploaded this attempt');
       _photoQueueBusy=false;
       _photoQueueProcess(idx+1); // move on to the next entry instead of retrying this one immediately
       return;
     }
     return _photoQueueWriteBack(entry,links).then(function(){
+      if(settled)return;
+      settled=true;clearTimeout(watchdog);
       // One Audit Log line per successfully-written-back entry - added 2026-09-24 alongside
       // the matching failure line in _photoQueueMarkAttempt, so "did this photo ever reach
       // the Sheet" is answerable from the Audit Log afterward instead of needing a live test.
@@ -12421,6 +12451,8 @@ function _photoQueueProcess(startIndex){
       _photoQueueProcess(); // queue shrank - restart from 0 rather than reasoning about shifted indices
     });
   }).catch(function(e){
+    if(settled)return;
+    settled=true;clearTimeout(watchdog);
     _photoQueueMarkAttempt(entry.id,e&&e.message);
     _photoQueueBusy=false;
     _photoQueueProcess(idx+1);
