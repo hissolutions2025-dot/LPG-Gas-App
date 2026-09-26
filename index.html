@@ -15807,30 +15807,30 @@ function buildCountDocAsync(src){
           '<b style="color:#C0392B">Red</b> = below minimum (urgent) &middot; <b style="color:#B9761F">Amber</b> = below max, top up &middot; <b style="color:#1E8449">Green</b> = at/above max, none needed.</p>'+
           '<table><tr><th>Size</th><th>Brand</th><th>Closing Full</th><th>Min</th><th>Max</th><th>Order to Max</th></tr>'+_orderRows+'</table>';
       }
-      // Recommended Extra Cylinder Allocation - replenish the rotating shell pool (Full+Empty)
-      // back up to its Replenish Below target. (extraAllocThreshold is deliberately NOT used
-      // here - per its own config note it's a net-cylinder-exchange creep tolerance for the
-      // Date-Range Balance report, not a stock level.)
+      // Recommended Extra Cylinder Allocation - per explicit spec (2026-09-26): bring the
+      // combined Closing pool (Full + Empty) up to the Extra Alloc Threshold. Uses
+      // extraAllocThreshold (the per size/brand target the Manager sets on the Extra Allocation
+      // tab, entered as a positive combined-pool target in this deployment), NOT replenishBelow.
       var _allocRows='';
       ALLSIZES.forEach(function(sz){
         _recBrands.forEach(function(brand){
           var th=thresholdFor(_b,sz,brand);
-          if(!(th.replenishBelow>0))return; // no replenish target set for this size/brand
+          if(!(th.extraAllocThreshold>0))return; // no extra-allocation target set for this size/brand
           var closeF=(counts.Closing.Full[sz]&&counts.Closing.Full[sz][brand])||0;
           var closeE=(counts.Closing.Empty[sz]&&counts.Closing.Empty[sz][brand])||0;
           var pool=closeF+closeE;
-          var extra=Math.max(0,th.replenishBelow-pool);
-          var level=(pool<th.replenishBelow*0.5)?'red':(pool<th.replenishBelow?'amber':'green');
+          var extra=Math.max(0,th.extraAllocThreshold-pool);
+          var level=(pool<th.extraAllocThreshold*0.5)?'red':(pool<th.extraAllocThreshold?'amber':'green');
           _allocRows+='<tr><td class="sz">'+sz+'</td><td>'+brand+'</td>'+
-            '<td class="n">'+pool+'</td><td class="n">'+th.replenishBelow+'</td>'+
+            '<td class="n">'+pool+'</td><td class="n">'+th.extraAllocThreshold+'</td>'+
             '<td style="'+_recCellStyle(level)+'">'+extra+'</td></tr>';
         });
       });
       if(_allocRows){
         rows+='<h2>Recommended Extra Cylinder Allocation</h2>'+
-          '<p style="font-size:11px;color:#777;margin:2px 0 6px">Extra cylinders to allocate per size &amp; brand to replenish '+_b+'\u2019s rotating shell pool (Closing Full + Empty) up to its Replenish Below target. '+
-          '<b style="color:#C0392B">Red</b> = under half the target (critical) &middot; <b style="color:#B9761F">Amber</b> = below target &middot; <b style="color:#1E8449">Green</b> = at/above target.</p>'+
-          '<table><tr><th>Size</th><th>Brand</th><th>Shell Pool (Full+Empty)</th><th>Replenish Below</th><th>Extra to Allocate</th></tr>'+_allocRows+'</table>';
+          '<p style="font-size:11px;color:#777;margin:2px 0 6px">Extra cylinders to allocate per size &amp; brand to bring '+_b+'\u2019s combined Closing pool (Full + Empty) up to its Extra Allocation Threshold. '+
+          '<b style="color:#C0392B">Red</b> = under half the threshold (critical) &middot; <b style="color:#B9761F">Amber</b> = below threshold &middot; <b style="color:#1E8449">Green</b> = at/above threshold, none needed.</p>'+
+          '<table><tr><th>Size</th><th>Brand</th><th>Closing Full+Empty</th><th>Extra Alloc. Threshold</th><th>Extra to Allocate</th></tr>'+_allocRows+'</table>';
       }
     }
 
