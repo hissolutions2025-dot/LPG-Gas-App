@@ -14624,15 +14624,20 @@ function setHistTab(which){
   if(which==='past'){var d=new Date();if(calYear===undefined){calYear=d.getFullYear();calMonth2=d.getMonth();}refreshSharedSavedDates().then(renderCalendar);}
 }
 var _sharedSavedDates={};
+// histBranch, NOT the global `branch` (the branch this session logged in under) - the whole
+// past-day History follows the History screen's own branch toggle. Reported live 2026-09-26:
+// selecting Kleinmond in History still showed Helderberg, because these three functions (the
+// calendar's date list + the day-open below) all keyed off the login branch instead of the
+// toggle. Same "use histBranch, not branch" class the openHistory render already handles.
 function refreshSharedSavedDates(){
-  return sb.from('day_closes').select('date').eq('branch',branch).then(function(res){
+  return sb.from('day_closes').select('date').eq('branch',histBranch).then(function(res){
     _sharedSavedDates={};
     (res.data||[]).forEach(function(r){_sharedSavedDates[r.date]=true;});
   }).catch(function(){});
 }
 function savedDatesForBranch(){
-  var m={};listSavedDays().forEach(function(r){if(r.branch===branch)m[r.date]=r;});
-  Object.keys(_sharedSavedDates).forEach(function(d){if(!m[d])m[d]={date:d,branch:branch};});
+  var m={};listSavedDays().forEach(function(r){if(r.branch===histBranch)m[r.date]=r;});
+  Object.keys(_sharedSavedDates).forEach(function(d){if(!m[d])m[d]={date:d,branch:histBranch};});
   return m;
 }
 function renderCalendar(){
@@ -14668,14 +14673,14 @@ function viewSavedDay(ds,promptMsg){
       : _borrowAuth('Owner',msg,function(p){return p.level==='Owner';});
     authPromise.then(function(auth){
       if(!auth){toast('Wrong password',true);return;}
-      auditLog('Historical count opened','Opened saved count for '+ds+' ('+branch+')');
+      auditLog('Historical count opened','Opened saved count for '+ds+' ('+histBranch+')');
       store._auditBypass=true;viewSavedDay(ds,promptMsg);store._auditBypass=false;
     });
     return;
   }
   calSelDate=ds;renderCalendar();
   document.getElementById('pastDayBody').innerHTML='<div class="histEmpty" style="text-align:center;padding:20px">Loading…</div>';
-  loadSavedDayShared(ds,branch).then(function(rec){
+  loadSavedDayShared(ds,histBranch).then(function(rec){
     if(ds!==calSelDate)return; // a different date was tapped before this one finished loading - stale, ignore it
     if(!rec){document.getElementById('pastDayBody').innerHTML='<div class="histEmpty">No saved count for that day.</div>';return;}
     _renderSavedDayBody(rec,ds);
