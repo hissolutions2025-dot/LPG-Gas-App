@@ -1316,31 +1316,48 @@ function _callManageUser(payload, token){
   });
 }
 function _fakeEmail(name){return name.toLowerCase().replace(/[^a-z0-9]/g,'')+'@gassales.local';}
+// Records WHY the last verification failed, so a caller can show an accurate message instead
+// of a blanket "Wrong password" (which used to hide a rate-limit or network cause, and made a
+// genuinely-correct password look wrong). {reason:'noname'|'empty'|'ratelimit'|'wrongpw'|
+// 'profile'|'permission'|'network', status, message}. Cleared to null on success.
+var _lastAuthFail=null;
 function _verifyPersonPassword(name, password, filterFn, failLabel){
   if(!name || !password){
-    if(failLabel)auditLog(failLabel,'Cancelled or empty input','','','failure');
+    _lastAuthFail={reason:(!name?'noname':'empty')};
+    if(failLabel)auditLog(failLabel,'Cancelled or empty input'+(!name?' (no signed-in user resolved)':''),'','','failure');
     return Promise.resolve(null);
   }
   var tmp = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {auth:{persistSession:false, autoRefreshToken:false}});
   var email = _fakeEmail(name);
   return tmp.auth.signInWithPassword({email:email, password:password}).then(function(res){
     if(res.error){
-      if(failLabel)auditLog(failLabel,'Wrong password entered for "'+name+'"',null,null,'failure');
+      // Distinguish a real wrong-password from the auth server rate-limiting rapid checks - the
+      // whole app verifies by spinning up a throwaway sign-in on every override/correction/
+      // audit-open/backdate, so a busy stretch can trip GoTrue's per-IP sign-in limit, which
+      // used to surface as a misleading "Wrong password" on an entirely correct password.
+      var st=res.error.status||0, msg=res.error.message||'';
+      var rateLimited=(st===429)||/rate limit|too many/i.test(msg);
+      _lastAuthFail={reason:rateLimited?'ratelimit':'wrongpw', status:st, message:msg};
+      if(failLabel)auditLog(failLabel,(rateLimited?'Auth server rate-limited the password check for "':'Wrong password entered for "')+name+'" ('+st+' '+msg+')',null,null,'failure');
       return null;
     }
     return sb.from('profiles').select('*').eq('id',res.data.user.id).single().then(function(pres){
       tmp.auth.signOut();
       if(pres.error || !pres.data){
+        _lastAuthFail={reason:'profile'};
         if(failLabel)auditLog(failLabel,'Profile lookup failed for "'+name+'"',null,null,'failure');
         return null;
       }
       if(filterFn && !filterFn(pres.data)){
+        _lastAuthFail={reason:'permission'};
         if(failLabel)auditLog(failLabel,'"'+name+'" does not hold the required role/permission',null,null,'failure');
         return null;
       }
+      _lastAuthFail=null;
       return pres.data;
     });
   }).catch(function(){
+    _lastAuthFail={reason:'network'};
     toast('Network error — check your connection',true);
     return null;
   });
@@ -3118,10 +3135,17 @@ function bdSubmit(){
   var pkEl=document.getElementById('bdPrivateKg');
   var privateKg=pkEl?num(pkEl.value):0;
   if(!totalLines&&!privateKg){toast('Nothing entered',true);return;}
-  askPassword('Confirm backdate','Enter your password to submit this backdated day for '+bdData.branch+' '+bdData.date+':').then(function(pw){
+  askPassword('Confirm backdate','Enter the password for the signed-in user ('+(operator||'—')+') to submit this backdated day for '+bdData.branch+' '+bdData.date+':').then(function(pw){
     if(pw===null)return;
-    _verifyPersonPassword(operator,pw,null).then(function(me){
-      if(!me){toast('Wrong password',true);return;}
+    _verifyPersonPassword(operator,pw,null,'Backdate authorisation').then(function(me){
+      if(!me){
+        var r=(_lastAuthFail&&_lastAuthFail.reason)||'wrongpw';
+        if(r==='ratelimit')toast('Too many password checks in a short time — wait about 30 seconds, then try again.',true);
+        else if(r==='network')toast('Couldn’t reach the server to check the password — check your connection and try again.',true);
+        else if(r==='noname')toast('No signed-in user found — sign in again, then retry the backdate.',true);
+        else toast('Password not accepted. This checks the password of the SIGNED-IN user ('+(operator||'—')+') — that exact person must enter their own password here, not another manager’s.',true);
+        return;
+      }
       bdSubmitBusy=true;
       var btn=document.getElementById('bdSubmitBtn');if(btn){btn.disabled=true;btn.style.opacity='.6';}
       bdDoSubmit(me,totalLines,privateKg);
