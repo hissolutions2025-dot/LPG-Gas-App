@@ -14655,14 +14655,21 @@ var _sharedSavedDates={};
 // calendar's date list + the day-open below) all keyed off the login branch instead of the
 // toggle. Same "use histBranch, not branch" class the openHistory render already handles.
 function refreshSharedSavedDates(){
-  return sb.from('day_closes').select('date').eq('branch',histBranch).then(function(res){
+  // 'All' (All Branches) is a UI-only pseudo-branch, never a real day_closes.branch value -
+  // filtering .eq('branch','All') matched zero rows, so the calendar highlighted nothing and
+  // no past day could be opened in All-Branches mode (reported live 2026-09-27). When 'All',
+  // fetch every branch's close dates and mark a day if ANY branch closed it.
+  var q=sb.from('day_closes').select('date,branch');
+  if(histBranch!=='All')q=q.eq('branch',histBranch);
+  return q.then(function(res){
     _sharedSavedDates={};
     (res.data||[]).forEach(function(r){_sharedSavedDates[r.date]=true;});
   }).catch(function(){});
 }
 function savedDatesForBranch(){
-  var m={};listSavedDays().forEach(function(r){if(r.branch===histBranch)m[r.date]=r;});
-  Object.keys(_sharedSavedDates).forEach(function(d){if(!m[d])m[d]={date:d,branch:histBranch};});
+  var all=(histBranch==='All');
+  var m={};listSavedDays().forEach(function(r){if(all||r.branch===histBranch)m[r.date]=r;});
+  Object.keys(_sharedSavedDates).forEach(function(d){if(!m[d])m[d]={date:d,branch:(all?'All':histBranch)};});
   return m;
 }
 function renderCalendar(){
@@ -14705,11 +14712,49 @@ function viewSavedDay(ds,promptMsg){
   }
   calSelDate=ds;renderCalendar();
   document.getElementById('pastDayBody').innerHTML='<div class="histEmpty" style="text-align:center;padding:20px">Loading…</div>';
+  if(histBranch==='All'){
+    // Combined past day: load every branch that closed this date and render each branch's
+    // read-only summary stacked. Corrections stay per-branch (see _renderSavedDayBodyCombined).
+    Promise.all(['Helderberg','Kleinmond'].map(function(br){
+      return loadSavedDayShared(ds,br).then(function(r){return r?{br:br,rec:r}:null;}).catch(function(){return null;});
+    })).then(function(list){
+      if(ds!==calSelDate)return;
+      var recs=list.filter(Boolean);
+      if(!recs.length){document.getElementById('pastDayBody').innerHTML='<div class="histEmpty">No saved count for that day.</div>';return;}
+      _renderSavedDayBodyCombined(recs,ds);
+    });
+    return;
+  }
   loadSavedDayShared(ds,histBranch).then(function(rec){
     if(ds!==calSelDate)return; // a different date was tapped before this one finished loading - stale, ignore it
     if(!rec){document.getElementById('pastDayBody').innerHTML='<div class="histEmpty">No saved count for that day.</div>';return;}
     _renderSavedDayBody(rec,ds);
   });
+}
+// Read-only combined past-day view for the "All Branches" tab. Renders each branch's own
+// Opening/Closing count summary (the same table _renderSavedDayBody builds) one after another,
+// each with its own full-PDF button. Corrections are deliberately NOT offered here - they are
+// single-branch operations (see _openHistoryCombined's header), so a note points back to the
+// per-branch tabs instead.
+function _renderSavedDayBodyCombined(recs,ds){
+  function bl(o){if(!o)return '—';return Object.keys(o).map(function(b){return b+' × '+o[b];}).join('<br>');}
+  var html='';
+  recs.forEach(function(o){
+    var rec=o.rec,s=rec.store||{};
+    var cnt={Opening:{Full:{},Empty:{}},Closing:{Full:{},Empty:{}}};
+    (s.count||[]).forEach(function(r){var ct=(r.countType==='Closing')?'Closing':'Opening';var st=(r.state==='Empty')?'Empty':'Full';if(!cnt[ct][st][r.size])cnt[ct][st][r.size]={};cnt[ct][st][r.size][r.brand]=(cnt[ct][st][r.size][r.brand]||0)+num(r.qty);});
+    var szs=ALLSIZES.filter(function(sz){return cnt.Opening.Full[sz]||cnt.Opening.Empty[sz]||cnt.Closing.Full[sz]||cnt.Closing.Empty[sz];});
+    html+='<div class="histSection"><h4>'+ds+' · '+o.br+' — closed '+(rec.closedAt||'')+'</h4>';
+    html+='<button class="exportBtn" style="background:#B5533B;margin-bottom:10px" onclick="downloadCountPDFForDay(\''+ds+'\',\''+o.br+'\')">Open full stock count PDF</button>';
+    html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px">Closed by '+(rec.operator||'').replace(' (Manager)','')+'</div>';
+    if(szs.length===0)html+='<div class="histEmpty">No count recorded.</div>';
+    else{html+='<table class="htable"><tr><th>Size</th><th>Open F</th><th>Open E</th><th>Close F</th><th>Close E</th></tr>';
+      szs.forEach(function(sz){html+='<tr><td><b>'+sz+'</b></td><td>'+bl(cnt.Opening.Full[sz])+'</td><td>'+bl(cnt.Opening.Empty[sz])+'</td><td>'+bl(cnt.Closing.Full[sz])+'</td><td>'+bl(cnt.Closing.Empty[sz])+'</td></tr>';});
+      html+='</table>';}
+    html+='</div>';
+  });
+  html+='<div class="histSection"><div style="font-size:12px;color:var(--muted)">Combined view is read-only. To log a correction, open the '+recs.map(function(o){return o.br;}).join(' or ')+' tab for this day.</div></div>';
+  document.getElementById('pastDayBody').innerHTML=html;
 }
 function _renderSavedDayBody(rec,ds){
   _currentSavedDayRec=rec;
