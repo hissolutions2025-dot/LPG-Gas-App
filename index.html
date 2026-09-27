@@ -1299,6 +1299,27 @@ var FEATURES={ share:false, driveUpload:false };
 var SUPABASE_URL = 'https://zyymnkychhglisqjvkqs.supabase.co';
 var SUPABASE_ANON_KEY = 'sb_publishable_Fl1QFiNogBHFQ7cBIpd8Qw_jgZR2EkD';
 var sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// A device clock a little ahead of Supabase's server makes a freshly-minted access token look
+// "issued in the future", so GoTrue/PostgREST reject the call ("JWT issued at future"). It is
+// almost always transient (a few seconds of skew). _isClockSkewJwtErr spots that specific class
+// of error; _sbRetryOnSkew wraps a Supabase call so that, on such an error, it refreshes the
+// session (re-mints the token against the server clock) and retries once before giving up.
+function _isClockSkewJwtErr(err){
+  var m=((err&&(err.message||err.error_description||err.msg||err.hint))||'').toLowerCase();
+  return /jwt|token/.test(m) && /(issued.*future|future.*issued|before issued|used before|\biat\b|clock)/.test(m);
+}
+function _sbRetryOnSkew(run){
+  // run() must be a function returning a Supabase thenable that resolves to {data, error}.
+  // Called at most twice: once, then again after a session refresh if the first hit clock skew.
+  return Promise.resolve().then(run).then(function(res){
+    if(res && res.error && _isClockSkewJwtErr(res.error)){
+      return Promise.resolve(sb.auth.refreshSession()).catch(function(){return null;})
+        .then(function(){return new Promise(function(r){setTimeout(r,600);});})
+        .then(function(){return run();});
+    }
+    return res;
+  });
+}
 function _callManageUser(payload, token){
   // Token travels in the JSON body (callerToken), not as an Authorization/apikey header - some
   // networks/security software silently block requests carrying an "apikey"-named header to
@@ -5449,8 +5470,12 @@ function initLoginScreen(){
   document.getElementById('loginCard').style.display='block';
   var sel=document.getElementById('loginUser');
   sel.innerHTML='<option value="">Loading names…</option>';
-  sb.from('login_names').select('id,name,level,branches').order('name').then(function(res){
-    if(res.error){toast('Could not load user list: '+res.error.message,true);sel.innerHTML='<option value="">Select your name…</option>';return;}
+  _sbRetryOnSkew(function(){return sb.from('login_names').select('id,name,level,branches').order('name');}).then(function(res){
+    if(res.error){
+      var skew=_isClockSkewJwtErr(res.error);
+      toast(skew?'Could not load user list — device clock is out of sync. Set date & time to Automatic, then retry.'
+                :'Could not load user list: '+res.error.message,true);
+      sel.innerHTML='<option value="">Select your name…</option>';return;}
     _loginNamesCache=res.data||[];
     sel.innerHTML='<option value="">Select your name…</option>'+_loginNamesCache.map(function(u){return '<option>'+u.name+'</option>';}).join('');
   }).catch(function(){toast('Network error loading user list — check your connection',true);sel.innerHTML='<option value="">Select your name…</option>';});
