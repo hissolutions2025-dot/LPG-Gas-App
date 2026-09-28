@@ -11585,6 +11585,24 @@ var sigData={sigOp:'',sigMgr:''};
 var sigUnlocked={sigOp:false,sigMgr:false};
 var sigSignedBy={sigOp:'',sigMgr:''};
 var sigAuthUser={sigOp:null,sigMgr:null}; // the full {name,level} of whoever authenticated this box - needed at stroke-end time to push signer_level to Supabase (unlockSig's own `u` isn't in scope there)
+// The branch the in-memory signature state (sigData/sigSignedBy/sigUnlocked) currently belongs
+// to. Signatures are per-branch, but the state above is global - without tracking which branch
+// it holds, switching Helderberg->Kleinmond in Close Day left Helderberg's drawn signatures
+// showing under Kleinmond (reported live 2026-09-28). _refreshDayCloseSignatures resets both
+// boxes to blank when this no longer matches the branch being shown.
+var _sigStateBranch=null;
+// Reset one signature box to its clean, unsigned default (blank pad + "Unlock ... to sign"
+// button, clear button hidden) - mirrors the box's original markup. Used when the Close Day
+// view switches to a different branch so no signature leaks across branches.
+function _resetSigBox(id){
+  sigData[id]='';sigSignedBy[id]='';sigUnlocked[id]=false;sigAuthUser[id]=null;
+  if(_sigPushTimers[id]){clearTimeout(_sigPushTimers[id]);_sigPushTimers[id]=null;}
+  var cv=document.getElementById(id);if(cv)cv.getContext('2d').clearRect(0,0,cv.width,cv.height);
+  var boxLabel=(id==='sigOp')?'Operator':'Manager';
+  var lockEl=document.getElementById(id+'-lock');
+  if(lockEl)lockEl.innerHTML='<button class="sigClear" style="width:100%;background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel)" onclick="unlockSig(\''+id+'\')">🔒 Unlock '+boxLabel+' box to sign</button>';
+  var clr=document.getElementById(id+'-clear');if(clr)clr.style.display='none';
+}
 function unlockSig(id){
   var boxLabel=(id==='sigOp')?'Operator':'Manager';
   var wantLevel=(id==='sigOp')?'Operator':'Manager';
@@ -11765,6 +11783,15 @@ var _dayCloseSigRefreshToken=0;
 // read the bare global branch instead of the branch actually being viewed/closed).
 function _refreshDayCloseSignatures(br){
   br=br||branch;
+  // Branch changed since the signature state was last set for a branch: wipe both boxes so a
+  // signature captured for the previous branch can never show under this one. Done synchronously
+  // (before the async fetch below) so the old signature disappears the instant the branch is
+  // switched, not after the network round-trip. A box this device has unlocked mid-signing is
+  // still cleared - that in-progress signature belonged to the branch we just left.
+  if(_sigStateBranch!==null && _sigStateBranch!==br){
+    ['sigOp','sigMgr'].forEach(_resetSigBox);
+  }
+  _sigStateBranch=br;
   var myToken=++_dayCloseSigRefreshToken;
   return _fetchDayCloseSignatures(br,today).then(function(rows){
     if(myToken!==_dayCloseSigRefreshToken)return rows; // a newer refresh already superseded this one
