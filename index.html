@@ -5163,11 +5163,20 @@ async function uploadPhotoSet(category, br, photos){
         apiPost('photoUpload',{branch:br,date:today,category:category,mimeType:m[1],dataBase64:m[2]}),
         new Promise(function(_,rej){setTimeout(function(){rej(new Error('photo upload timed out'));},25000);})
       ]);
-      if(res && res.ok && res.url) links.push(res.url);
-    }catch(e){ /* offline / backend error / timeout - skip this one, keep the commit going */ }
+      if(res && res.ok && res.url){ links.push(res.url); }
+      else { _lastPhotoUploadErr = (res && (res.error||res.message)) ? ('backend rejected upload: '+(res.error||res.message)) : 'backend rejected the upload (no link returned) — likely a Google Drive/Apps Script quota or deploy issue'; }
+    }catch(e){
+      // Record WHY, instead of only swallowing it - so the reconciler can tell the user timeout
+      // vs offline vs backend, not just "0 recovered". Still skips this photo and keeps going.
+      var msg=(e&&e.message)||'unknown error';
+      _lastPhotoUploadErr = /timed out/.test(msg) ? 'upload timed out (25s) — weak connection or a very large photo' : ('network/offline error — '+msg);
+    }
   }
   return links.join(', ');
 }
+// Last photo-upload failure reason (set by uploadPhotoSet, read by the reconciler for its toast
+// + audit line). Best-effort, last-writer-wins across a batch - enough to point at the cause.
+var _lastPhotoUploadErr=null;
 // Client-generated id stamped on every Refill/Private/Received/Manifold row at the moment
 // it's built for commit (see flush() and rCommit() below) - matched against a RowId column
 // on those 4 sheet tabs (backend v13+, see adjustSheetRow()) so a same-day Adjustment can
@@ -12642,6 +12651,10 @@ window.addEventListener('online',_closeDayFlushQueue);
 // nothing is pending.
 var _PHOTO_CATEGORY={manifold:'Manifold',refill:'Refill',private:'Private',received:'Received',residual:'Residual'};
 var _reconcileBusy=false;
+// Human-readable reason the last reconcile pass left photos pending (set at the deepest failing
+// step in _reconcileOnePhoto/uploadPhotoSet). Surfaced in the toast + audit so "0 recovered" is
+// actionable - Drive upload failed vs Sheet write failed vs timeout vs offline.
+var _lastReconcileReason='';
 function reconcilePhotos(opts){
   opts=opts||{};
   // Manager/Owner only - both because they're the ones responsible for the evidence being
@@ -12650,6 +12663,7 @@ function reconcilePhotos(opts){
   if(_reconcileBusy){ if(opts.manual)toast('Already recovering photos — hang on…'); return Promise.resolve({skipped:true}); }
   _reconcileBusy=true;
   var recovered=0, failed=0, total=0;
+  _lastReconcileReason='';_lastPhotoUploadErr=null; // fresh reason for this pass
   return sb.rpc('pending_photo_uploads').then(function(res){
     if(res.error)throw new Error('pending_photo_uploads rpc failed: '+res.error.message);
     var pending=res.data||[];
@@ -12667,9 +12681,10 @@ function reconcilePhotos(opts){
     }, Promise.resolve());
   }).then(function(){
     _reconcileBusy=false;
-    if(total>0)auditLog('Photos reconciled', recovered+' recovered, '+failed+' still pending, of '+total+' missing - cloud photo reconciler', undefined, undefined, failed>0&&recovered===0?'failure':'success');
-    if(opts.manual)toast(total? (recovered+' photo set(s) recovered'+(failed?(' · '+failed+' still pending, will retry'):'')) : 'No missing photos to recover', total>0&&recovered===0);
-    return {total:total,recovered:recovered,failed:failed};
+    var reason=(failed>0&&_lastReconcileReason)?_lastReconcileReason:'';
+    if(total>0)auditLog('Photos reconciled', recovered+' recovered, '+failed+' still pending, of '+total+' missing - cloud photo reconciler'+(reason?(' · reason: '+reason):''), undefined, undefined, failed>0&&recovered===0?'failure':'success');
+    if(opts.manual)toast(total? (recovered+' photo set(s) recovered'+(failed?(' · '+failed+' still pending, will retry'+(reason?(' — '+reason):'')):'')) : 'No missing photos to recover', total>0&&recovered===0);
+    return {total:total,recovered:recovered,failed:failed,reason:reason};
   },function(e){
     _reconcileBusy=false;
     console.error('reconcilePhotos failed:',e&&e.message);
@@ -12679,7 +12694,7 @@ function reconcilePhotos(opts){
 }
 function _reconcileOnePhoto(d){
   // d: {tbl,id,row_id,kind,branch,date,photo_field,photo_count} from pending_photo_uploads()
-  if(!d.row_id){return Promise.resolve(false);} // can't write a link back without a RowId to match on the Sheet
+  if(!d.row_id){_lastReconcileReason='a row has no RowId to match on the Sheet (predates row tracking)';return Promise.resolve(false);} // can't write a link back without a RowId to match on the Sheet
   return sb.from(d.tbl).select('row').eq('id',d.id).single().then(function(res){
     if(res.error||!res.data)throw new Error('could not fetch row '+d.id);
     var rowObj=res.data.row||{};
@@ -12687,10 +12702,10 @@ function _reconcileOnePhoto(d){
     // if so, skip, so we never upload a duplicate to Drive or overwrite a good link.
     if((rowObj._photoLink&&String(rowObj._photoLink).trim())||(rowObj.photoLinks&&String(rowObj.photoLinks).trim()))return false;
     var photos=rowObj[d.photo_field]||[];
-    if(!photos.length)return false;
+    if(!photos.length){_lastReconcileReason='a pending row had no photo bytes to upload';return false;}
     var category=_PHOTO_CATEGORY[d.kind]||'Other';
     return uploadPhotoSet(category, d.branch, photos).then(function(links){
-      if(!links)return false; // upload failed this attempt - left pending, next pass retries
+      if(!links){_lastReconcileReason=_lastPhotoUploadErr||'Google Drive upload failed';return false;} // upload failed this attempt - left pending, next pass retries
       var sheet=PHOTO_QUEUE_SHEET[d.kind];
       var linkField=PHOTO_QUEUE_LINK_FIELD[d.kind];
       var localField=PHOTO_QUEUE_LOCAL_FIELD[d.kind];
@@ -12705,7 +12720,7 @@ function _reconcileOnePhoto(d){
       }
       // sheetWrite resolves true/false; mirrorWrite rejects on failure (propagates to caller's
       // catch -> counted as failed, left pending). Recovered only if the Sheet write succeeded.
-      return Promise.all([sheetWrite,mirrorWrite]).then(function(r){return r[0]===true;});
+      return Promise.all([sheetWrite,mirrorWrite]).then(function(r){if(r[0]!==true)_lastReconcileReason='photo uploaded to Drive, but the Sheet row could not be updated (may predate row tracking)';return r[0]===true;});
     });
   });
 }
