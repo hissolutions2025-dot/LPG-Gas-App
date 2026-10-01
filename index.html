@@ -2927,13 +2927,63 @@ function bdCheckDate(){
       statusEl.style.color='#C0392B';
       return;
     }
-    statusEl.textContent='No record found for '+bdBranch+' '+dateVal+' — safe to enter below.';
-    statusEl.style.color='var(--ok)';
-    bdData={date:dateVal,branch:bdBranch,opening:[],closing:[],manifold:[],refill:[],private:[],received:[],residual:[],dailysales:[]};
-    bdRenderForm();
+    // Not closed - but the day may already hold PARTIAL live data (e.g. an Opening count was
+    // captured but the operator never did the Closing). Pre-load whatever exists so the manager
+    // only has to add the missing part, and nothing already captured is silently dropped from
+    // the backdated snapshot on submit (reported live 2026-10-01: operator skipped Closing).
+    bdLoadExisting(dateVal);
   },function(){
     statusEl.textContent='Could not check (network error) — try again.';
     statusEl.style.color='#C0392B';
+  });
+}
+// Fetch any already-captured live data for this branch+date and populate bdData with it, so the
+// backdate form opens pre-filled. The manager then completes what's missing (typically the
+// Closing count) and submits the whole day. Falls back to a blank form on a fetch error so the
+// tool still works. Existing photo LINKS are carried through (see bdDoSubmit); raw photo bytes
+// are not re-queued - those rows already uploaded their photos when first captured.
+function bdLoadExisting(dateVal){
+  var br=bdBranch, statusEl=document.getElementById('bdDateStatus');
+  bdData={date:dateVal,branch:br,opening:[],closing:[],manifold:[],refill:[],private:[],received:[],residual:[],dailysales:[]};
+  statusEl.textContent='Loading any existing data for '+br+' '+dateVal+'…';statusEl.style.color='var(--muted)';
+  return Promise.all([
+    sb.from('stock_counts').select('count_type,state,size,brand,qty').eq('branch',br).eq('date',dateVal),
+    sb.from('manifold_live_rows').select('row').eq('branch',br).eq('date',dateVal),
+    sb.from('capture_live_rows').select('kind,row').eq('branch',br).eq('date',dateVal),
+    sb.from('daily_sales').select('lines').eq('branch',br).eq('date',dateVal).maybeSingle()
+  ]).then(function(res){
+    (res[0].data||[]).forEach(function(r){
+      (r.count_type==='Closing'?bdData.closing:bdData.opening).push({state:(r.state==='Empty'?'Empty':'Full'),size:r.size,brand:r.brand,qty:num(r.qty)});
+    });
+    (res[1].data||[]).forEach(function(x){var r=x.row||{};bdData.manifold.push({stage:r.stage||'Opening',cyl:r.cyl||'',brand:r.brand||'',gasType:r.gasType||'LPG',scale:r.scale,tare:r.tare,notes:r.notes||'',_photoLink:(r._photoLink||'')});});
+    (res[2].data||[]).forEach(function(x){var r=x.row||{},k=x.kind;
+      if(k==='refill')bdData.refill.push({size:r.size,brand:r.brand,gasType:r.gasType||'LPG',pumped:num(r.pumped),seal:r.seal||'',notes:r.notes||'',_photoLink:(r._photoLink||'')});
+      else if(k==='private')bdData.private.push({cylBrand:r.cylBrand||'',otherBrand:r.otherBrand||'',gasType:r.gasType||'LPG',pumped:num(r.pumped),customer:r.customer||'',filledBy:r.filledBy||'Us',fillSupplier:r.fillSupplier||'',invoiceNo:r.invoiceNo||'',photoLinks:(r.photoLinks||r._photoLink||'')});
+      else if(k==='received')bdData.received.push({size:r.size,brand:r.brand,fullIn:num(r.fullIn),emptyOut:num(r.emptyOut),supplier:r.supplier||'',deliveryNote:r.deliveryNote||'',invoiceNo:r.invoiceNo||'',photoLinks:(r.photoLinks||r._photoLink||'')});
+      else if(k==='residual')bdData.residual.push({Brand:r.Brand||r.brand||'',Size:r.Size||r.size||'',CylScale:num(r.CylScale),CylTare:num(r.CylTare),Note:r.Note||r.note||''});
+    });
+    var ds=res[3].data||null;
+    if(ds&&ds.lines){(ds.lines||[]).forEach(function(l){bdData.dailysales.push({size:l.size,brand:l.brand,sold:num(l.sold),returned:num(l.returned)});});}
+    var parts=[];
+    if(bdData.opening.length||bdData.closing.length)parts.push(bdData.opening.length+' opening + '+bdData.closing.length+' closing count line(s)');
+    if(bdData.manifold.length)parts.push(bdData.manifold.length+' manifold');
+    if(bdData.refill.length)parts.push(bdData.refill.length+' refill');
+    if(bdData.private.length)parts.push(bdData.private.length+' private');
+    if(bdData.received.length)parts.push(bdData.received.length+' received');
+    if(bdData.residual.length)parts.push(bdData.residual.length+' residual');
+    if(ds&&ds.lines)parts.push('daily sales');
+    if(parts.length){
+      statusEl.innerHTML='Pre-loaded existing data for '+br+' '+dateVal+': '+parts.join(', ')+'.<br>Add the missing lines (e.g. the <b>Closing count</b>), then Submit. Everything already captured is kept.';
+      statusEl.style.color='var(--ok)';
+    }else{
+      statusEl.textContent='No record found for '+br+' '+dateVal+' — safe to enter below.';
+      statusEl.style.color='var(--ok)';
+    }
+    bdRenderForm();
+  },function(){
+    statusEl.textContent='Could not load existing data (network) — entering on a blank form. Re-check the date to retry.';
+    statusEl.style.color='#B9761F';
+    bdRenderForm();
   });
 }
 function bdRenderForm(){
@@ -3186,22 +3236,22 @@ function bdDoSubmit(auth,totalLines,privateKg){
   pushCount(bdData.closing,'Closing');
   bdData.manifold.forEach(function(r){
     var rid=_rid();var scale=num(r.scale),tare=num(r.tare);
-    snap.manifold.push({branch:br,cyl:r.cyl,stage:r.stage,brand:r.brand,gasType:r.gasType,scale:scale,tare:tare,gasLeft:scale-tare,notes:r.notes||'',_date:d,_rid:rid,_committed:true,_photoLink:''});
+    snap.manifold.push({branch:br,cyl:r.cyl,stage:r.stage,brand:r.brand,gasType:r.gasType,scale:scale,tare:tare,gasLeft:scale-tare,notes:r.notes||'',_date:d,_rid:rid,_committed:true,_photoLink:(r._photoLink||'')});
     if(r._photos&&r._photos.length){_photoQueueAdd({capType:'manifold',branch:br,date:d,rowRid:rid,category:'Manifold',photos:r._photos});queuedPhotos+=r._photos.length;}
   });
   bdData.refill.forEach(function(r){
     var rid=_rid();
-    snap.refill.push({branch:br,size:r.size,brand:r.brand,gasType:r.gasType,pumped:num(r.pumped),seal:r.seal||'',notes:r.notes||'',_date:d,_rid:rid,_committed:true,_photoLink:''});
+    snap.refill.push({branch:br,size:r.size,brand:r.brand,gasType:r.gasType,pumped:num(r.pumped),seal:r.seal||'',notes:r.notes||'',_date:d,_rid:rid,_committed:true,_photoLink:(r._photoLink||'')});
     if(r._photos&&r._photos.length){_photoQueueAdd({capType:'refill',branch:br,date:d,rowRid:rid,category:'Refill',photos:r._photos});queuedPhotos+=r._photos.length;}
   });
   bdData.private.forEach(function(r){
     var rid=_rid();
-    snap.private.push({branch:br,cylBrand:r.cylBrand,otherBrand:r.otherBrand||'',gasType:r.gasType,pumped:num(r.pumped),customer:r.customer||'',filledBy:r.filledBy,fillSupplier:r.fillSupplier||'',fillSupplierOther:'',invoiceNo:r.invoiceNo||'',_date:d,_rid:rid,_committed:true,photoLinks:''});
+    snap.private.push({branch:br,cylBrand:r.cylBrand,otherBrand:r.otherBrand||'',gasType:r.gasType,pumped:num(r.pumped),customer:r.customer||'',filledBy:r.filledBy,fillSupplier:r.fillSupplier||'',fillSupplierOther:'',invoiceNo:r.invoiceNo||'',_date:d,_rid:rid,_committed:true,photoLinks:(r.photoLinks||'')});
     if(r._photos&&r._photos.length){_photoQueueAdd({capType:'private',branch:br,date:d,rowRid:rid,category:'Private',photos:r._photos});queuedPhotos+=r._photos.length;}
   });
   bdData.received.forEach(function(r){
     var rid=_rid();var fullIn=num(r.fullIn),emptyOut=num(r.emptyOut);
-    snap.received.push({branch:br,size:r.size,brand:r.brand,fullIn:fullIn,emptyOut:emptyOut,_side:(fullIn>0?'recv':'ret'),supplier:r.supplier||'',deliveryNote:r.deliveryNote||'',invoiceNo:r.invoiceNo||'',_date:d,_rid:rid,_committed:true,photoLinks:''});
+    snap.received.push({branch:br,size:r.size,brand:r.brand,fullIn:fullIn,emptyOut:emptyOut,_side:(fullIn>0?'recv':'ret'),supplier:r.supplier||'',deliveryNote:r.deliveryNote||'',invoiceNo:r.invoiceNo||'',_date:d,_rid:rid,_committed:true,photoLinks:(r.photoLinks||'')});
     if(r._photos&&r._photos.length){_photoQueueAdd({capType:'received',branch:br,date:d,rowRid:rid,category:'Received',photos:r._photos});queuedPhotos+=r._photos.length;}
   });
   bdData.residual.forEach(function(r){
