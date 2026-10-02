@@ -5690,7 +5690,16 @@ function logout(){
   if(operator)auditLog('Logout','Signed out');
   _usageEnd();
   sb.auth.signOut();
-  operator=null;branch=null;role=null;currentProfile=null;store._openMismatch=[];_liveExpectedOpening={};_sessionGen++;
+  operator=null;branch=null;role=null;currentProfile=null;_liveExpectedOpening={};_sessionGen++;
+  // Shared operator devices: one session's IN-MEMORY data must not bleed into the next login
+  // before a page reload. logout() used to reset identity but leave `store` (the report's data
+  // source) and the capture drafts populated, so after the app was set up while signed in on one
+  // branch, the next user saw the previous branch's data (reported live 2026-10-02: Helderberg's
+  // report showed under Thabo's Kleinmond login). Committed data is safe in Supabase and in the
+  // per-branch localStorage keys; this only drops the stale in-memory copy, which loadWorkingStore
+  // reloads fresh for the new branch on the next login.
+  store={count:[],manifold:[],refill:[],private:[],received:[],residual:[],_openMismatch:[]};
+  try{cData={};rData={};rOverrides={};rSupplierState={};capData={};toggleSel={};residualList=[];}catch(e){}
   // idle lock must not be able to outlive its own session - clear it unconditionally on
   // every logout, whether that's a normal sign-out or the lock screen's own "Not you? Sign
   // out instead" escape hatch (which just calls this function directly).
