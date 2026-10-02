@@ -5631,6 +5631,13 @@ function _finishLogin(u,b){
   var _tds=document.getElementById('tileDailySales');if(_tds)_tds.style.display=(perm('dailySales')||role==='Owner')?'flex':'none';
   auditLog('Login','Signed in to '+b);
   editUnlocked=false;
+  // Pull the shared Stock Thresholds config into this browser's localStorage at login. It was
+  // previously only fetched when the Stock Thresholds / Extra Allocation admin tab was opened,
+  // so a browser that never opened that tab had an empty config - making the daily report's
+  // "Recommended Stock Order" + "Recommended Extra Cylinder Allocation" sections silently
+  // disappear there while showing on a browser that had (reported live 2026-10-02: Edge vs
+  // Chrome). Fire-and-forget; the report also re-fetches it at build time as a guarantee.
+  _fetchAppConfig('stock_thresholds',thresholdsSave).catch(function(){});
   loadWorkingStore();
   // Load today's saved Stock Count / Stock Received / Residual Gas drafts into memory
   // regardless of which screen we land on below - so they're already there if the user
@@ -15339,16 +15346,23 @@ function buildCountDocAsync(src){
   // never opened those screens/History today, not just whichever local data happened to
   // already be hydrated. Skipped for a historical/closed-day source (_savedSrc's snapshot,
   // st!==store) - that data is frozen at close time, nothing live left to fetch.
+  // Always refresh the shared Stock Thresholds config into localStorage before building, for
+  // BOTH live and historical reports - the "Recommended Stock Order"/"Recommended Extra
+  // Cylinder Allocation" sections read it via thresholdFor(), and it was previously only ever
+  // loaded when the admin tab was opened, so the sections vanished on a browser that never
+  // opened it (reported live 2026-10-02: Edge showed no recommendations, Chrome did).
+  var _cfgFetch=_fetchAppConfig('stock_thresholds',thresholdsSave).catch(function(){});
   var _liveFetch=(st===store)?Promise.all([
     _fetchManifoldLiveRows(_b,src.date),
     _fetchCaptureLiveRows('received','received',_b,src.date),
     _fetchCaptureLiveRows('refill','refill',_b,src.date),
     _fetchCaptureLiveRows('private','private',_b,src.date),
     _fetchCaptureLiveRows('residual','residual',_b,src.date),
-    _refreshSharedCounts(_b) // stock_counts (Opening/Closing) - missed in the first pass of
+    _refreshSharedCounts(_b), // stock_counts (Opening/Closing) - missed in the first pass of
     // this fix; same gap as the other five, just spotted a round later (reported: "Opening
     // stock count is not reflecting in the report").
-  ]):Promise.resolve();
+    _cfgFetch
+  ]):_cfgFetch;
   return _liveFetch.then(function(){
     return Promise.all([_fetchDayActivity(_b,src.date),_fetchFaultyHeld(_b),_fetchPrevCloseExpected(_b,src.date),
       sb.from('daily_sales').select('lines,entered_by_name_snapshot,private_refill_kg').eq('branch',_b).eq('date',src.date).maybeSingle().then(function(res){return (res&&res.data)?res.data:null;},function(){return null;}),
