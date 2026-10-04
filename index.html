@@ -13875,7 +13875,16 @@ function corrDeleteLine(){
 // photo would only live in memory and vanish on next reload/reopen of this saved day.
 function _corrPersistHistRec(){
   if(!corrCfg.histRec)return;
-  _setHistRecLocal(histKey(corrCfg.histDs,corrCfg.histRec.branch),corrCfg.histRec);
+  // BEST-EFFORT local cache only. The authoritative copy of a correction is the Supabase
+  // corrected_snapshot that every correction path pushes separately via _corrSyncSnapshot, and
+  // History reads from there (loadSavedDayShared). This used to throw QuotaExceededError on a
+  // full-localStorage device AND ran BEFORE the cloud push in several paths, so the correction
+  // then never saved anywhere - the cloud push was skipped by the throw (reported live
+  // 2026-10-04: Jeanie, gs_hist_2026-10-01_Kleinmond over quota, correction lost). Swallow a
+  // local-write failure and warn; the cloud save still proceeds.
+  try{ _setHistRecLocal(histKey(corrCfg.histDs,corrCfg.histRec.branch),corrCfg.histRec); }
+  catch(e){ console.warn('_corrPersistHistRec: local cache write failed (cloud copy is authoritative):',e&&e.message);
+    toast('This device is low on storage — your correction saved to the cloud, but clear some space soon.',true); }
 }
 function _corrSectionCapType(section){
   return section==='Refills'?'refill':section==='Private'?'private':section==='Manifold'?'manifold':section==='Residual'?'residual':null;
@@ -14289,8 +14298,15 @@ function _correctSavedLineOpen(ds,rec,lateOverride){
       rec.corrections.push(correctionEntry);
       _pushSharedCorrection(rec._sharedId, correctionEntry);
       syncPush('Adjustments',[{date:ds,branch:rec.branch,Kind:(lateOverride?'HistoricalCorrection48hOverride':'HistoricalCorrection'),Line:sel.tag,From:oldVal,To:newVal,Reason:reason,By:byTag}]);
-      _setHistRecLocal(histKey(ds,rec.branch),rec);
-      _corrSyncSnapshot(rec); // see _corrSyncSnapshot's own comment - this is what actually makes the correction survive a reload, not just the corrections audit entry above
+      // Authoritative cloud save FIRST - corrected_snapshot is what makes the correction survive
+      // a reload. The local cache write below is best-effort and must never run ahead of this:
+      // when it threw QuotaExceededError on a full device it used to skip this line entirely and
+      // lose the correction (reported live 2026-10-04). Guarded so a full localStorage can't abort
+      // the save or trigger a false "saving failed" alert.
+      _corrSyncSnapshot(rec);
+      try{ _setHistRecLocal(histKey(ds,rec.branch),rec); }
+      catch(e){ console.warn('onApply: local hist cache write failed (cloud corrected_snapshot saved):',e&&e.message);
+        toast('This device is low on storage — your correction saved to the cloud, but clear some space soon.',true); }
       auditLog('Historical count corrected'+(lateOverride?' (48h override)':''),ds+' '+sel.tag+': '+oldVal+' \u2192 '+newVal+' by '+byTag+' - '+reason,{was:oldVal},{now:newVal});
       // Daily Sales has no snapshot of its own to fall back on - unlike every other section
       // here (whose correction only ever needs to live in THIS local closed-day record), the
