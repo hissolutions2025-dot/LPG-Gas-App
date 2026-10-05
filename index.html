@@ -5638,6 +5638,13 @@ function _finishLogin(u,b){
   // disappear there while showing on a browser that had (reported live 2026-10-02: Edge vs
   // Chrome). Fire-and-forget; the report also re-fetches it at build time as a guarantee.
   _fetchAppConfig('stock_thresholds',thresholdsSave).catch(function(){});
+  // Shared operator devices: remove any leftover local working/draft/history data for branches
+  // this user is NOT assigned to, so a prior setup/session on another branch can't surface under
+  // them. The logout reset only clears IN-MEMORY state; the per-branch localStorage keys
+  // (gs_work_/gs_draft_/gs_hist_) survive a logout and a page reload, so a Kleinmond-only operator
+  // on a phone first set up while signed in on Helderberg kept seeing Helderberg data (reported
+  // live 2026-10-05: Thabo). A Manager/Owner assigned to both branches keeps both.
+  _purgeForeignBranchLocalData(u.branches||[]);
   loadWorkingStore();
   // Load today's saved Stock Count / Stock Received / Residual Gas drafts into memory
   // regardless of which screen we land on below - so they're already there if the user
@@ -12916,6 +12923,35 @@ function _setHistRecLocal(key,rec){
     if(_pruneOldLocalHistory()>0)localStorage.setItem(key,json);
     else throw e;
   }
+}
+// Removes this device's leftover per-branch local data (gs_work_/gs_draft_/gs_hist_) for every
+// branch NOT in `allowed` - the branches the signed-in user is actually assigned to. Called at
+// login so a shared operator phone that was first set up while signed in on a different branch
+// can't surface that branch's data under the next user. Branch is the last '_'-segment of a
+// work/hist key, and the second-to-last of a draft key (gs_draft_<date>_<branch>_<type>); branch
+// names carry no underscores, dates use hyphens, so this split is safe. gs_hist_index is the
+// pointer list, pruned to match. No-op (and never wipes everything) when `allowed` is empty.
+function _purgeForeignBranchLocalData(allowed){
+  try{
+    if(!allowed||!allowed.length)return;
+    var allow={}; allowed.forEach(function(b){allow[b]=1;});
+    var toRemove=[];
+    for(var i=0;i<localStorage.length;i++){
+      var k=localStorage.key(i);
+      if(!k||k==='gs_hist_index')continue;
+      var br=null;
+      if(k.indexOf('gs_work_')===0||k.indexOf('gs_hist_')===0){br=k.slice(k.lastIndexOf('_')+1);}
+      else if(k.indexOf('gs_draft_')===0){var p=k.split('_');br=p[p.length-2];}
+      if(br!==null && !allow[br])toRemove.push(k);
+    }
+    toRemove.forEach(function(k){try{localStorage.removeItem(k);}catch(e){}});
+    try{
+      var idx=JSON.parse(localStorage.getItem('gs_hist_index')||'[]');
+      var kept=idx.filter(function(k){if(k.indexOf('gs_hist_')!==0)return true;var br=k.slice(k.lastIndexOf('_')+1);return !!allow[br];});
+      if(kept.length!==idx.length)localStorage.setItem('gs_hist_index',JSON.stringify(kept));
+    }catch(e){}
+    if(toRemove.length)auditLog('Stale local data purged','Removed '+toRemove.length+' local record(s) for branches not assigned to '+(operator||'this user'));
+  }catch(e){}
 }
 // ===== IN-PROGRESS (working) day persistence =====
 // Saves the live captures under today+branch so closing the app doesn't lose them.
