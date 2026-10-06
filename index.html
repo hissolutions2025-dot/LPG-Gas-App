@@ -17260,12 +17260,31 @@ function syncCfg(){return { url: SUPABASE_URL+'/functions/v1/sheets-sync' };}
 // (capCommitBusy), and only once the operator is genuinely not mid-task (back on
 // Home, or already idle-locked).
 var _pendingReload=false, _pendingReloadToasted=false;
+// Persistent, can't-miss banner shown while an app update is pending/applying. A toast was too
+// easy to miss, so a stale phone just looked frozen and the operator kept retrying/re-signing-in
+// (reported live 2026-10-06: Derrick, ~14 sign-ins before the app caught up). The banner makes it
+// obvious the app is updating, not stuck.
+function _showUpdateBanner(applying){
+  var el=document.getElementById('updateBanner');
+  if(!el){
+    el=document.createElement('div');el.id='updateBanner';
+    el.style.cssText='position:fixed;top:0;left:0;right:0;z-index:99999;background:#213A54;color:#fff;'+
+      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;font-size:13px;'+
+      'font-weight:700;text-align:center;padding:9px 14px;box-shadow:0 2px 8px rgba(0,0,0,.28);line-height:1.3';
+    document.body.appendChild(el);
+  }
+  el.textContent=applying?'Updating app… one moment':'🔄 A newer version is ready — it will refresh automatically when you finish what you’re doing.';
+  el.style.display='block';
+}
 function _maybeApplyPendingReload(){
   if(!_pendingReload)return;
   if(capCommitBusy)return; // never interrupt an in-flight commit
   var s=_loadCurrentSection();
   var onHome=!s||s.section==='home';
-  if(onHome||idleLockActive)location.reload();
+  if(onHome||idleLockActive){
+    _showUpdateBanner(true); // make the reload moment clearly an update, not a crash
+    setTimeout(function(){location.reload();},450); // let the banner paint first
+  }
 }
 if('serviceWorker' in navigator){
   window.addEventListener('load', function(){
@@ -17282,6 +17301,7 @@ if('serviceWorker' in navigator){
             // periodic fallback below) so an in-flight or in-progress capture is
             // never interrupted.
             _pendingReload=true;
+            _showUpdateBanner(false);
             if(!_pendingReloadToasted){
               _pendingReloadToasted=true;
               toast('A new version of the app is ready — it\'ll apply once you\'re back on Home or idle.');
@@ -17320,6 +17340,7 @@ function _checkAppETag(){
     if(tag!==_appETag){
       _appETag=tag;
       _pendingReload=true;
+      _showUpdateBanner(false);
       if(!_pendingReloadToasted){
         _pendingReloadToasted=true;
         toast('A new version of the app is ready — it\'ll apply once you\'re back on Home or idle.');
