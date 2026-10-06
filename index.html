@@ -2952,6 +2952,16 @@ function bdLoadExisting(dateVal){
     sb.from('capture_live_rows').select('kind,row').eq('branch',br).eq('date',dateVal),
     sb.from('daily_sales').select('lines').eq('branch',br).eq('date',dateVal).maybeSingle()
   ]).then(function(res){
+    // If ANY section failed to load, do NOT silently treat it as "no data" - that would let the
+    // form open looking authoritative while an existing Opening (or other section) is missing, and
+    // submitting would drop it from the backdated snapshot. Fall back to the same blank-form +
+    // warning path the network-error catch uses, so the manager knows to re-check and retry.
+    if(res[0].error||res[1].error||res[2].error||(res[3]&&res[3].error)){
+      statusEl.textContent='Could not load existing data for '+br+' '+dateVal+' (a section failed) — re-check the date to retry before entering, so nothing already captured is lost.';
+      statusEl.style.color='#B9761F';
+      bdRenderForm();
+      return;
+    }
     (res[0].data||[]).forEach(function(r){
       (r.count_type==='Closing'?bdData.closing:bdData.opening).push({state:(r.state==='Empty'?'Empty':'Full'),size:r.size,brand:r.brand,qty:num(r.qty)});
     });
@@ -5643,8 +5653,10 @@ function _finishLogin(u,b){
   // them. The logout reset only clears IN-MEMORY state; the per-branch localStorage keys
   // (gs_work_/gs_draft_/gs_hist_) survive a logout and a page reload, so a Kleinmond-only operator
   // on a phone first set up while signed in on Helderberg kept seeing Helderberg data (reported
-  // live 2026-10-05: Thabo). A Manager/Owner assigned to both branches keeps both.
-  _purgeForeignBranchLocalData(u.branches||[]);
+  // live 2026-10-05: Thabo). Uses myBranches() (not u.branches) so an Owner - who works BOTH
+  // branches regardless of what their own profile lists - never has the other branch's local
+  // data purged out from under them.
+  _purgeForeignBranchLocalData(myBranches());
   loadWorkingStore();
   // Load today's saved Stock Count / Stock Received / Residual Gas drafts into memory
   // regardless of which screen we land on below - so they're already there if the user
@@ -5707,6 +5719,11 @@ function logout(){
   // reloads fresh for the new branch on the next login.
   store={count:[],manifold:[],refill:[],private:[],received:[],residual:[],_openMismatch:[]};
   try{cData={};rData={};rOverrides={};rSupplierState={};capData={};toggleSel={};residualList=[];}catch(e){}
+  // Signatures live in globals too, and are per-user/per-branch. Clear them on logout so the next
+  // user on the SAME branch/device can't see the previous user's drawn Close Day signature - the
+  // branch-switch reset in _refreshDayCloseSignatures only fires when the branch actually changes,
+  // so a same-branch user switch would otherwise repaint the old signature from sigData.
+  try{sigData={sigOp:'',sigMgr:''};sigSignedBy={sigOp:'',sigMgr:''};sigUnlocked={sigOp:false,sigMgr:false};sigAuthUser={sigOp:null,sigMgr:null};_sigStateBranch=null;}catch(e){}
   // idle lock must not be able to outlive its own session - clear it unconditionally on
   // every logout, whether that's a normal sign-out or the lock screen's own "Not you? Sign
   // out instead" escape hatch (which just calls this function directly).
