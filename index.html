@@ -102,7 +102,8 @@
   body[data-view="pendingOverridesView"] #pendingOverridesView,
   body[data-view="verifiedTakeView"] #verifiedTakeView,
   body[data-view="rangeBalanceView"] #rangeBalanceView,
-  body[data-view="dailySalesView"] #dailySalesView{display:block !important;}
+  body[data-view="dailySalesView"] #dailySalesView,
+  body[data-view="equipmentView"] #equipmentView{display:block !important;}
   #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(calc(100% + 40px));background:var(--ok);color:#fff;padding:14px 22px;border-radius:12px;font-weight:700;font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.25);transition:transform .3s;z-index:70;max-width:90%;text-align:center;cursor:pointer;}
   /* Dismiss slides by the toast's OWN height (+ margin), not a fixed 80px - a fixed offset
      hid a short one-line toast fine but left a tall, wrapped multi-line message (e.g. the
@@ -419,6 +420,7 @@
       <button class="tile t1" data-key="verifiedTake" id="tileVerifiedTake" onclick="openVerifiedTake()" style="display:none"><div class="ic">&#9745;</div><h3>Verified Stock Take</h3><p>Auditor: independent physical count</p></button>
       <button class="tile t3" data-key="rangeBalance" id="tileRangeBalance" onclick="openRangeBalance()" style="display:none"><div class="ic">&#128202;</div><h3>Stock Balance</h3><p>Owner: balance stock over any date range</p></button>
       <button class="tile t4" data-key="dailySales" id="tileDailySales" onclick="openDailySales()" style="display:none"><div class="ic">&#128176;</div><h3>Daily Sales</h3><p>Full Sold &amp; Empties Returned</p></button>
+      <button class="tile t2" data-key="equipment" id="tileEquipment" onclick="openEquipment()" style="display:none"><div class="ic">&#128295;</div><h3>LPG Equipment</h3><p>Regulators, pigtails &amp; washers &mdash; used &amp; replenished</p><span class="badge" id="b-equipment" style="display:none">0</span></button>
     </div>
     <div class="cFooter" id="homeEditBar" style="display:none">
       <button type="button" class="cbGhost" onclick="resetHomeLayout()">Reset layout</button>
@@ -538,6 +540,18 @@
     <button class="saveBtn" onclick="dsCommit()" style="margin-top:14px">Commit Daily Sales</button>
   </div>
 </div>
+
+<!-- LPG EQUIPMENT (supporting delivery stock - regulators/pigtails/washers; NOT daily-balanced) -->
+<div id="equipmentView" class="view"><div class="wrap">
+  <div class="cgRow" style="margin-bottom:10px"><label>Branch</label><div class="cgToggle" id="eqBranchToggle">
+    <button class="cgTg on" id="eqbr-Helderberg" onclick="eqSetBranch('Helderberg')">Helderberg</button>
+    <button class="cgTg" id="eqbr-Kleinmond" onclick="eqSetBranch('Kleinmond')">Kleinmond</button>
+  </div></div>
+  <div id="eqReorder"></div>
+  <div id="eqList"><div class="histEmpty">Loading…</div></div>
+  <div style="margin-top:14px"><button type="button" class="sigClear" style="width:100%;background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel)" onclick="eqToggleHistory()" id="eqHistBtn">Show recent movements</button></div>
+  <div id="eqHistory" style="display:none;margin-top:10px"></div>
+</div></div>
 
 <!-- RESIDUAL GAS (main section) -->
 <div id="residualView" class="view"><div class="wrap">
@@ -862,6 +876,22 @@
     <button class="htab" id="atab-suppliersmgmt" onclick="adminTab('suppliersmgmt')">Manage Suppliers</button>
     <button class="htab" id="atab-counttimes" onclick="adminTab('counttimes')">Count Times</button>
     <button class="htab" id="atab-backdate" onclick="adminTab('backdate')">Backdate Stock Take</button>
+    <button class="htab" id="atab-equipment" onclick="adminTab('equipmentadmin')">Equipment</button>
+  </div>
+
+  <!-- LPG EQUIPMENT ADMIN PANE -->
+  <div id="adminEquipment" style="display:none">
+    <div class="cgRow" style="margin-bottom:10px"><label>Branch (reorder levels)</label><div class="cgToggle" id="eqaBranchToggle">
+      <button class="cgTg on" id="eqabr-Helderberg" onclick="eqAdminSetBranch('Helderberg')">Helderberg</button>
+      <button class="cgTg" id="eqabr-Kleinmond" onclick="eqAdminSetBranch('Kleinmond')">Kleinmond</button>
+    </div></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Rename an item inline. Reorder level is per branch — the item flags red/amber on the Equipment screen when on-hand drops to/below it. Retired items stay in history but disappear from capture.</div>
+    <div id="eqAdminList"></div>
+    <div class="histSection"><h4>Add an item</h4>
+      <input class="mField" type="text" id="eqNewName" placeholder="e.g. Regulator - XYZ">
+      <button type="button" class="sigClear" style="margin-top:8px;background:#EEF3F8;color:var(--navy);border:1.5px solid var(--steel)" onclick="eqAdminAddItem()">+ Add item</button>
+    </div>
+    <button class="saveBtn" style="margin-top:12px" onclick="eqAdminSave()">Save equipment catalog &amp; reorder levels</button>
   </div>
 
   <!-- BACKDATE STOCK TAKE PANE -->
@@ -2766,8 +2796,8 @@ function openAdmin(){
   show('adminView');window.scrollTo(0,0);
 }
 var _adminUnlocked={}; // per Admin session: which tabs unlocked
-var ADMIN_TAB_PERM={seals:'seal_admin',suppliers:'seal_admin',clear:'seal_edit_used',bsetup:'branch_setup',suppliersmgmt:'manageSuppliers',counttimes:'branch_setup',thresholds:'branch_setup',extraalloc:'branch_setup',backdate:'backdateStock'};
-var ADMIN_TAB_NAME={seals:'Seal Register',suppliers:'Brands',clear:'Clear Stock Take',bsetup:'Branch Setup',faulty:'Faulty Cylinders',suppliersmgmt:'Manage Suppliers',counttimes:'Count Times',manifold:'Manifold Slots',thresholds:'Stock Thresholds',extraalloc:'Extra Allocation',backdate:'Backdate Stock Take'};
+var ADMIN_TAB_PERM={seals:'seal_admin',suppliers:'seal_admin',clear:'seal_edit_used',bsetup:'branch_setup',suppliersmgmt:'manageSuppliers',counttimes:'branch_setup',thresholds:'branch_setup',extraalloc:'branch_setup',backdate:'backdateStock',equipmentadmin:'branch_setup'};
+var ADMIN_TAB_NAME={seals:'Seal Register',suppliers:'Brands',clear:'Clear Stock Take',bsetup:'Branch Setup',faulty:'Faulty Cylinders',suppliersmgmt:'Manage Suppliers',counttimes:'Count Times',manifold:'Manifold Slots',thresholds:'Stock Thresholds',extraalloc:'Extra Allocation',backdate:'Backdate Stock Take',equipmentadmin:'Equipment'};
 function adminShowTabsOnly(){
   ['adminSeals','adminSuppliers','adminClear','adminBsetup','adminManifold','adminFaulty','adminSuppliersMgmt','adminCountTimes','adminBackdate'].forEach(function(id){var e=document.getElementById(id);if(e)e.style.display='none';});
   ['atab-seals','atab-suppliers','atab-clear','atab-bsetup','atab-manifold','atab-faulty','atab-suppliersmgmt','atab-counttimes','atab-backdate'].forEach(function(id){var e=document.getElementById(id);if(e)e.classList.remove('on');});
@@ -2810,6 +2840,7 @@ function _adminTabShow(t){
   var _ath=document.getElementById('adminThresholds');if(_ath)_ath.style.display=(t==='thresholds')?'block':'none';
   var _aea=document.getElementById('adminExtraAlloc');if(_aea)_aea.style.display=(t==='extraalloc')?'block':'none';
   var _abd=document.getElementById('adminBackdate');if(_abd)_abd.style.display=(t==='backdate')?'block':'none';
+  var _aeq=document.getElementById('adminEquipment');if(_aeq)_aeq.style.display=(t==='equipmentadmin')?'block':'none';
   document.getElementById('atab-seals').classList.toggle('on',t==='seals');
   document.getElementById('atab-suppliers').classList.toggle('on',t==='suppliers');
   var _tc=document.getElementById('atab-clear');if(_tc)_tc.classList.toggle('on',t==='clear');
@@ -2821,7 +2852,9 @@ function _adminTabShow(t){
   var _tth=document.getElementById('atab-thresholds');if(_tth)_tth.classList.toggle('on',t==='thresholds');
   var _tea=document.getElementById('atab-extraalloc');if(_tea)_tea.classList.toggle('on',t==='extraalloc');
   var _tbd=document.getElementById('atab-backdate');if(_tbd)_tbd.classList.toggle('on',t==='backdate');
+  var _teqa=document.getElementById('atab-equipment');if(_teqa)_teqa.classList.toggle('on',t==='equipmentadmin');
   if(t==='backdate')bdInit();
+  if(t==='equipmentadmin'){renderEquipmentAdmin();if(!_eqAdminDirty)_fetchAppConfig('equipment_catalog',equipmentCatalogSave).then(renderEquipmentAdmin);}
   if(t==='bsetup'){renderBsetup();_fetchAppConfig('branch_setup',bcfgSave).then(renderBsetup);}
   // Skip the server refetch while _threshDirty - the Update/Confirm button batches local
   // edits now (see thresholdsSet), so pulling the server's older copy back over unconfirmed
@@ -4480,13 +4513,13 @@ function suppliersMgmtRemove(name){
 // ===== USER STORE (demo, localStorage) =====
 // user = {name, level:'Owner|Manager|Operator', branches:[...], pw, perms:{...}}
 // Granular permissions. Levels are PRESETS that pre-tick these; Owner can override per user.
-var PERM_KEYS=['view','capture','edit','closeday','history','users','audit','adjust','seal_admin','seal_create','seal_void_open','seal_edit_used','seal_boundary','branch_setup','faultyCapture','faultyRegister','residualGas','manageSuppliers','verifiedCount','dailySales','backdateStock'];
+var PERM_KEYS=['view','capture','edit','closeday','history','users','audit','adjust','seal_admin','seal_create','seal_void_open','seal_edit_used','seal_boundary','branch_setup','faultyCapture','faultyRegister','residualGas','manageSuppliers','verifiedCount','dailySales','backdateStock','equipment','equipmentReplenish'];
 var PERM_LABELS={view:'View counts',capture:'Capture counts',edit:'Edit / correct',closeday:'Close day',history:'Open history',users:'Manage users',audit:'View audit log',adjust:'Adjust mismatches',seal_admin:'Seal: open Admin area',seal_create:'Seal: create/edit roll (unused)',seal_void_open:'Seal: void seal (open day)',seal_edit_used:'Seal: edit used roll / void closed day',seal_boundary:'Seal: pump boundary override',branch_setup:'Branch Setup: activate/deactivate sections & items',faultyCapture:'Faulty — capture',faultyRegister:'Faulty — manage register',residualGas:'Residual Gas — capture',manageSuppliers:'Manage Suppliers (Received)',verifiedCount:'Verified Stock Take — capture',dailySales:'Daily Sales — capture',backdateStock:'Admin: backdate a missed stock take'};
 function permPreset(level){
-  if(level==='Owner')   return {view:1,capture:1,edit:1,closeday:1,history:1,users:1,audit:1,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:1,seal_boundary:1,branch_setup:1,faultyCapture:1,faultyRegister:1,residualGas:1,manageSuppliers:1,backdateStock:1};
-  if(level==='Manager') return {view:1,capture:1,edit:1,closeday:1,history:1,users:0,audit:0,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:0,seal_boundary:0,branch_setup:1,faultyCapture:1,faultyRegister:1,residualGas:1,manageSuppliers:1,dailySales:1,backdateStock:1};
+  if(level==='Owner')   return {view:1,capture:1,edit:1,closeday:1,history:1,users:1,audit:1,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:1,seal_boundary:1,branch_setup:1,faultyCapture:1,faultyRegister:1,residualGas:1,manageSuppliers:1,backdateStock:1,equipment:1,equipmentReplenish:1};
+  if(level==='Manager') return {view:1,capture:1,edit:1,closeday:1,history:1,users:0,audit:0,adjust:1,seal_admin:1,seal_create:1,seal_void_open:1,seal_edit_used:0,seal_boundary:0,branch_setup:1,faultyCapture:1,faultyRegister:1,residualGas:1,manageSuppliers:1,dailySales:1,backdateStock:1,equipment:1,equipmentReplenish:1};
   if(level==='Auditor') return {view:1,verifiedCount:1};
-  return                       {view:1,capture:1,edit:1,closeday:0,history:0,users:0,audit:0,adjust:0,seal_admin:0,seal_create:0,seal_void_open:0,seal_edit_used:0,seal_boundary:0,faultyCapture:1,faultyRegister:0,residualGas:1,manageSuppliers:0,dailySales:0,backdateStock:0}; // Operator - off by default, toggle per-user in Manage Users
+  return                       {view:1,capture:1,edit:1,closeday:0,history:0,users:0,audit:0,adjust:0,seal_admin:0,seal_create:0,seal_void_open:0,seal_edit_used:0,seal_boundary:0,faultyCapture:1,faultyRegister:0,residualGas:1,manageSuppliers:0,dailySales:0,backdateStock:0,equipment:1,equipmentReplenish:0}; // Operator - off by default, toggle per-user in Manage Users. equipment on (record Used); equipmentReplenish off (toggle on for the storeman)
 }
 function userPerms(u){
   if(!u)return {};
@@ -4513,6 +4546,221 @@ function thresholdFor(br,sz,brand){
   var t=thresholdsLoad();
   var s=(t[br]&&t[br][sz]&&t[br][sz][brand])||{};
   return {minFullHold:s.minFullHold||0,extraAllocThreshold:s.extraAllocThreshold||0,maxThreshold:s.maxThreshold||0,replenishBelow:s.replenishBelow||0};
+}
+// ===== LPG EQUIPMENT (supporting delivery stock: regulators, pigtails, washers) =====
+// Deliberately OUTSIDE the daily cylinder close / balancing. Tracked as an immutable movement
+// ledger in Supabase (equipment_moves): on-hand per item+branch is the sum of delta. Catalog +
+// reorder levels are Manager-editable, stored in app_config key 'equipment_catalog' (same shared
+// mechanism as stock_thresholds), seeded from EQUIPMENT_DEFAULT_ITEMS on first use.
+var EQUIPMENT_DEFAULT_ITEMS=[
+  {id:'reg-astro-4kg',    name:'Regulator - ASTRO 4kg'},
+  {id:'reg-bullnose',     name:'Regulator - Bullnose'},
+  {id:'reg-swivel',       name:'Regulator - Swivel'},
+  {id:'pig-500mm',        name:'Pigtails - 500mm'},
+  {id:'pig-1m',           name:'Pigtails - 1 meter'},
+  {id:'wash-full-nose',   name:'Washer - Full Nose Cone'},
+  {id:'wash-half-nose',   name:'Washer - Half Nose Cone (Bullnose/HP)'},
+  {id:'wash-rubber-rwl',  name:'Washer - Rubber RWL (Lamp/Cooker)'},
+  {id:'wash-oring-bnose', name:'Washer - "O" Ring For B/Nose Regulator (G0250R)'},
+  {id:'wash-oring-pigtail',name:'Washer - "O" Ring For Pigtail 1/4" NPT Vapour'},
+  {id:'wash-fibre-green', name:'Washer - Fibre Green 1/2" (18X9X3)'}
+];
+function _eqEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function equipmentCatalogLoad(){
+  var c=null;try{c=JSON.parse(localStorage.getItem('gs_equipment_catalog')||'null');}catch(e){c=null;}
+  if(!c||!c.items||!c.items.length){c={items:EQUIPMENT_DEFAULT_ITEMS.map(function(i){return {id:i.id,name:i.name,retired:false};}),reorder:{}};}
+  if(!c.reorder)c.reorder={};
+  return c;
+}
+function equipmentCatalogSave(c){try{localStorage.setItem('gs_equipment_catalog',JSON.stringify(c));}catch(e){}}
+function _eqActiveItems(){return equipmentCatalogLoad().items.filter(function(i){return !i.retired;});}
+function _eqReorderFor(br,id){var c=equipmentCatalogLoad();return (c.reorder&&c.reorder[br]&&num(c.reorder[br][id]))||0;}
+var eqBranch='Helderberg', _eqOnHand={}, _eqLoadToken=0;
+function openEquipment(){
+  if(!perm('equipment')){toast('You do not have LPG Equipment rights',true);return;}
+  eqBranch=branch||'Helderberg';
+  show('equipmentView');
+  document.getElementById('hTitle').textContent='LPG Equipment';
+  document.getElementById('hSub').textContent='Supporting delivery stock';
+  document.getElementById('backBtn').style.display='block';
+  _saveCurrentSection('equipment');
+  var h=document.getElementById('eqHistory');if(h){h.style.display='none';h.innerHTML='';}
+  var hb=document.getElementById('eqHistBtn');if(hb)hb.textContent='Show recent movements';
+  applyBranchLock('eqbr-',eqBranch);
+  eqRefresh();
+}
+function eqSetBranch(b){
+  if(role==='Operator' && b!==branch){toast('Locked — you are assigned to '+branch,true);return;}
+  eqBranch=b;applyBranchLock('eqbr-',eqBranch);
+  var h=document.getElementById('eqHistory');if(h&&h.style.display!=='none')eqRenderHistory();
+  eqRefresh();
+}
+// Fetch the whole ledger for this branch and fold it into on-hand per item. Refetched on open /
+// branch switch / after each move - equipment volume is low, so a full read is cheap and always
+// consistent (no stored balance to drift).
+function eqRefresh(){
+  var br=eqBranch, myTok=++_eqLoadToken;
+  document.getElementById('eqList').innerHTML='<div class="histEmpty">Loading…</div>';
+  // Pull the shared catalog too so reorder levels/items set on another device show here.
+  _fetchAppConfig('equipment_catalog',equipmentCatalogSave).catch(function(){}).then(function(){
+    return sb.from('equipment_moves').select('item_id,delta').eq('branch',br);
+  }).then(function(res){
+    if(myTok!==_eqLoadToken)return; // superseded by a newer open/switch
+    _eqOnHand={};
+    if(res&&!res.error){(res.data||[]).forEach(function(r){_eqOnHand[r.item_id]=(_eqOnHand[r.item_id]||0)+num(r.delta);});}
+    else if(res&&res.error){toast('Could not load equipment levels: '+res.error.message,true);}
+    eqRenderList();
+  },function(){ if(myTok!==_eqLoadToken)return; toast('Network error loading equipment',true); eqRenderList(); });
+}
+function _eqLevel(onhand,reorder){
+  if(reorder>0 && onhand<=0)return 'red';
+  if(reorder>0 && onhand<=reorder)return 'amber';
+  return 'green';
+}
+function _eqCellStyle(level){
+  if(level==='red')return 'background:#FBE7E8;color:#C0392B';
+  if(level==='amber')return 'background:#FBF0DD;color:#B9761F';
+  return 'background:#E5F5EB;color:#1E8449';
+}
+function eqRenderList(){
+  var items=_eqActiveItems();
+  var canRep=perm('equipmentReplenish');
+  // Needs-replenishment strip
+  var low=items.filter(function(it){var oh=num(_eqOnHand[it.id]);var ro=_eqReorderFor(eqBranch,it.id);return ro>0 && oh<=ro;});
+  var ro=document.getElementById('eqReorder');
+  if(low.length){
+    ro.innerHTML='<div class="callout" style="background:#FBF0DD;border-color:#E6C27A;color:#7A4E12;font-weight:700;margin-bottom:10px">⚠ Needs replenishment ('+eqBranch+'): '+
+      low.map(function(it){return _eqEsc(it.name)+' — '+num(_eqOnHand[it.id]);}).join(' &middot; ')+'</div>';
+  } else { ro.innerHTML=''; }
+  if(!items.length){document.getElementById('eqList').innerHTML='<div class="histEmpty">No equipment items. A Manager can add them under Admin &rarr; Equipment.</div>';return;}
+  var html='';
+  items.forEach(function(it){
+    var oh=num(_eqOnHand[it.id]), rlv=_eqReorderFor(eqBranch,it.id);
+    var lvl=_eqLevel(oh,rlv);
+    html+='<div class="brandCard" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'+
+      '<div style="flex:1"><div style="font-weight:700;font-size:13.5px">'+_eqEsc(it.name)+'</div>'+
+        '<div style="font-size:11px;color:var(--muted)">On hand &middot; '+(rlv>0?('reorder at '+rlv):'no reorder level')+'</div></div>'+
+      '<div style="min-width:46px;text-align:center;border-radius:10px;font-weight:800;padding:8px 6px;'+_eqCellStyle(lvl)+'">'+oh+'</div></div>'+
+      '<div style="display:flex;gap:8px;margin-top:8px">'+
+        '<button type="button" class="ovActBtn" style="background:#B5533B;color:#fff" onclick="eqOpenMove(\''+it.id+'\',\'used\')">Use &minus;</button>'+
+        (canRep?'<button type="button" class="ovActBtn" style="background:var(--steel);color:#fff" onclick="eqOpenMove(\''+it.id+'\',\'replenish\')">Replenish +</button>':'')+
+      '</div></div>';
+  });
+  document.getElementById('eqList').innerHTML=html;
+}
+// ---- Use / Replenish modal (built once, reused) ----
+var _eqMoveCtx=null;
+function eqOpenMove(itemId,kind){
+  if(kind==='replenish' && !perm('equipmentReplenish')){toast('Only the storeman (or a Manager/Owner) can replenish',true);return;}
+  if(!perm('equipment')){toast('You do not have LPG Equipment rights',true);return;}
+  var it=_eqActiveItems().filter(function(x){return x.id===itemId;})[0];if(!it)return;
+  _eqMoveCtx={itemId:itemId,kind:kind};
+  var m=document.getElementById('eqMoveModal');
+  if(!m){
+    m=document.createElement('div');m.id='eqMoveModal';m.className='modal';
+    m.innerHTML='<div class="modalCard"><div class="modalHead"><b id="eqMoveTitle"></b>'+
+      '<button type="button" class="mClose" onclick="eqCloseMove()">×</button></div>'+
+      '<label class="mLabel">Quantity</label><input class="mField" type="number" inputmode="numeric" min="1" step="1" id="eqMoveQty" value="1">'+
+      '<label class="mLabel">Note (optional)</label><input class="mField" type="text" id="eqMoveNote" placeholder="e.g. delivery to customer / restock">'+
+      '<button class="saveBtn" id="eqMoveBtn" style="margin-top:12px" onclick="eqSubmitMove()">Confirm</button></div>';
+    document.body.appendChild(m);
+  }
+  document.getElementById('eqMoveTitle').textContent=(kind==='used'?'Use (remove) — ':'Replenish (add) — ')+it.name;
+  document.getElementById('eqMoveQty').value='1';
+  document.getElementById('eqMoveNote').value='';
+  m.classList.add('show');
+  setTimeout(function(){var q=document.getElementById('eqMoveQty');if(q){q.focus();q.select();}},50);
+}
+function eqCloseMove(){var m=document.getElementById('eqMoveModal');if(m)m.classList.remove('show');_eqMoveCtx=null;}
+var _eqMoveBusy=false;
+function eqSubmitMove(){
+  if(!_eqMoveCtx||_eqMoveBusy)return;
+  var qty=Math.floor(num(document.getElementById('eqMoveQty').value));
+  if(!(qty>0)){toast('Enter a quantity of 1 or more',true);return;}
+  var note=(document.getElementById('eqMoveNote').value||'').trim();
+  var kind=_eqMoveCtx.kind, itemId=_eqMoveCtx.itemId;
+  var it=_eqActiveItems().filter(function(x){return x.id===itemId;})[0];
+  var delta=(kind==='used')?-qty:qty;
+  var br=eqBranch;
+  _eqMoveBusy=true;var btn=document.getElementById('eqMoveBtn');if(btn){btn.disabled=true;btn.style.opacity='.6';}
+  sb.from('equipment_moves').insert({branch:br,item_id:itemId,delta:delta,kind:kind,note:note,
+    by_user_id:(currentProfile&&currentProfile.id)||null,by_name_snapshot:operator||''}).select().then(function(res){
+    _eqMoveBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}
+    if(res.error||!res.data||!res.data.length){toast('Could not save: '+(res.error?res.error.message:'no rows'),true);return;}
+    auditLog('Equipment '+(kind==='used'?'used':'replenished'),br+' — '+(it?it.name:itemId)+': '+(delta>0?'+':'')+delta+(note?(' — '+note):''),null,null,'success',br);
+    _eqOnHand[itemId]=(num(_eqOnHand[itemId])||0)+delta;
+    eqCloseMove();
+    eqRenderList();
+    var h=document.getElementById('eqHistory');if(h&&h.style.display!=='none')eqRenderHistory();
+    toast((kind==='used'?'Recorded '+qty+' used':'Replenished '+qty)+' ✓');
+  },function(){_eqMoveBusy=false;if(btn){btn.disabled=false;btn.style.opacity='1';}toast('Network error — not saved, try again',true);});
+}
+// ---- Recent movements (audit view) ----
+function eqToggleHistory(){
+  var h=document.getElementById('eqHistory'), b=document.getElementById('eqHistBtn');
+  if(h.style.display==='none'){h.style.display='block';b.textContent='Hide recent movements';eqRenderHistory();}
+  else{h.style.display='none';b.textContent='Show recent movements';}
+}
+function eqRenderHistory(){
+  var h=document.getElementById('eqHistory');h.innerHTML='<div class="histEmpty">Loading…</div>';
+  var nameById={};equipmentCatalogLoad().items.forEach(function(i){nameById[i.id]=i.name;});
+  sb.from('equipment_moves').select('item_id,delta,kind,note,by_name_snapshot,ts').eq('branch',eqBranch).order('ts',{ascending:false}).limit(60).then(function(res){
+    if(res.error){h.innerHTML='<div class="histEmpty">Could not load history.</div>';return;}
+    var rows=res.data||[];
+    if(!rows.length){h.innerHTML='<div class="histEmpty">No movements yet for '+eqBranch+'.</div>';return;}
+    var html='<table class="htable"><tr><th>When</th><th>Item</th><th>Change</th><th>By</th><th>Note</th></tr>';
+    rows.forEach(function(r){
+      var d=r.delta;
+      html+='<tr><td>'+_eqEsc(nowStamp(new Date(r.ts)))+'</td><td>'+_eqEsc(nameById[r.item_id]||r.item_id)+'</td>'+
+        '<td class="n" style="color:'+(d<0?'#C0392B':'#1E8449')+';font-weight:700">'+(d>0?'+':'')+d+'<span style="color:var(--muted);font-weight:400;font-size:10px"> '+_eqEsc(r.kind)+'</span></td>'+
+        '<td>'+_eqEsc((r.by_name_snapshot||'').replace(' (Manager)',''))+'</td><td>'+_eqEsc(r.note||'')+'</td></tr>';
+    });
+    html+='</table>';h.innerHTML=html;
+  },function(){h.innerHTML='<div class="histEmpty">Network error loading history.</div>';});
+}
+// ---- Admin: catalog (items) + per-branch reorder levels. Edits buffer in _eqAdminCatalog with a
+// dirty flag (same pattern as Stock Thresholds), saved to app_config on Save. ----
+var eqAdminBranch='Helderberg', _eqAdminCatalog=null, _eqAdminDirty=false;
+function eqAdminSetBranch(b){eqAdminBranch=b;applyBranchLock('eqabr-',b);renderEquipmentAdmin();}
+function renderEquipmentAdmin(){
+  if(!_eqAdminDirty||!_eqAdminCatalog)_eqAdminCatalog=equipmentCatalogLoad();
+  applyBranchLock('eqabr-',eqAdminBranch);
+  var c=_eqAdminCatalog; c.reorder=c.reorder||{}; c.reorder[eqAdminBranch]=c.reorder[eqAdminBranch]||{};
+  var active=c.items.filter(function(i){return !i.retired;});
+  var html='<table class="htable" style="width:100%"><tr><th>Item</th><th>Reorder</th><th></th></tr>';
+  c.items.forEach(function(it,idx){
+    if(it.retired)return;
+    var rlv=num(c.reorder[eqAdminBranch][it.id])||0;
+    html+='<tr><td><input class="mField" style="margin:0" type="text" value="'+_eqEsc(it.name)+'" onchange="eqAdminSetName('+idx+',this.value)"></td>'+
+      '<td><input class="mField" style="margin:0;width:64px" type="number" inputmode="numeric" min="0" step="1" value="'+rlv+'" onchange="eqAdminSetReorder(\''+it.id+'\',this.value)"></td>'+
+      '<td><button type="button" class="sigClear" style="color:#C0392B;font-size:11px" onclick="eqAdminRetire('+idx+')">Retire</button></td></tr>';
+  });
+  html+='</table>';
+  if(!active.length)html='<div class="histEmpty">No active items. Add one below.</div>';
+  document.getElementById('eqAdminList').innerHTML=html;
+}
+function eqAdminSetName(idx,val){var v=(val||'').trim();if(v){_eqAdminCatalog.items[idx].name=v;_eqAdminDirty=true;}}
+function eqAdminSetReorder(id,val){_eqAdminCatalog.reorder[eqAdminBranch]=_eqAdminCatalog.reorder[eqAdminBranch]||{};_eqAdminCatalog.reorder[eqAdminBranch][id]=Math.max(0,Math.floor(num(val)));_eqAdminDirty=true;}
+function eqAdminRetire(idx){
+  if(!confirm('Retire "'+_eqAdminCatalog.items[idx].name+'"? It stays in movement history but won’t show for capture.'))return;
+  _eqAdminCatalog.items[idx].retired=true;_eqAdminDirty=true;renderEquipmentAdmin();
+}
+function eqAdminAddItem(){
+  if(!_eqAdminCatalog)_eqAdminCatalog=equipmentCatalogLoad();
+  var nm=(document.getElementById('eqNewName').value||'').trim();
+  if(!nm){toast('Enter an item name',true);return;}
+  var id='eq-'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+  _eqAdminCatalog.items.push({id:id,name:nm,retired:false});_eqAdminDirty=true;
+  document.getElementById('eqNewName').value='';
+  renderEquipmentAdmin();
+}
+function eqAdminSave(){
+  if(!_eqAdminCatalog){toast('Nothing to save',true);return;}
+  equipmentCatalogSave(_eqAdminCatalog);
+  _pushAppConfig('equipment_catalog',_eqAdminCatalog);
+  _eqAdminDirty=false;
+  auditLog('Equipment catalog saved',_eqAdminCatalog.items.filter(function(i){return !i.retired;}).length+' active item(s)');
+  toast('Equipment catalog saved ✓');
 }
 // Today's Closing Full count per size+brand for a branch - shared by both the Min Full Hold
 // shortage check below and Max Full Threshold's matching overage check, so the two compliance
@@ -5639,6 +5887,7 @@ function _finishLogin(u,b){
   // opened to Manager+Owner per the spec's real intended audience.
   var _trb=document.getElementById('tileRangeBalance');if(_trb)_trb.style.display=(role==='Manager'||role==='Owner')?'flex':'none';
   var _tds=document.getElementById('tileDailySales');if(_tds)_tds.style.display=(perm('dailySales')||role==='Owner')?'flex':'none';
+  var _teq=document.getElementById('tileEquipment');if(_teq)_teq.style.display=perm('equipment')?'flex':'none';
   auditLog('Login','Signed in to '+b);
   editUnlocked=false;
   // Pull the shared Stock Thresholds config into this browser's localStorage at login. It was
@@ -5648,6 +5897,9 @@ function _finishLogin(u,b){
   // disappear there while showing on a browser that had (reported live 2026-10-02: Edge vs
   // Chrome). Fire-and-forget; the report also re-fetches it at build time as a guarantee.
   _fetchAppConfig('stock_thresholds',thresholdsSave).catch(function(){});
+  // LPG Equipment catalog + reorder levels (Manager-editable, cross-device) - same mechanism as
+  // stock_thresholds. Fetched at login so the tile/screen always have the current item list.
+  _fetchAppConfig('equipment_catalog',equipmentCatalogSave).catch(function(){});
   // Shared operator devices: remove any leftover local working/draft/history data for branches
   // this user is NOT assigned to, so a prior setup/session on another branch can't surface under
   // them. The logout reset only clears IN-MEMORY state; the per-branch localStorage keys
