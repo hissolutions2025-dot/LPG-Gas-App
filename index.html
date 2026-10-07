@@ -760,6 +760,9 @@
   <div id="histTodayPane">
     <div id="histBody"></div>
     <div class="sigBlock">
+      <h4 style="margin:0 0 4px;font-size:13px;color:var(--navy);text-transform:uppercase;letter-spacing:.4px;">Shift sign-offs — everyone who worked today</h4>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;">Each person signs off their own work, usually as they sign out. Doesn't block closing; anyone unsigned is recorded on the close and flagged.</div>
+      <div id="shiftSignoffList" style="margin-bottom:16px"></div>
       <h4 style="margin:0 0 4px;font-size:13px;color:var(--navy);text-transform:uppercase;letter-spacing:.4px;">Sign-off — count verified correct</h4>
       <div style="font-size:11px;color:var(--muted);margin-bottom:12px;">Each box unlocks with that person's password. Owner password can unlock either. Both must be signed to close the day.</div>
       <div class="sigPadWrap">
@@ -6075,16 +6078,28 @@ function _confirmSignOutWithPending(){
     null,null,ok?'failure':'success');
   return ok;
 }
+// After the pending-work check: offer a shift sign-off to anyone who worked this branch today and
+// hasn't signed off yet (see _maybeOfferShiftSignoff), then sign out. Never asks "Sign out now?"
+// on top of a dialog the user has already answered.
+function _proceedSignOut(kind,alreadyConfirmed){
+  _maybeOfferShiftSignoff(function(r){
+    if(r==='cancel')return; // stay signed in
+    if(r==='skipped')auditLog('Shift not signed off',operator+' signed out without signing off their '+branch+' shift','','','failure',branch);
+    if(r==='signed'||r==='skipped'||kind==='switch'||alreadyConfirmed){
+      logout();if(kind==='switch')toast('Signed out — next user can sign in');return;
+    }
+    if(confirm('Sign out now?'))logout();
+  });
+}
 function switchUser(){
   var g=_confirmSignOutWithPending();
   if(g===false)return;
-  logout();toast('Signed out — next user can sign in');
+  _proceedSignOut('switch',g===true);
 }
 function signOut(){
   var g=_confirmSignOutWithPending();
   if(g===false)return;
-  if(g===true){logout();return;}     // already confirmed in the pending-work warning - don't ask twice
-  if(confirm('Sign out now?'))logout();
+  _proceedSignOut('signout',g===true); // g===true: already confirmed in the pending-work warning - don't ask twice
 }
 // Lets a Manager/Owner (or a multi-branch Operator) flip their working branch mid-session
 // without a full sign-out/sign-in round trip - instant, no re-auth, since they're already
@@ -11835,6 +11850,7 @@ function openHistory(mismatchOverlayRows,_skipManifoldLiveFetch){
   // fire-and-forget, like the badge updates above - don't block render. See closeDay()'s own
   // comment for the full story on why every one of these must be passed histBranch explicitly.
   _refreshDayCloseSignatures(histBranch);
+  _renderShiftSignoffs(histBranch); // everyone who worked today: signed off / not (non-blocking)
   // Found in code review 2026-09-22: _manifoldSlotCounts[br] (read by _manifoldCylLabels, used
   // by _dayCompleteness's Close Day gate AND the correction tool's Manifold Cylinder dropdown)
   // was ONLY ever populated by opening the LIVE Manifold capture screen for that branch -
@@ -12264,6 +12280,191 @@ function _refreshDayCloseSignatures(br){
     return rows;
   });
 }
+// ===== SHIFT SIGN-OFFS (everyone who worked a branch's day) =====
+// Separate from day_close_signatures' single Operator + Manager boxes, which gate Close Day and are
+// left untouched. Each person who captured anything for the branch that day signs off their OWN
+// work - normally offered as they sign out at the end of their shift (several operators now work
+// one branch per day in shifts), or from the Close Day screen if still on site. Never blocks the
+// close: anyone who worked but didn't sign off is recorded on the close and flagged in the audit log.
+var _shiftSignoffState={br:null,worked:[],so:{},boxSigned:{}}, _shiftSignoffTok=0;
+// Everyone who actually CAPTURED data for this branch+day (not merely logged in): stock counts,
+// manifold readings, and the live capture mirror (refill/private/received/residual). Also reads
+// this phone's own committed rows, which may still be waiting in the sync queue.
+function _fetchWorkedPeople(br,date){
+  var names={};
+  function add(n){n=String(n||'').trim();if(n&&n!=='?')names[n]=1;}
+  try{
+    ['count','manifold','refill','private','received'].forEach(function(k){(store[k]||[]).forEach(function(r){if(r.branch===br&&(r._date||date)===date)add(r._operator);});});
+    (store.residual||[]).forEach(function(r){if(r.Branch===br&&(r._date||date)===date)add(r._operator);});
+  }catch(e){}
+  return Promise.all([
+    sb.from('stock_counts').select('updated_by_name_snapshot').eq('branch',br).eq('date',date),
+    sb.from('manifold_live_rows').select('row').eq('branch',br).eq('date',date),
+    sb.from('capture_live_rows').select('row').eq('branch',br).eq('date',date)
+  ]).then(function(r){
+    ((r[0]&&r[0].data)||[]).forEach(function(x){add(x.updated_by_name_snapshot);});
+    ((r[1]&&r[1].data)||[]).forEach(function(x){add(x.row&&x.row._operator);});
+    ((r[2]&&r[2].data)||[]).forEach(function(x){add(x.row&&x.row._operator);});
+    return Object.keys(names).sort();
+  },function(){return Object.keys(names).sort();});
+}
+function _fetchShiftSignoffs(br,date){
+  return sb.from('shift_signoffs').select('signer_name,signer_level,signed_at').eq('branch',br).eq('date',date).then(function(res){
+    var out={};((res&&res.data)||[]).forEach(function(r){out[r.signer_name]=r;});return out;
+  },function(){return {};});
+}
+function _levelForName(name){
+  if(name===operator)return role||'';
+  var u=(_loginNamesCache||[]).filter(function(x){return x.name===name;})[0];
+  return (u&&u.level)||'';
+}
+function _saveShiftSignoff(br,date,name,png){
+  return sb.from('shift_signoffs').upsert({branch:br,date:date,signer_name:name,signer_level:_levelForName(name),
+      signer_id:(name===operator&&currentProfile)?currentProfile.id:null,signature_png:png,signed_at:new Date().toISOString()},
+      {onConflict:'branch,date,signer_name'}).select().then(function(res){
+    if(res.error||!res.data||!res.data.length)throw new Error(res.error?res.error.message:'not saved');
+    auditLog('Shift signed off',name+' signed off their '+br+' shift for '+date,null,null,'success',br);
+    return true;
+  });
+}
+// ---- Signature pad modal (built once, reused). mode 'signout' = offered while signing out;
+// mode 'closeday' = a still-present person signing off from the Close Day screen. ----
+var _sopCtx=null,_sopBusy=false;
+function _openSignoffPad(opts,cb){
+  _sopCtx={opts:opts,cb:cb,drawn:false};
+  var m=document.getElementById('sopModal');
+  if(!m){
+    m=document.createElement('div');m.id='sopModal';m.className='modal';
+    m.innerHTML='<div class="modalCard"><div class="modalHead"><b id="sopTitle"></b></div>'+
+      '<div id="sopMsg" style="font-size:12px;color:var(--muted);margin:4px 0 8px"></div>'+
+      '<canvas id="sopPad" class="sigPad" width="440" height="140"></canvas>'+
+      '<button type="button" class="sigClear" onclick="_sopClear()">Clear</button>'+
+      '<div id="sopBtns" style="display:flex;flex-direction:column;gap:8px;margin-top:12px"></div></div>';
+    document.body.appendChild(m);
+    _sopBindPad();
+  }
+  document.getElementById('sopTitle').textContent='Sign off your shift — '+opts.name;
+  document.getElementById('sopMsg').textContent='Draw your signature to confirm your '+opts.branch+' work today ('+opts.date+') is complete and correct.';
+  var b=document.getElementById('sopBtns');
+  if(opts.mode==='signout'){
+    b.innerHTML='<button class="saveBtn" onclick="_sopSubmit()">Sign off &amp; sign out</button>'+
+      '<button type="button" class="sigClear" style="width:100%" onclick="_sopFinish(\'skipped\')">Sign out without signing</button>'+
+      '<button type="button" class="sigClear" style="width:100%;color:var(--muted)" onclick="_sopFinish(\'cancel\')">Cancel — stay signed in</button>';
+  } else {
+    b.innerHTML='<button class="saveBtn" onclick="_sopSubmit()">Save sign-off</button>'+
+      '<button type="button" class="sigClear" style="width:100%;color:var(--muted)" onclick="_sopFinish(\'cancel\')">Cancel</button>';
+  }
+  _sopClear();
+  m.classList.add('show');
+}
+function _sopBindPad(){
+  var cv=document.getElementById('sopPad');var ctx=cv.getContext('2d');ctx.lineWidth=2.2;ctx.lineCap='round';ctx.strokeStyle='#16202B';
+  var drawing=false,last=null;
+  function pos(e){var r=cv.getBoundingClientRect();var t=e.touches?e.touches[0]:e;return {x:(t.clientX-r.left)*(cv.width/r.width),y:(t.clientY-r.top)*(cv.height/r.height)};}
+  function start(e){drawing=true;last=pos(e);e.preventDefault();}
+  function move(e){if(!drawing)return;var p=pos(e);ctx.beginPath();ctx.moveTo(last.x,last.y);ctx.lineTo(p.x,p.y);ctx.stroke();last=p;if(_sopCtx)_sopCtx.drawn=true;e.preventDefault();}
+  function end(){drawing=false;}
+  cv.addEventListener('mousedown',start);cv.addEventListener('mousemove',move);cv.addEventListener('mouseup',end);cv.addEventListener('mouseleave',end);
+  cv.addEventListener('touchstart',start,{passive:false});cv.addEventListener('touchmove',move,{passive:false});cv.addEventListener('touchend',end);
+}
+function _sopClear(){var cv=document.getElementById('sopPad');if(cv)cv.getContext('2d').clearRect(0,0,cv.width,cv.height);if(_sopCtx)_sopCtx.drawn=false;}
+function _sopFinish(result){
+  var m=document.getElementById('sopModal');if(m)m.classList.remove('show');
+  var c=_sopCtx;_sopCtx=null;if(c&&c.cb)c.cb(result);
+}
+function _sopSubmit(){
+  if(!_sopCtx||_sopBusy)return;
+  if(!_sopCtx.drawn){toast('Draw your signature first',true);return;}
+  var o=_sopCtx.opts,png=document.getElementById('sopPad').toDataURL('image/png');
+  _sopBusy=true;
+  _saveShiftSignoff(o.branch,o.date,o.name,png).then(function(){
+    _sopBusy=false;toast('Shift signed off ✓');_sopFinish('signed');
+  },function(e){
+    _sopBusy=false;
+    toast('Couldn’t save your sign-off ('+((e&&e.message)||'network')+'). Try again, or sign out without signing.',true);
+  });
+}
+// ---- Offered at sign-out: only to someone who captured something for this branch today and
+// hasn't signed off yet. A slow/absent network never holds up signing out (4s cap). Calls
+// cb('none'|'signed'|'skipped'|'cancel'). ----
+function _maybeOfferShiftSignoff(cb){
+  var br=branch,d=today,me=operator;
+  if(!br||!me){cb('none');return;}
+  var finished=false,opened=false;
+  function done(r){if(finished)return;finished=true;cb(r);}
+  var t=setTimeout(function(){if(!opened)done('none');},4000);
+  Promise.all([_fetchWorkedPeople(br,d),_fetchShiftSignoffs(br,d)]).then(function(r){
+    if(finished)return;clearTimeout(t);
+    if(r[0].indexOf(me)<0||r[1][me]){done('none');return;}
+    opened=true;
+    _openSignoffPad({name:me,branch:br,date:d,mode:'signout'},done);
+  },function(){clearTimeout(t);done('none');});
+}
+// ---- Close Day screen: everyone who worked, signed / not signed, with a Sign off button for
+// anyone still on site (their own password, then their signature). Signing the existing Operator
+// or Manager box also counts as that person's sign-off. Returns the load promise. ----
+function _renderShiftSignoffs(br){
+  var el=document.getElementById('shiftSignoffList');
+  br=br||histBranch;
+  var myTok=++_shiftSignoffTok;
+  if(el)el.innerHTML='<div class="histEmpty" style="padding:6px 0">Loading sign-offs…</div>';
+  return Promise.all([_fetchWorkedPeople(br,today),_fetchShiftSignoffs(br,today),_fetchDayCloseSignatures(br,today)]).then(function(r){
+    if(myTok!==_shiftSignoffTok)return;
+    var worked=r[0],so=r[1],dcs=r[2]||{},boxSigned={};
+    if(dcs.Operator)boxSigned[dcs.Operator.signer_name]='Operator box';
+    if(dcs.Manager)boxSigned[dcs.Manager.signer_name]='Manager box';
+    _shiftSignoffState={br:br,worked:worked,so:so,boxSigned:boxSigned};
+    if(!el)return;
+    if(!worked.length){el.innerHTML='<div class="histEmpty" style="padding:6px 0">Nobody has captured anything for '+_eqEsc(br)+' yet today.</div>';return;}
+    el.innerHTML=worked.map(function(n,i){
+      var s=so[n],bx=boxSigned[n];
+      var status=s?('<span style="color:var(--ok);font-weight:700">✓ Signed off '+_eqEsc(nowStamp(new Date(s.signed_at)).slice(11,16))+'</span>')
+        :(bx?('<span style="color:var(--ok);font-weight:700">✓ Signed the '+bx+'</span>')
+        :('<span style="color:var(--bad);font-weight:700">✗ Not signed off</span>'));
+      var btn=(!s&&!bx)?'<button type="button" class="sigClear" style="padding:4px 10px;font-size:11px" onclick="_closeDaySignoffFor('+i+')">Sign off</button>':'';
+      return '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);font-size:13px">'+
+        '<span><b>'+_eqEsc(n)+'</b> &nbsp;'+status+'</span>'+btn+'</div>';
+    }).join('');
+  },function(){if(myTok===_shiftSignoffTok&&el)el.innerHTML='<div class="histEmpty">Could not load sign-offs (network).</div>';});
+}
+function _closeDaySignoffFor(idx){
+  var st=_shiftSignoffState,name=st.worked[idx];if(!name)return;
+  askPassword('Shift sign-off — '+name,name+': enter YOUR OWN password to sign off your shift:').then(function(pw){
+    if(pw===null)return;
+    _verifyPersonPassword(name,pw,null,'Shift sign-off authorisation').then(function(me){
+      if(!me){toast('Password not accepted for '+name+' — they must enter their own password.',true);return;}
+      _openSignoffPad({name:name,branch:st.br,date:today,mode:'closeday'},function(r){if(r==='signed')_renderShiftSignoffs(st.br);});
+    });
+  });
+}
+// Who worked / signed off / didn't, as recorded on a Close Day - shared by _closeDayFinalize (the
+// cloud record) and saveDayToHistory (this phone's local backup) so the two can never disagree.
+// Signing the Operator or Manager box also counts as that person's sign-off. Reads the state that
+// _renderShiftSignoffs last loaded for br (closeDay refreshes it just before finalizing).
+function _shiftCloseSummary(br){
+  var sst=(_shiftSignoffState&&_shiftSignoffState.br===br)?_shiftSignoffState:{worked:[],so:{}};
+  var signed={};
+  Object.keys(sst.so||{}).forEach(function(n){signed[n]=1;});
+  if(sigSignedBy.sigOp)signed[sigSignedBy.sigOp]=1;
+  if(sigSignedBy.sigMgr)signed[sigSignedBy.sigMgr]=1;
+  return {worked:(sst.worked||[]).slice(),
+    signoffs:Object.keys(sst.so||{}).map(function(n){return {name:n,signed_at:sst.so[n].signed_at};}),
+    unsigned:(sst.worked||[]).filter(function(n){return !signed[n];})};
+}
+// Shared by the PDF report and its CSV twin so the two can't drift. live = [workedNames, signoffMap]
+// for today's live report; otherwise uses what was recorded at close (src.shift). Returns
+// [{name, signedAt|null, via:'shift'|'Operator box'|'Manager box'|null}], or null to skip the
+// section (a day closed before this feature existed has no record - don't show everyone as ✗).
+function _buildShiftRoster(src,live){
+  var sbx=src.signedBy||{},box={};
+  if(sbx.op)box[sbx.op]='Operator box';
+  if(sbx.mgr)box[sbx.mgr]='Manager box';
+  var worked=null,signed={};
+  if(live){worked=live[0]||[];Object.keys(live[1]||{}).forEach(function(n){signed[n]=live[1][n].signed_at;});}
+  else if(src.shift){worked=src.shift.worked||[];(src.shift.signoffs||[]).forEach(function(s){signed[s.name]=s.signed_at;});}
+  if(!worked)return null;
+  return worked.map(function(n){return {name:n,signedAt:signed[n]||null,via:signed[n]?'shift':(box[n]||null)};});
+}
 function initSigPad(id){
   var cv=document.getElementById(id);if(!cv||cv._init)return;cv._init=true;
   var ctx=cv.getContext('2d');ctx.lineWidth=2.2;ctx.lineCap='round';ctx.strokeStyle='#16202B';
@@ -12504,7 +12705,9 @@ function closeDay(_skipPendingOverridesRefresh,_dayActivitySummary,_unapprovedTr
   // submitted seconds ago. Same one-shot-recursion-guard shape as the Pending Overrides/
   // Transfers refetches below.
   if(!_skipSigRefresh){
-    _refreshDayCloseSignatures(branch).then(function(){
+    // Shift sign-offs refreshed in the same step so _closeDayFinalize records the CURRENT state
+    // (someone may have signed off on another phone since this screen was opened).
+    Promise.all([_refreshDayCloseSignatures(branch),_renderShiftSignoffs(branch)]).then(function(){
       // QUEUE GATE (follow-up hardening): a box this device unlocked itself is never
       // overwritten by the refresh above (see _refreshDayCloseSignatures's own comment) - so a
       // signature that failed to push and is only sitting in _dayCloseSigQueue's retry queue,
@@ -13221,13 +13424,18 @@ function _closeDayFinalize(bal,br){
   // column) to print "Manifold imbalance override reason: ..." - without this, any day closed
   // with an override would show the imbalance flag on its report but silently lose the reason.
   snapStore._manifoldOverride=store._manifoldOverride||null;
+  // Shift sign-offs (refreshed by closeDay just before this) - non-blocking: recorded on the close
+  // and flagged, never stops the day closing. See _shiftCloseSummary.
+  var _shift=_shiftCloseSummary(br);
+  if(_shift.unsigned.length)auditLog('Close Day - not signed off',br+' '+today+': '+_shift.unsigned.join(', ')+' worked but did not sign off their shift',null,null,'failure',br);
   var record={
     branch:br, date:today,
     closed_by:currentProfile.id,
     authoriser_name:(store._closeAuth||'?').split(' (')[0],
     authoriser_level:(store._closeAuth||'').replace(/^.*\(([^)]+)\)$/,'$1')||role,
     store_snapshot:snapStore,
-    signatures:{op:sigData.sigOp,mgr:sigData.sigMgr,signedByOp:sigSignedBy.sigOp,signedByMgr:sigSignedBy.sigMgr},
+    signatures:{op:sigData.sigOp,mgr:sigData.sigMgr,signedByOp:sigSignedBy.sigOp,signedByMgr:sigSignedBy.sigMgr,
+      worked:_shift.worked,shiftSignoffs:_shift.signoffs,unsigned:_shift.unsigned},
     manifold_balance:bal.hasData?{diff:bal.diff,balanced:bal.balanced,override:store._manifoldOverride||null}:null
   };
   _closeDaySend(record);
@@ -13571,7 +13779,8 @@ function saveDayToHistory(br){
     snapStore._manifoldOverride=store._manifoldOverride||null; // see _closeDayFinalize's matching comment - this local backup needs the same field or its own report loses the override reason too
     var rec={date:today,branch:br,operator:operator,role:role,closedAt:nowStamp(),closedTs:Date.now(),
       store:snapStore,sig:{op:sigData.sigOp,mgr:sigData.sigMgr},
-      closeAuth:store._closeAuth||'',signedBy:{op:sigSignedBy.sigOp,mgr:sigSignedBy.sigMgr}};
+      closeAuth:store._closeAuth||'',signedBy:{op:sigSignedBy.sigOp,mgr:sigSignedBy.sigMgr},
+      shift:_shiftCloseSummary(br)}; // same values as the cloud record - see _shiftCloseSummary
     _setHistRecLocal(histKey(today,br),rec);
     var idx=[];try{idx=JSON.parse(localStorage.getItem('gs_hist_index')||'[]');}catch(e){}
     var k=histKey(today,br);if(idx.indexOf(k)<0){idx.push(k);localStorage.setItem('gs_hist_index',JSON.stringify(idx));}
@@ -15153,6 +15362,9 @@ function loadSavedDayShared(date,br){
         // forever, so falls back to it only when nothing has ever been corrected.
         store:d.corrected_snapshot||d.store_snapshot, sig:{op:d.signatures.op,mgr:d.signatures.mgr},
         signedBy:{op:d.signatures.signedByOp,mgr:d.signatures.signedByMgr},
+        // Shift sign-offs recorded at close (only on days closed after the feature existed -
+        // older closes have none, and the report skips the section rather than show everyone ✗).
+        shift:(d.signatures&&d.signatures.worked)?{worked:d.signatures.worked||[],signoffs:d.signatures.shiftSignoffs||[],unsigned:d.signatures.unsigned||[]}:null,
         corrections:d.corrections||[], _sharedId:d.id
       };
     }
@@ -15841,10 +16053,14 @@ function buildCountDocAsync(src){
   return _liveFetch.then(function(){
     return Promise.all([_fetchDayActivity(_b,src.date),_fetchFaultyHeld(_b),_fetchPrevCloseExpected(_b,src.date),
       sb.from('daily_sales').select('lines,entered_by_name_snapshot,private_refill_kg').eq('branch',_b).eq('date',src.date).maybeSingle().then(function(res){return (res&&res.data)?res.data:null;},function(){return null;}),
-      _fetchDayTransfers(_b,src.date)
+      _fetchDayTransfers(_b,src.date),
+      // Shift sign-offs: live day -> fetch now; closed day -> use what was recorded at close
+      // (src.shift); a day closed before this feature existed -> null, section skipped.
+      (st===store)?Promise.all([_fetchWorkedPeople(_b,src.date),_fetchShiftSignoffs(_b,src.date)]).catch(function(){return null;}):Promise.resolve(null)
     ]);
   }).then(function(fetched){
     var activityRows=fetched[0], faultyRows=fetched[1], prevCloseExp=fetched[2], dailySalesRow=fetched[3], xfer=fetched[4];
+    var shiftRoster=_buildShiftRoster(src,fetched[5]); // see _buildShiftRoster - shared with the CSV twin
     var people=_groupActivityByPerson(activityRows);
     var excGroups=_groupExceptions(activityRows);
     var faultyTot=_faultyHeldTotals(faultyRows);
@@ -16000,6 +16216,19 @@ function buildCountDocAsync(src){
           '<span style="color:#777;font-size:11px">('+_tsHM(p.first)+'\u2192'+_tsHM(p.last)+')</span>'+
           '<div style="font-size:12px;color:#333;margin:2px 0 8px">'+p.actions.join(' \u00b7 ')+'</div></div>';
       }).join('');
+    }
+
+    // ---- Shift Sign-offs (everyone who captured data for this branch+day) ----
+    if(shiftRoster&&shiftRoster.length){
+      var _unsignedN=shiftRoster.filter(function(x){return !x.signedAt&&!x.via;}).length;
+      rows+='<h2>Shift Sign-offs</h2>'+
+        '<p style="font-size:11px;color:#777;margin:2px 0 6px">Each person who captured data signs off their own work. '+
+        (_unsignedN?('<b style="color:#C0392B">'+_unsignedN+' not signed off.</b>'):'<b style="color:#1E8449">All signed off.</b>')+'</p>'+
+        '<table><tr><th>Name</th><th>Sign-off</th></tr>'+shiftRoster.map(function(x){
+          var ok=x.signedAt||x.via;
+          var txt=x.signedAt?('\u2713 Signed off '+_tsHM(x.signedAt)):(x.via?('\u2713 Signed the '+x.via):'\u2717 Not signed off');
+          return '<tr><td>'+_eqEsc(x.name)+'</td><td style="font-weight:700;color:'+(ok?'#1E8449':'#C0392B')+'">'+txt+'</td></tr>';
+        }).join('')+'</table>';
     }
 
     // ---- Exceptions ----
@@ -16615,10 +16844,12 @@ function buildCountCSVAsync(src){
   return _liveFetch.then(function(){
     return Promise.all([_fetchDayActivity(_b,src.date),_fetchFaultyHeld(_b),_fetchPrevCloseExpected(_b,src.date),
       sb.from('daily_sales').select('lines,entered_by_name_snapshot,private_refill_kg').eq('branch',_b).eq('date',src.date).maybeSingle().then(function(res){return (res&&res.data)?res.data:null;},function(){return null;}),
-      _fetchDayTransfers(_b,src.date)
+      _fetchDayTransfers(_b,src.date),
+      (st===store)?Promise.all([_fetchWorkedPeople(_b,src.date),_fetchShiftSignoffs(_b,src.date)]).catch(function(){return null;}):Promise.resolve(null)
     ]);
   }).then(function(fetched){
     var activityRows=fetched[0], faultyRows=fetched[1], prevCloseExp=fetched[2], dailySalesRow=fetched[3], xfer=fetched[4];
+    var shiftRoster=_buildShiftRoster(src,fetched[5]); // same roster as the PDF report
     var people=_groupActivityByPerson(activityRows);
     var excGroups=_groupExceptions(activityRows);
     var faultyTot=_faultyHeldTotals(faultyRows);
@@ -16712,6 +16943,15 @@ function buildCountCSVAsync(src){
       section('Who Worked On This');
       row('Name','Role','First','Last','Actions');
       people.forEach(function(p){row(p.name,p.role||'',_tsHM(p.first),_tsHM(p.last),p.actions.join('; '));});
+    }
+
+    // ---- Shift Sign-offs (mirrors the PDF report's section) ----
+    if(shiftRoster&&shiftRoster.length){
+      section('Shift Sign-offs');
+      row('Name','Signed off','Time / via');
+      shiftRoster.forEach(function(x){
+        row(x.name,(x.signedAt||x.via)?'Yes':'NO',x.signedAt?_tsHM(x.signedAt):(x.via||''));
+      });
     }
 
     // ---- Exceptions ----
@@ -17055,6 +17295,7 @@ function _todaySrc(){
 function _savedSrc(rec){
   return {store:rec.store, branch:rec.branch, date:rec.date, operator:rec.operator, role:rec.role,
     sig:{op:(rec.sig&&rec.sig.op),mgr:(rec.sig&&rec.sig.mgr)}, signedBy:rec.signedBy||{},
+    shift:rec.shift||null,
     closedBy:rec.operator||null, manifoldOverride:(rec.store&&rec.store._manifoldOverride)};
 }
 // Opens the tab SYNCHRONOUSLY (at the click gesture, so no popup blocker fires), shows a
