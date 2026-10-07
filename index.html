@@ -2583,6 +2583,12 @@ const SIZEKG={'5kg':5,'9kg':9,'12kg':12,'14kg':14,'19kg':19,'14kg-FLT':14,'19kg-
 
 let store={count:[],manifold:[],refill:[],private:[],received:[],residual:[]};
 let operator=null, branch=null, role=null, today='';
+// Returns the SIGNED-IN session branch. Exists because some functions (openHistory, closeDay)
+// declare a local `var branch=histBranch;` shadow for their own filters - and `var` is hoisted to
+// the top of the function, so ANY read of `branch` in that function (even one written above the
+// shadow) gets the local, still-undefined value instead of this global. Call this instead of the
+// bare name anywhere a function shadows `branch` but needs the real session branch.
+function _sessionBranch(){return branch;}
 var currentProfile=null;
 // ===== TEST-ONLY date control (demo aid; remove for production) =====
 function getDateOffset(){try{return parseInt(localStorage.getItem('gs_test_offset')||'0',10)||0;}catch(e){return 0;}}
@@ -5861,6 +5867,12 @@ function _finishLogin(u,b){
   }
   currentProfile=u;
   operator=u.name;role=u.level;branch=b;today=computeToday();currentPerms=userPerms(u);
+  // Branch separation guarantee: every screen keeps its OWN branch selector, and most are declared
+  // with a hardcoded 'Helderberg' default. Reset them all to the signed-in branch at every login so
+  // no screen can ever open on a branch the user didn't sign in to (a Kleinmond-only operator must
+  // never land on Helderberg data). Managers/Owners still start on their login branch and can toggle;
+  // Operators are additionally locked by applyBranchLock + each *SetBranch() guard.
+  cBranch=b;rBranch=b;capBranch=b;histBranch=b;eqBranch=b;eqAdminBranch=b;adminBranch=b;bdBranch=b;
   document.getElementById('dateVal').textContent=today+(getDateOffset()?'  (TEST +'+getDateOffset()+'d)':'  (today only)');
   document.getElementById('who').style.display='block';
   renderLandingHeader();
@@ -5915,6 +5927,9 @@ function _finishLogin(u,b){
   // navigates to that section manually later this session, not only if it happens to be the
   // one being auto-resumed.
   cLoadDraftIntoMemory();
+  // A restored Count draft carries its own cBranch (legit for a Manager/Owner viewing the other
+  // branch) - but an Operator must never be moved off their assigned branch by a draft.
+  if(role==='Operator' && cBranch!==branch)cBranch=branch;
   rLoadDraftIntoMemory();
   residualLoadDraftIntoMemory();
   syncFlush();
@@ -11725,7 +11740,13 @@ function printCombinedReport(){
 function openHistory(mismatchOverlayRows,_skipManifoldLiveFetch){
   _updateCloseDayPendingBadge();
   _updateCountPendingBadge();
-  if(!histBranch||(role==='Operator'))histBranch=branch||'Helderberg';
+  // MUST use _sessionBranch(), not the bare name: this function declares `var branch=histBranch;`
+  // further down, and that `var` is hoisted here - so a bare `branch` on this line was the LOCAL,
+  // still-undefined variable, making every Operator fall through to 'Helderberg'. A Kleinmond-only
+  // operator therefore always saw Helderberg's counts in Count History (reported live 2026-10-07:
+  // Thabo, after every storage-side fix). Helderberg operators never noticed - it was accidentally
+  // right for them.
+  if(!histBranch||(role==='Operator'))histBranch=_sessionBranch()||'Helderberg';
   if(histBranch==='All'){_openHistoryCombined();return;}
   // Moved after histBranch is resolved above (was firing on the stale/pre-toggle branch) -
   // fire-and-forget, like the badge updates above - don't block render. See closeDay()'s own
@@ -11786,7 +11807,7 @@ function openHistory(mismatchOverlayRows,_skipManifoldLiveFetch){
   _saveCurrentSection('history');
   var html='';
   // Branch-scoped views: History shows ONLY the selected branch's captures.
-  var branch=histBranch; // shadow so all filters below use the toggle's branch
+  var branch=histBranch; // shadow so all filters below use the toggle's branch. HOISTED to the top of openHistory - any `branch` read anywhere in this function (even above this line) is this local, not the session branch. Use _sessionBranch() for the real one.
   function _br(r){return !r.branch||!branch||r.branch===branch;}
   var refillB=store.refill.filter(_br);
   var privateB=store.private.filter(_br);
