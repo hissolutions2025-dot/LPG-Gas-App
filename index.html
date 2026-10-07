@@ -6001,8 +6001,91 @@ function logout(){
   initLoginScreen();
   show('login');
 }
-function switchUser(){logout();toast('Signed out — next user can sign in');}
-function signOut(){if(confirm('Sign out now?'))logout();}
+// What the signed-in operator still has that is NOT safely in the day's shared record. Uses the
+// exact same "pending" rules the capture grids already colour cells by, so the warning matches
+// what the operator sees on screen:
+//  - Count: a line with qty>0 or _fromCommitted (cCellHtml's rule)
+//  - Received: a cell whose lines total >0 (rCellHtml's rule)
+//  - Residual: any cylinder added but not yet submitted
+//  - Manifold/Refill/Private: this user's saved draft with content (_draftHasContent), plus the
+//    capture currently open in memory
+// unsynced = committed on this phone but still queued for upload.
+// A Count cell is real unsaved work only if it differs from what's committed. Opening a committed
+// cell pre-loads its lines (_fromCommitted) and backing out leaves them in cData, so the simpler
+// "has a _fromCommitted line" rule would warn someone who merely LOOKED at a count. Compares the
+// draft's brand totals to the committed ones; a deliberate reset-to-zero still counts as a change.
+function _countCellChanged(br,ct,sz,side,arr){
+  if(!arr||!arr.length)return false;
+  if(!arr.some(function(l){return l._fromCommitted;}))return arr.some(function(l){return num(l.qty)>0;});
+  var d={},c={};
+  arr.forEach(function(l){var q=num(l.qty);if(q)d[l.brand]=(d[l.brand]||0)+q;});
+  cCommittedLines(sz,side,br,ct).forEach(function(r){var q=num(r.qty);if(q)c[r.brand]=(c[r.brand]||0)+q;});
+  return Object.keys(d).concat(Object.keys(c)).some(function(b){return (d[b]||0)!==(c[b]||0);});
+}
+function _pendingWorkSummary(){
+  var items=[];
+  function add(n){if(items.indexOf(n)<0)items.push(n);}
+  try{
+    Object.keys(cData||{}).forEach(function(k){
+      var parts=k.split('|'),br=parts[0],ct=parts[1],b=cData[k]||{};
+      Object.keys(b).forEach(function(sz){var c=b[sz]||{};
+        ['full','empty'].forEach(function(s){if(_countCellChanged(br,ct,sz,s,c[s]))add('Stock Count');});});
+    });
+  }catch(e){}
+  try{
+    Object.keys(rData||{}).forEach(function(br){var b=rData[br]||{};Object.keys(b).forEach(function(sz){var c=b[sz]||{};
+      ['recv','ret'].forEach(function(s){var a=c[s]||[];if(a.length&&a.reduce(function(x,l){return x+num(l.qty);},0)>0)add('Stock Received');});});});
+  }catch(e){}
+  try{if((residualList||[]).length)add('Residual Gas');}catch(e){}
+  var CAP={manifold:'Manifold',refill:'Refill',private:'Private Refill'};
+  try{
+    var pre='gs_draft_'+today+'_'+_opKey()+'_';
+    Object.keys(localStorage).forEach(function(k){
+      if(k.indexOf(pre)!==0)return;
+      var type=k.split('_').pop();if(!CAP[type])return;
+      var d=JSON.parse(localStorage.getItem(k)||'null');if(d&&_draftHasContent(d.data))add(CAP[type]);
+    });
+    if(capData&&CAP[capData._type]&&_draftHasContent(capData))add(CAP[capData._type]);
+  }catch(e){}
+  var unsynced=0;
+  try{unsynced+=_countQueueLoad().length;}catch(e){}
+  try{unsynced+=JSON.parse(localStorage.getItem('gs_capturelive_queue')||'[]').length;}catch(e){}
+  return {uncommitted:items,unsynced:unsynced};
+}
+// Sign-out guard for shift hand-overs (operators share phones and several work one branch per day):
+// unsaved work is private to its owner, so anything not committed is invisible to the next operator,
+// missing from today's count, and wiped if the day is closed. Returns true to proceed with sign-out.
+// Shown only when something is actually pending - otherwise the caller's normal flow applies.
+function _confirmSignOutWithPending(){
+  var p=_pendingWorkSummary();
+  if(!p.uncommitted.length&&!p.unsynced)return null; // nothing pending
+  var msg='Before you sign out, '+(operator||'')+':\n\n';
+  if(p.uncommitted.length){
+    msg+='⚠ NOT COMMITTED: '+p.uncommitted.join(', ')+'\n'+
+      'This stays on this phone for you only. The next operator can’t see it, it is not in today’s count, '+
+      'and it will be LOST if the day is closed. Go back and commit it first.\n\n';
+  }
+  if(p.unsynced){
+    msg+='⏳ '+p.unsynced+' committed update(s) are still waiting to upload. Keep the phone on the internet until they finish.\n\n';
+  }
+  msg+='OK = sign out anyway  ·  Cancel = go back';
+  var ok=confirm(msg);
+  auditLog(ok?'Signed out with pending work':'Sign-out cancelled - pending work',
+    (p.uncommitted.length?('Uncommitted: '+p.uncommitted.join(', ')):'')+(p.unsynced?((p.uncommitted.length?' · ':'')+p.unsynced+' unsynced'):''),
+    null,null,ok?'failure':'success');
+  return ok;
+}
+function switchUser(){
+  var g=_confirmSignOutWithPending();
+  if(g===false)return;
+  logout();toast('Signed out — next user can sign in');
+}
+function signOut(){
+  var g=_confirmSignOutWithPending();
+  if(g===false)return;
+  if(g===true){logout();return;}     // already confirmed in the pending-work warning - don't ask twice
+  if(confirm('Sign out now?'))logout();
+}
 // Lets a Manager/Owner (or a multi-branch Operator) flip their working branch mid-session
 // without a full sign-out/sign-in round trip - instant, no re-auth, since they're already
 // authenticated as themselves. Per-screen branch toggles (Stock Count, Manifold, etc.) already
