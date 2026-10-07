@@ -5994,6 +5994,9 @@ function logout(){
   // branch-switch reset in _refreshDayCloseSignatures only fires when the branch actually changes,
   // so a same-branch user switch would otherwise repaint the old signature from sigData.
   try{sigData={sigOp:'',sigMgr:''};sigSignedBy={sigOp:'',sigMgr:''};sigUnlocked={sigOp:false,sigMgr:false};sigAuthUser={sigOp:null,sigMgr:null};_sigStateBranch=null;}catch(e){}
+  // Popup rescue + camera are per user: drop the in-memory copy (the stored one is keyed to this
+  // user and only ever restored for them) and never leave the camera running for the next person.
+  try{clearTimeout(_popRescueTimer);_popRescueArmed=false;_popRescueRec=null;_popRescueLoaded=null;_popRescueLoadedKey=null;_camClose();}catch(e){}
   // idle lock must not be able to outlive its own session - clear it unconditionally on
   // every logout, whether that's a normal sign-out or the lock screen's own "Not you? Sign
   // out instead" escape hatch (which just calls this function directly).
@@ -9255,7 +9258,9 @@ const CAP={
       return base.concat([
         {k:'scale',label:'Scale weight (kg)',type:'number'},{k:'tare',label:'Tare weight (kg)',type:'number'},
         {k:'gasLeft',label:'Gas left (auto)',type:'auto',calc:function(d,item){return num(d.scale)-num(d.tare);}},
-        {k:'photo',label:'Photo of scale & tare',type:'photo',opt:true},
+        // opt:true only skips the generic required-field loop - _addLineFinish enforces this photo
+        // itself (or a reason in Note), see there.
+        {k:'photo',label:'Photo of scale & tare (required)',type:'photo',opt:true},
         {k:'notes',label:'Note',type:'text',opt:true}]);
     },
     weigh:true, gridLabel:'cylinder', gasLeftCap:true, multiStage:true },
@@ -9371,7 +9376,9 @@ function _openCapContinue(type,opts){
   document.getElementById('capCtx').innerHTML='';document.getElementById('capCtx').style.display='none';
   document.getElementById('capHint').textContent=c.hint;
   buildHeader(c);
-  if(type==='manifold'){_fetchManifoldSlotCount(capBranch).then(renderGrid);_fetchManifoldPrevClose(capBranch);_manifoldOpeningSyncPending=true;_fetchManifoldLiveRows(capBranch,today).then(function(){_manifoldOpeningSyncPending=false;renderGrid();},function(){_manifoldOpeningSyncPending=false;renderGrid();});} // re-renders again once live data lands; renderGrid() below runs immediately with whatever's cached/fallback
+  _popRescueLoad();
+  var _liveReady=null;
+  if(type==='manifold'){_fetchManifoldSlotCount(capBranch).then(renderGrid);_fetchManifoldPrevClose(capBranch);_manifoldOpeningSyncPending=true;_liveReady=_fetchManifoldLiveRows(capBranch,today).then(function(){_manifoldOpeningSyncPending=false;renderGrid();},function(){_manifoldOpeningSyncPending=false;renderGrid();});} // re-renders again once live data lands; renderGrid() below runs immediately with whatever's cached/fallback
   if(type==='refill'||type==='private'){_fetchCaptureLiveRows(type,type,capBranch,today).then(renderGrid);}
   if(type==='refill'){_fetchSealLive(capBranch);}
   (function(br){_adoptRemoteCloseIfNeeded(br).then(function(adopted){if(adopted&&capBranch===br)renderGrid();});})(capBranch);
@@ -9380,6 +9387,9 @@ function _openCapContinue(type,opts){
   _capUpdateSessionCounter();
   show('capView');document.getElementById('backBtn').style.display='block';window.scrollTo(0,0);
   _saveCurrentSection(type);
+  // Coming back after the app was restarted mid-capture: reopen the popup that was open, with
+  // what was typed and photographed so far (see POPUP RESCUE).
+  if(opts&&opts.restore)_popRescueAutoReopen(type,_liveReady);
   return true;
   });
 }
@@ -9878,6 +9888,7 @@ function openModal(item){
   // popup was left - cheap, and closes off an entire class of "assumed element that isn't there"
   // crash rather than trying to reason about every possible path into/out of every custom screen.
   restoreModalShell();
+  _popRescueArmed=false; // re-armed below once this slot's form is built (and any rescued state put back)
   // Manifold's Added stage is a guided two-step swap wizard (outgoing residual, then
   // incoming cylinder), not the plain single-field popup below - see openManifoldSwap().
   if(capType==='manifold' && toggleSel.stage==='Added'){openManifoldSwap(item);return;}
@@ -9931,6 +9942,8 @@ function openModal(item){
   // land back on addLine(), not a leftover _manifoldSwapStep…() handler from a previous call.
   document.getElementById('mAddBtn').setAttribute('onclick','addLine()');
   document.getElementById('capModal').classList.add('show');
+  _popRescueRestoreInto();
+  _popRescueArmed=true;
 }
 function buildPopupForm(c,stageOverride){
   var box=document.getElementById('mForm');var html='';
@@ -9988,8 +10001,10 @@ function buildPopupForm(c,stageOverride){
       // field's own -warn div above), harmlessly stays hidden/empty unless popCalc() finds an
       // active _manifoldRemovedBaseline to compare against (Manifold Removed-step only).
       (f.k==='tare'?'<div class="mNote" id="pf-tare-warn" style="display:none"></div>':'');
-    else if(f.type==='text')html+='<input class="mField" type="text" id="pf-'+f.k+'">';
-    else if(f.type==='photo')html+='<input type="file" accept="image/*" capture="environment" id="pf-'+f.k+'" style="display:none" onchange="onPhotoPick(this,\''+f.k+'\')"><button type="button" class="photoBtn" id="pf-'+f.k+'-btn" onclick="document.getElementById(\'pf-'+f.k+'\').click()">📷 Add photo (0/'+(f.max||3)+')</button><div id="pf-'+f.k+'-thumb" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap"></div>';
+    else if(f.type==='text')html+='<input class="mField" type="text" id="pf-'+f.k+'" oninput="_popRescueSaveSoon()">';
+    // The button opens the in-app camera (popTakePhoto) - the hidden file input stays as its
+    // fallback ("Use the phone's camera app instead", or a phone with no in-page camera).
+    else if(f.type==='photo')html+='<input type="file" accept="image/*" capture="environment" id="pf-'+f.k+'" style="display:none" onchange="onPhotoPick(this,\''+f.k+'\')"><button type="button" class="photoBtn" id="pf-'+f.k+'-btn" onclick="popTakePhoto(\''+f.k+'\')">📷 Add photo (0/'+(f.max||3)+')</button><div id="pf-'+f.k+'-thumb" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap"></div>';
     html+='</div>';
   });
   box.innerHTML=html;
@@ -10100,6 +10115,7 @@ function openManifoldSwap(item){
   // Opening/prior-swap/prior-close data) - the OR would then silently fall through to the stale
   // Closing value instead of correctly showing "no baseline, no check."
   _manifoldClosingBaseline=null;
+  _popRescueArmed=false; // popup rescue covers the plain popup only, not this two-step wizard
   var removedRows=((capData['Removed']&&capData['Removed'][item])||[]).filter(function(r){return (r._addedBranch||capBranch)===capBranch;});
   var addedRows=((capData['Added']&&capData['Added'][item])||[]).filter(function(r){return (r._addedBranch||capBranch)===capBranch;});
   var unpairedRemoved=removedRows.find(function(r){
@@ -10174,7 +10190,7 @@ function _manifoldSwapStep1(){
   });
 }
 function _manifoldSwapStep2(){
-  var c=CAP.manifold;popPhoto={};
+  var c=CAP.manifold;popPhoto={};_popRescueArmed=false;
   document.getElementById('mTitle').textContent='Added — '+_manifoldSwapItem;
   document.getElementById('mState').textContent='Step 2 of 2: weigh the INCOMING (new) cylinder';
   buildPopupForm(c,'Added');
@@ -10230,8 +10246,19 @@ function onPhotoPick(input,key){
   var max=_photoMaxFor(key);
   if(!popPhoto[key])popPhoto[key]=[];
   if(popPhoto[key].length>=max){toast('Max '+max+' photos',true);input.value='';return;}
-  _pickPhotoOrFallback(f,function(dataUri){popPhoto[key].push(dataUri);renderPhotoThumbs(key);});
+  _pickPhotoOrFallback(f,function(dataUri){popPhoto[key].push(dataUri);renderPhotoThumbs(key);_popRescueSaveNow();});
   input.value=''; // reset so the same file/camera can be used again
+}
+// Photo button in the capture popup. Uses the in-page camera so the app never leaves the screen
+// (see _inAppCamera) - the hidden file input is only the fallback.
+function popTakePhoto(key){
+  var max=_photoMaxFor(key);
+  if((popPhoto[key]||[]).length>=max){toast('Max '+max+' photos',true);return;}
+  _inAppCamera(function(dataUri){
+    if(!popPhoto[key])popPhoto[key]=[];
+    if(popPhoto[key].length>=max)return;
+    popPhoto[key].push(dataUri);renderPhotoThumbs(key);_popRescueSaveNow();
+  },function(){var el=document.getElementById('pf-'+key);if(el)el.click();});
 }
 function renderPhotoThumbs(key){
   var arr=popPhoto[key]||[];var max=_photoMaxFor(key);
@@ -10240,9 +10267,176 @@ function renderPhotoThumbs(key){
   var btn=document.getElementById('pf-'+key+'-btn');
   if(btn){btn.textContent='📷 Add photo ('+arr.length+'/'+max+')';btn.disabled=(arr.length>=max);btn.style.opacity=(arr.length>=max)?'.5':'1';}
 }
-function removePhoto(key,i){if(popPhoto[key]){popPhoto[key].splice(i,1);renderPhotoThumbs(key);}}
+function removePhoto(key,i){if(popPhoto[key]){popPhoto[key].splice(i,1);renderPhotoThumbs(key);_popRescueSaveNow();}}
 function clearPhoto(k){delete popPhoto[k];renderPhotoThumbs(k);}
+
+// ===== IN-APP CAMERA =====
+// The photo button used to hand off to the phone's own camera app (<input capture>). While that
+// app is open the browser sits in the background, and a phone short on memory shuts it down - on
+// return the whole app restarts and everything in the open popup (typed readings, photos already
+// taken) is gone. Confirmed live 2026-10-07: Helderberg, Speech, three restarts between 08:07 and
+// 08:25 (each an auto "Login" with no sign-out, each usage session cut off), after which Opening
+// Cyl 3 and Cyl 4 were saved with no photos. A camera inside the page (getUserMedia) keeps the app
+// in the foreground, so the phone has no reason to kill it. The camera app stays as the fallback
+// (button on this screen, or automatic when the browser has no in-page camera).
+var _camStream=null,_camCb=null,_camFallback=null;
+function _camEl(id){return document.getElementById(id);}
+function _inAppCamera(onDataUri,fallback){
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){if(fallback)fallback();return;}
+  _camCb=onDataUri;_camFallback=fallback;
+  var ov=_camEl('camOverlay');
+  if(!ov){
+    ov=document.createElement('div');ov.id='camOverlay';
+    ov.style.cssText='position:fixed;left:0;top:0;right:0;bottom:0;z-index:100000;background:#000;display:none;flex-direction:column';
+    var btn='border:none;border-radius:12px;font-weight:800;font-size:15px;padding:14px 10px;';
+    ov.innerHTML='<video id="camVideo" playsinline autoplay muted style="flex:1;min-height:0;width:100%;object-fit:contain;background:#000"></video>'+
+      '<div id="camMsg" style="color:#fff;font-size:13px;text-align:center;padding:8px 14px"></div>'+
+      '<div style="display:flex;gap:10px;padding:10px 14px 4px;background:#111">'+
+        '<button type="button" onclick="_camClose()" style="'+btn+'flex:1;background:#3B4855;color:#fff">Cancel</button>'+
+        '<button type="button" id="camShutter" onclick="_camSnap()" style="'+btn+'flex:2;background:#2F7D4F;color:#fff">📷 Take photo</button></div>'+
+      '<button type="button" onclick="_camUseApp()" style="border:none;background:#111;color:#9FC3E8;font-size:12.5px;text-decoration:underline;padding:10px 14px calc(14px + env(safe-area-inset-bottom,0px))">Use the phone\'s camera app instead</button>';
+    document.body.appendChild(ov);
+  }
+  var sh=_camEl('camShutter');sh.disabled=true;sh.style.opacity='.5';
+  _camEl('camMsg').textContent='Starting camera…';
+  ov.style.display='flex';
+  navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080}},audio:false}).then(function(s){
+    if(!_camCb){s.getTracks().forEach(function(t){t.stop();});return;} // cancelled while starting
+    _camStream=s;
+    var v=_camEl('camVideo');v.srcObject=s;
+    var p=v.play();if(p&&p.catch)p.catch(function(){});
+    _camEl('camMsg').textContent='Fit the scale reading in the picture, then tap Take photo.';
+    sh.disabled=false;sh.style.opacity='1';
+  },function(err){
+    if(!_camCb)return;
+    _camEl('camMsg').textContent='The in-app camera isn\'t available ('+((err&&err.name)||'error')+'). Tap "Use the phone\'s camera app instead" below.';
+  });
+}
+function _camStop(){
+  if(_camStream){_camStream.getTracks().forEach(function(t){try{t.stop();}catch(e){}});_camStream=null;}
+  var v=_camEl('camVideo');if(v)v.srcObject=null;
+}
+function _camClose(){_camStop();var ov=_camEl('camOverlay');if(ov)ov.style.display='none';_camCb=null;_camFallback=null;}
+function _camUseApp(){var fb=_camFallback;_camClose();if(fb)fb();} // a real tap, so the file picker is allowed to open
+function _camSnap(){
+  var v=_camEl('camVideo');
+  if(!v||!v.videoWidth){toast('Camera not ready yet — try again',true);return;}
+  var w=v.videoWidth,h=v.videoHeight,scale=Math.min(1,PHOTO_MAX_DIM/Math.max(w,h));
+  var cv=document.createElement('canvas');cv.width=Math.round(w*scale);cv.height=Math.round(h*scale);
+  cv.getContext('2d').drawImage(v,0,0,cv.width,cv.height);
+  var uri=cv.toDataURL('image/jpeg',PHOTO_QUALITY), cb=_camCb;
+  _camClose();
+  if(uri.length>PHOTO_HARD_LIMIT){toast('Photo too large — try again',true);return;}
+  if(cb)cb(uri);
+}
+// Never leave the camera running behind the app (battery, and the camera light stays on).
+document.addEventListener('visibilitychange',function(){if(document.visibilityState==='hidden'&&_camStream)_camClose();});
+
+// ===== POPUP RESCUE =====
+// Second line of defence for the same restart (the camera-app fallback can still trigger it, and
+// so can anything else that backgrounds the app): the open capture popup's typed fields and photos
+// are mirrored to IndexedDB (photos are far too big for localStorage) and put back when that same
+// slot's popup opens again - which happens automatically after a restart (_popRescueAutoReopen,
+// from the "where was I" restore). One record per operator per day - only one popup is ever open.
+// Plain popup only (Manifold Opening/Closing, Refill, Private Refill), not the swap wizard.
+// Cleared once the reading is saved into the draft, or when the popup is deliberately closed.
+var _popRescueArmed=false,_popRescueRec=null,_popRescueLoaded=null,_popRescueLoadedKey=null,_popRescueTimer=null,_popRescueGen=0;
+function _popRescueKey(){return 'popup|'+today+'|'+_opKey();}
+function _rescueIdb(mode,fn){
+  return new Promise(function(resolve,reject){
+    if(!window.indexedDB){reject(new Error('no IndexedDB'));return;}
+    var req;try{req=indexedDB.open('gs_rescue',1);}catch(e){reject(e);return;}
+    req.onupgradeneeded=function(){req.result.createObjectStore('kv');};
+    req.onerror=function(){reject(req.error);};
+    req.onsuccess=function(){
+      var db=req.result,tx,out;
+      try{tx=db.transaction('kv',mode);out=fn(tx.objectStore('kv'));}catch(e){db.close();reject(e);return;}
+      tx.oncomplete=function(){db.close();resolve(out?out.result:undefined);};
+      tx.onerror=tx.onabort=function(){db.close();reject(tx.error);};
+    };
+  });
+}
+function _popRescueLoad(){
+  var key=_popRescueKey();
+  if(_popRescueLoaded&&_popRescueLoadedKey===key)return _popRescueLoaded;
+  _popRescueLoadedKey=key;_popRescueRec=null;
+  var day=today, gen=_popRescueGen;
+  _popRescueLoaded=_rescueIdb('readwrite',function(st){
+    // Drop earlier days' records (each can hold a few photos) while we're here.
+    var ks=st.getAllKeys();ks.onsuccess=function(){(ks.result||[]).forEach(function(k){if(String(k).split('|')[1]!==day)st.delete(k);});};
+    return st.get(key);
+  }).then(function(r){
+    // Ignore the read if a save/clear happened while it was in flight - it's older than that.
+    if(_popRescueLoadedKey===key&&gen===_popRescueGen)_popRescueRec=r||null;
+    return _popRescueRec;
+  },function(){return null;});
+  return _popRescueLoaded;
+}
+function _popRescueSnapshot(){
+  var fields={},has=false;
+  (_popupFieldsCurrent||[]).forEach(function(f){
+    if(f.type==='photo'||f.type==='auto')return;
+    var el=document.getElementById('pf-'+f.k);if(!el||el.disabled)return;
+    fields[f.k]=el.value;
+    if((f.type==='number'||f.type==='text')&&String(el.value||'').trim()!=='')has=true;
+  });
+  var photos={};
+  Object.keys(popPhoto||{}).forEach(function(k){if((popPhoto[k]||[]).length){photos[k]=popPhoto[k].slice();has=true;}});
+  return {capType:capType,branch:capBranch,stage:(toggleSel&&toggleSel.stage)||'',item:modalItem,date:today,by:operator,fields:fields,photos:photos,ts:Date.now(),_has:has};
+}
+function _popRescueSaveSoon(){
+  if(!_popRescueArmed)return;
+  clearTimeout(_popRescueTimer);_popRescueTimer=setTimeout(_popRescueSaveNow,300);
+}
+function _popRescueSaveNow(){
+  clearTimeout(_popRescueTimer);
+  if(!_popRescueArmed||!operator||!today)return;
+  var r=_popRescueSnapshot();
+  if(!r._has){_popRescueClear();return;}
+  var key=_popRescueKey();_popRescueRec=r;_popRescueGen++;
+  _rescueIdb('readwrite',function(st){return st.put(r,key);}).catch(function(){});
+}
+function _popRescueClear(){
+  clearTimeout(_popRescueTimer);
+  if(!operator||!today)return;
+  _popRescueRec=null;_popRescueGen++;
+  var key=_popRescueKey();
+  _rescueIdb('readwrite',function(st){return st.delete(key);}).catch(function(){});
+}
+// Called at the end of openModal(): if the rescued popup is for exactly this slot/stage, put its
+// fields and photos back.
+function _popRescueRestoreInto(){
+  var r=_popRescueRec;
+  if(!r||r.date!==today||r.by!==operator||r.capType!==capType||r.branch!==capBranch||r.item!==modalItem||(r.stage||'')!==((toggleSel&&toggleSel.stage)||''))return false;
+  var tabs={};(_popupFieldsCurrent||[]).forEach(function(f){if(f.type==='tabs')tabs[f.k]=1;});
+  Object.keys(r.fields||{}).forEach(function(k){
+    var el=document.getElementById('pf-'+k);if(!el||el.disabled)return;
+    if(tabs[k])popSetTabField(k,r.fields[k]);else el.value=r.fields[k];
+  });
+  var n=0;popPhoto={};
+  Object.keys(r.photos||{}).forEach(function(k){popPhoto[k]=(r.photos[k]||[]).slice();n+=popPhoto[k].length;renderPhotoThumbs(k);});
+  popCalc();
+  toast('The app restarted — your unfinished '+modalItem+' reading'+(n?(' and '+n+' photo'+(n>1?'s':'')):'')+' '+(n?'were':'was')+' put back. Check it, then save.');
+  return true;
+}
+// After a restart lands back on the capture screen: reopen the popup that was open.
+function _popRescueAutoReopen(type,ready){
+  Promise.all([_popRescueLoad(),ready||Promise.resolve()]).then(function(res){
+    var r=res[0];
+    if(!r||capType!==type||r.capType!==type||r.branch!==capBranch||r.date!==today||r.by!==operator)return;
+    var view=document.getElementById('capView'),modal=document.getElementById('capModal');
+    if(!view||!view.classList.contains('active')||(modal&&modal.classList.contains('show')))return; // moved on already
+    var c=CAP[type];
+    if(c.toggles&&r.stage){
+      if(c.toggles[0].states.indexOf(r.stage)<0||r.stage==='Added')return;
+      if(toggleSel.stage!==r.stage)setToggle('stage',r.stage);
+    }
+    if(type==='manifold'&&r.stage==='Opening'&&_manifoldOpeningAlreadyCaptured(r.item)){_popRescueClear();return;}
+    openModal(r.item);
+  });
+}
 function popCalc(){
+  _popRescueSaveSoon(); // every scale/tare/brand change - see POPUP RESCUE
   var c=CAP[capType];var d=popCollect();
   // conditional showIf fields (e.g. Other brand name)
   (_popupFieldsCurrent||[]).forEach(function(f){
@@ -10539,6 +10733,16 @@ function _addLineFinish(c,d,onDone){
       if(!d[f.k]||d[f.k]===''){toast('Fill in: '+f.label,true);if(onDone)onDone(false);return;}}
   }
   if('scale'in d&&'tare'in d&&num(d.scale)<num(d.tare)){toast('Scale cannot be less than tare',true);if(onDone)onDone(false);return;}
+  // Manifold photo of scale & tare (every stage, incl. both swap-wizard steps - all of them come
+  // through here). Was optional, so a reading whose photos were lost (app restarted by the phone
+  // while the camera was open - 2026-10-07 Helderberg Opening Cyl 3/4) saved with no photo and no
+  // trace. Now: a photo, or the reason there isn't one typed in Note (same "reason in Notes"
+  // escape hatch as an out-of-sequence seal), audit-logged as "Manifold saved without photo".
+  if(c===CAP.manifold && Array.isArray(d.photo) && !d.photo.length){
+    var _np=String(d.notes||'').trim();
+    if(!_np){toast('Take a photo of the scale & tare first. If the camera won\'t work, type the reason in Note to save without a photo.',true);if(onDone)onDone(false);return;}
+    d._noPhotoReason=_np;
+  }
   // Two-tier weight validation (manifold). Applies at every stage (Opening/Added/Removed/
   // Closing), not just when adding a fresh cylinder - an operator fat-fingering a digit can
   // produce a near-capacity reading at any stage, and the system can't tell that apart from a
@@ -10725,6 +10929,8 @@ function _addLineFinishAfterCap(c,d,onDone){
   if(!c.multi)bucket[item]=[];
   bucket[item].push(d);
   saveDraft(); // persist uncommitted capture immediately
+  _popRescueClear(); // the reading is in the draft now - nothing left to rescue from the popup
+  if(d._noPhotoReason)auditLog('Manifold saved without photo',capBranch+' — '+item+' ('+((toggles&&toggles.stage)||d.stage||'')+') — reason: '+d._noPhotoReason,null,null,'failure',capBranch);
   draftAddCount++;
   renderModalLines();renderGrid();resetPopupInputs(c);
   if(!c.multi){toast('Saved');closeModal();}
@@ -10743,7 +10949,7 @@ function resetPopupInputs(c){popPhoto={};(_popupFieldsCurrent||[]).forEach(funct
 // lets the Manifold swap wizard delete a row from the specific 'Removed'/'Added' bucket it's
 // currently showing, even though live toggleSel.stage never actually becomes 'Removed'.
 function removeLine(i,sel){var b=dataBucket(sel);b[modalItem].splice(i,1);if(b[modalItem].length===0)delete b[modalItem];renderModalLines(sel);renderGrid();}
-function closeModal(){document.getElementById('capModal').classList.remove('show');renderGrid();}
+function closeModal(){_popRescueArmed=false;_popRescueClear();document.getElementById('capModal').classList.remove('show');renderGrid();}
 // ---- Masked password prompt (replaces visible prompt()) ----
 var _pwResolve=null;
 function askPassword(title,msg){
@@ -13566,7 +13772,15 @@ function _adoptLegacyDraft(legacyKey,newKey){
 function draftKey(date,br,type){return 'gs_draft_'+date+'_'+_opKey()+'_'+br+'_'+type;}
 function saveDraft(){
   try{ if(!today||!capBranch||!capType)return;
-    localStorage.setItem(draftKey(today,capBranch,capType),JSON.stringify({data:capData,ts:nowStamp(),by:operator}));
+    var k=draftKey(today,capBranch,capType), v=JSON.stringify({data:capData,ts:nowStamp(),by:operator});
+    // Draft lines carry their photos inline, so this is the write most likely to hit the phone's
+    // storage limit - and it used to fail in silence, leaving the reading in memory only (gone if
+    // the app restarts). Prune old local history and retry; if it still won't fit, say so.
+    try{localStorage.setItem(k,v);}
+    catch(e){
+      if(_pruneOldLocalHistory()>0){try{localStorage.setItem(k,v);return;}catch(e2){}}
+      toast('Phone storage is full — this reading is NOT saved on the phone yet. Review & commit it now so it isn\'t lost.',true);
+    }
   }catch(e){}
 }
 function loadDraft(type,br){
@@ -13694,7 +13908,7 @@ function _restoreCurrentSection(){
     // the caller (doLogin) skipping its own show-landing fallback too - the user landed back
     // on the Sign In screen with nothing but the block toast and no way forward. Confirmed
     // live (2026-09-09): "Opening now but this toast pops up", stuck on Sign In.
-    var _r=openCap(s.section,{silent:true});
+    var _r=openCap(s.section,{silent:true,restore:true});
     return !!_r;
   }
   return false;
