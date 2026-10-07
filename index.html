@@ -13110,6 +13110,7 @@ function _clearBranchDayDrafts(br){
   // draftKey though, so the STORED copy is always safely clearable by branch regardless of
   // what's currently loaded in memory on this device.
   ['manifold','refill','private'].forEach(function(t){clearDraft(t,br);});
+  _clearAllUsersBranchDrafts(br); // drafts are per user now - clear every user's on this device, not just the signed-in one
   if(capBranch===br){capData={};if(document.getElementById('capView')&&document.getElementById('capView').classList.contains('active'))renderGrid();}
   var beforeLen=residualList.length;
   residualList=residualList.filter(function(r){return (r.Branch||residualBranch)!==br;});
@@ -13250,16 +13251,53 @@ function workKey(date,br){return 'gs_work_'+date+'_'+br;}
 // ---- LIVE DRAFT (uncommitted capture) persistence ----
 // Saves the in-progress capData for the current capType+branch on every line-add,
 // so a sudden app exit never loses typed lines. Cleared on Commit or explicit discard.
-function draftKey(date,br,type){return 'gs_draft_'+date+'_'+br+'_'+type;}
+// ---- PER-USER draft scoping (shared phones) ----
+// Every draft key includes the signed-in operator. Previously each key was shared by everyone on
+// the device for that day (Count/Received/Residual) or that branch+type (Manifold/Refill/Private),
+// so on a phone two operators take turns on (reported live 2026-10-07: Thabo + Rickus, Kleinmond):
+// one user's unsaved count was OVERWRITTEN the moment the other started theirs, and openCap()
+// offered "Unsaved Manifold capture found - Resume it?" for SOMEONE ELSE's uncommitted lines (no
+// owner check), which they could then commit under their own name.
+function _opKey(){return String(operator||'anon').toLowerCase().replace(/[^a-z0-9]/g,'');}
+// One-time takeover of a draft saved under the OLD shared key: only by the operator who wrote it
+// (by===operator), moved to their own key. Anyone else's old draft is left for its owner to adopt
+// at their own login - so nobody's in-progress work is lost by this change.
+function _adoptLegacyDraft(legacyKey,newKey){
+  try{
+    if(localStorage.getItem(newKey))return;
+    var raw=localStorage.getItem(legacyKey);if(!raw)return;
+    var d=JSON.parse(raw);if(!d||d.by!==operator)return;
+    localStorage.setItem(newKey,raw);localStorage.removeItem(legacyKey);
+  }catch(e){}
+}
+// Operator sits BEFORE branch so the branch stays the second-to-last '_' segment - the shape
+// _purgeForeignBranchLocalData() already parses (gs_draft_<date>_<op>_<branch>_<type>).
+function draftKey(date,br,type){return 'gs_draft_'+date+'_'+_opKey()+'_'+br+'_'+type;}
 function saveDraft(){
   try{ if(!today||!capBranch||!capType)return;
     localStorage.setItem(draftKey(today,capBranch,capType),JSON.stringify({data:capData,ts:nowStamp(),by:operator}));
   }catch(e){}
 }
 function loadDraft(type,br){
-  try{var raw=localStorage.getItem(draftKey(today,br,type));return raw?JSON.parse(raw):null;}catch(e){return null;}
+  var k=draftKey(today,br,type);
+  _adoptLegacyDraft('gs_draft_'+today+'_'+br+'_'+type,k);
+  // Owner check as well as the per-user key - never hand back another user's draft.
+  try{var raw=localStorage.getItem(k);if(!raw)return null;var d=JSON.parse(raw);return (d&&d.by===operator)?d:null;}catch(e){return null;}
 }
 function clearDraft(type,br){try{localStorage.removeItem(draftKey(today,br,type));}catch(e){}}
+// Close Day for a branch must clear EVERY user's drafts for that branch+day on this device, not
+// just the signed-in user's (drafts are per user now - the old shared key used to cover everyone).
+function _clearAllUsersBranchDrafts(br){
+  try{
+    Object.keys(localStorage).forEach(function(k){
+      var raw,d;
+      if(k.indexOf('gs_draft_'+today+'_')===0){var p=k.split('_');if(p[p.length-2]===br)localStorage.removeItem(k);return;}
+      if(k.indexOf('gs_countdraft_'+today)===0){raw=localStorage.getItem(k);d=raw&&JSON.parse(raw);if(d&&d.data){delete d.data[br+'|Opening'];delete d.data[br+'|Closing'];localStorage.setItem(k,JSON.stringify(d));}return;}
+      if(k.indexOf('gs_recvdraft_'+today)===0){raw=localStorage.getItem(k);d=raw&&JSON.parse(raw);if(d){if(d.data)delete d.data[br];if(d.supplierState)delete d.supplierState[br];localStorage.setItem(k,JSON.stringify(d));}return;}
+      if(k.indexOf('gs_residualdraft_'+today)===0){raw=localStorage.getItem(k);d=raw&&JSON.parse(raw);if(d&&d.list){d.list=d.list.filter(function(r){return (r.Branch||'')!==br;});localStorage.setItem(k,JSON.stringify(d));}return;}
+    });
+  }catch(e){}
+}
 // counter for the save-checkpoint nudge
 var draftAddCount=0; var SAVE_NUDGE_EVERY=5;
 // ---- STOCK COUNT / STOCK RECEIVED draft persistence ----
@@ -13269,7 +13307,7 @@ var draftAddCount=0; var SAVE_NUDGE_EVERY=5;
 // mistake for "I got logged out") silently lost it, commit-worthy typing and all. Both are
 // saved as ONE object per day (not per-branch like draftKey above) since cData/rData already
 // internally key by branch (and cData also by countType) themselves.
-function cDraftKey(){return 'gs_countdraft_'+today;}
+function cDraftKey(){return 'gs_countdraft_'+today+'_'+_opKey();} // per user - see _opKey()
 function cSaveDraft(){
   try{ if(!today)return;
     localStorage.setItem(cDraftKey(),JSON.stringify({data:cData,cBranch:cBranch,cCT:cCT,ts:nowStamp(),by:operator}));
@@ -13280,13 +13318,14 @@ function cSaveDraft(){
 // whether or not this session happens to land back on the Count screen itself.
 function cLoadDraftIntoMemory(){
   try{
+    _adoptLegacyDraft('gs_countdraft_'+today,cDraftKey());
     var raw=localStorage.getItem(cDraftKey());if(!raw)return false;
     var d=JSON.parse(raw);if(!d||d.by!==operator)return false;
     cData=d.data||{};cBranch=d.cBranch||cBranch;cCT=d.cCT||cCT;
     return true;
   }catch(e){return false;}
 }
-function rDraftKey(){return 'gs_recvdraft_'+today;}
+function rDraftKey(){return 'gs_recvdraft_'+today+'_'+_opKey();} // per user - see _opKey()
 function rSaveDraft(){
   try{ if(!today)return;
     localStorage.setItem(rDraftKey(),JSON.stringify({data:rData,supplierState:rSupplierState,ts:nowStamp(),by:operator}));
@@ -13294,6 +13333,7 @@ function rSaveDraft(){
 }
 function rLoadDraftIntoMemory(){
   try{
+    _adoptLegacyDraft('gs_recvdraft_'+today,rDraftKey());
     var raw=localStorage.getItem(rDraftKey());if(!raw)return false;
     var d=JSON.parse(raw);if(!d||d.by!==operator)return false;
     rData=d.data||{};rSupplierState=d.supplierState||{};
@@ -13306,7 +13346,7 @@ function rLoadDraftIntoMemory(){
 // with no resume prompt and no warning - the exact same class of bug already fixed for
 // Count/Received/Manifold/Refill/Private earlier this session, just missed for this section.
 // Same shape as rDraftKey/rSaveDraft/rLoadDraftIntoMemory above, not a new pattern.
-function residualDraftKey(){return 'gs_residualdraft_'+today;}
+function residualDraftKey(){return 'gs_residualdraft_'+today+'_'+_opKey();} // per user - see _opKey()
 function residualSaveDraft(){
   try{ if(!today)return;
     localStorage.setItem(residualDraftKey(),JSON.stringify({list:residualList,ts:nowStamp(),by:operator}));
@@ -13314,6 +13354,7 @@ function residualSaveDraft(){
 }
 function residualLoadDraftIntoMemory(){
   try{
+    _adoptLegacyDraft('gs_residualdraft_'+today,residualDraftKey());
     var raw=localStorage.getItem(residualDraftKey());if(!raw)return false;
     var d=JSON.parse(raw);if(!d||d.by!==operator)return false;
     residualList=d.list||[];
