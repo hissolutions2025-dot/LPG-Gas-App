@@ -381,7 +381,7 @@
       <label class="mLabel">User</label>
       <select class="mField" id="loginUser" onchange="loginUserChanged()"><option value="">Select your name…</option></select>
       <label class="mLabel">Password</label>
-      <div class="pwWrap"><input type="password" class="mField" id="loginPin" placeholder="Your password"><button type="button" class="pwToggle" onmousedown="_pwPeekStart(event,this)" onmouseup="_pwPeekEnd(this)" onmouseleave="_pwPeekEnd(this)" ontouchstart="_pwPeekStart(event,this)" ontouchend="_pwPeekEnd(this)" ontouchcancel="_pwPeekEnd(this)">👁</button></div>
+      <div class="pwWrap"><input type="password" class="mField" id="loginPin" placeholder="Your password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><button type="button" class="pwToggle" onmousedown="_pwPeekStart(event,this)" onmouseup="_pwPeekEnd(this)" onmouseleave="_pwPeekEnd(this)" ontouchstart="_pwPeekStart(event,this)" ontouchend="_pwPeekEnd(this)" ontouchcancel="_pwPeekEnd(this)">👁</button></div>
       <label class="mLabel">Branch</label>
       <select class="mField" id="loginBranch"><option value="">Select name first…</option></select>
       <div class="mNote" id="branchNote" style="margin-top:4px;"></div>
@@ -1242,7 +1242,7 @@
 <div id="pwModal" class="modal"><div class="modalCard">
   <div class="modalHead"><span id="pwTitle">Enter password</span><button onclick="pwCancel()" class="mClose">&#10005;</button></div>
   <div style="padding:4px 0 10px"><div id="pwMsg" style="font-size:13px;color:var(--navy);white-space:pre-line;margin-bottom:10px"></div>
-    <div class="pwWrap"><input type="password" class="mField" id="pwInput" placeholder="Password" autocomplete="off" onkeydown="if(event.key==='Enter')pwOk()"><button type="button" class="pwToggle" onmousedown="_pwPeekStart(event,this)" onmouseup="_pwPeekEnd(this)" onmouseleave="_pwPeekEnd(this)" ontouchstart="_pwPeekStart(event,this)" ontouchend="_pwPeekEnd(this)" ontouchcancel="_pwPeekEnd(this)">👁</button></div>
+    <div class="pwWrap"><input type="password" class="mField" id="pwInput" placeholder="Password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" onkeydown="if(event.key==='Enter')pwOk()"><button type="button" class="pwToggle" onmousedown="_pwPeekStart(event,this)" onmouseup="_pwPeekEnd(this)" onmouseleave="_pwPeekEnd(this)" ontouchstart="_pwPeekStart(event,this)" ontouchend="_pwPeekEnd(this)" ontouchcancel="_pwPeekEnd(this)">👁</button></div>
   </div>
   <button class="saveBtn" onclick="pwOk()">Confirm</button>
   <button class="sigClear" style="width:100%;margin-top:8px" onclick="pwCancel()">Cancel</button>
@@ -3257,7 +3257,7 @@ function bdSubmit(){
         if(r==='ratelimit')toast('Too many password checks in a short time — wait about 30 seconds, then try again.',true);
         else if(r==='network')toast('Couldn’t reach the server to check the password — check your connection and try again.',true);
         else if(r==='noname')toast('No signed-in user found — sign in again, then retry the backdate.',true);
-        else toast('Password not accepted. This checks the password of the SIGNED-IN user ('+(operator||'—')+') — that exact person must enter their own password here, not another manager’s.',true);
+        else toast('Password not accepted — re-type it carefully (watch Caps Lock). Enter '+(operator||'your')+'’s own password for the account signed in now. Your sign-in password is correct, so this is almost always a typo; it must be your own, not another manager’s.',true);
         return;
       }
       bdSubmitBusy=true;
