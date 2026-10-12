@@ -7341,6 +7341,32 @@ function _stockCountToSharedRow(r){
     updated_by_name_snapshot:operator||'', updated_at:new Date().toISOString(),
     corrected_from:null, corrected_by_name_snapshot:null, corrected_at:null};
 }
+// stock_counts allows ONE row per branch+date+count_type+state+size+brand, but a count cell can
+// legitimately hold two lines with the same brand - most often two "Other" lines told apart
+// only by their note. Sent as two rows, Postgres rejects the WHOLE upsert ("ON CONFLICT DO
+// UPDATE command cannot affect row a second time"), so nothing from that commit reached the
+// shared table, and the queued retry failed the same way forever. Found 2026-10-12: Kleinmond's
+// 10 Oct and 12 Oct counts (Empty 9kg Other "ORYX" + Other "KHAYA") were in the Sheet but never
+// in the app. Same-key rows are merged into one: quantities summed, and the per-line breakdown
+// kept in the note ("ORYX 11 · KHAYA 5"). Runs on every upsert, including already-queued
+// entries, so a phone holding stuck entries clears them on its next sign-in.
+function _mergeSharedCountRows(rows){
+  var groups={},order=[];
+  (rows||[]).forEach(function(r){
+    var k=[r.branch,r.date,r.count_type,r.state,r.size,r.brand].join('|');
+    if(!groups[k]){groups[k]=[];order.push(k);}
+    groups[k].push(r);
+  });
+  return order.map(function(k){
+    var lines=groups[k];
+    if(lines.length===1)return lines[0];
+    var row=Object.assign({},lines[lines.length-1]); // latest line's who/when
+    row.qty=lines.reduce(function(s,l){return s+num(l.qty);},0);
+    row.note=lines.filter(function(l){return String(l.note||'').trim();})
+      .map(function(l){return String(l.note).trim()+' '+num(l.qty);}).join(' · ');
+    return row;
+  });
+}
 // Converts one stock_counts row (as returned by a Supabase select) back into the
 // local store.count row shape - the read side of the translation.
 function _stockCountFromSharedRow(d){
@@ -8144,7 +8170,7 @@ function _countFlushQueue(){
   // constraint every single retry (23502), forever, with the row never clearing.
   q.reduce(function(p,entry){
     return p.then(function(){
-      return sb.from('stock_counts').upsert(entry.rows,{onConflict:'branch,date,count_type,state,size,brand',defaultToNull:false}).then(function(res){
+      return sb.from('stock_counts').upsert(_mergeSharedCountRows(entry.rows),{onConflict:'branch,date,count_type,state,size,brand',defaultToNull:false}).then(function(res){
         if(!res.error){_countQueueRemove(entry.id);_updateCountPendingBadge();}
         // any error: leave it queued, already-current in localStorage - retried next flush.
         // Diagnostic added 2026-09-23 after a real report of a count stuck "waiting to
@@ -8207,7 +8233,7 @@ function _stockCountsUpsert(freshRows){
   if(!freshRows||!freshRows.length)return;
   var sharedRows;
   try{
-    sharedRows=freshRows.map(_stockCountToSharedRow);
+    sharedRows=_mergeSharedCountRows(freshRows.map(_stockCountToSharedRow));
   }catch(e){
     // Never expected to throw (property access + num() only) - if it ever does there's
     // nothing valid to queue, so surface it loudly via toast rather than let it vanish
@@ -8405,11 +8431,19 @@ function _refreshCountMismatches(br, localOverlayRows){
       // server yet by the time this fetch runs. Cross-device visibility still relies on
       // the live fetch as normal; this only guarantees THIS device never has to win a
       // race against its own write.
+      // Summed per key within the overlay first (two lines can share a brand, e.g. two "Other"
+      // lines - see _mergeSharedCountRows), then each key replaces the live value.
+      var _ov={};
       (localOverlayRows||[]).forEach(function(r){
         if(r.branch!==br){console.warn('_refreshCountMismatches: dropped overlay row for wrong branch',r.branch,br);return;}
-        var st=(r.state==='Empty')?'Empty':'Full';
-        if(!op[r.size])op[r.size]={Full:{},Empty:{}};
-        op[r.size][st][r.brand]=num(r.qty);
+        var st=(r.state==='Empty')?'Empty':'Full', k=r.size+'|'+st+'|'+r.brand;
+        if(!_ov[k])_ov[k]={size:r.size,st:st,brand:r.brand,qty:0};
+        _ov[k].qty+=num(r.qty);
+      });
+      Object.keys(_ov).forEach(function(k){
+        var o=_ov[k];
+        if(!op[o.size])op[o.size]={Full:{},Empty:{}};
+        op[o.size][o.st][o.brand]=o.qty;
       });
 
       var freshMismatches=[];
