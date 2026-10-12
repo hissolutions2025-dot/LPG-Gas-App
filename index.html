@@ -2989,7 +2989,7 @@ function bdLoadExisting(dateVal){
   bdData={date:dateVal,branch:br,opening:[],closing:[],manifold:[],refill:[],private:[],received:[],residual:[],dailysales:[]};
   statusEl.textContent='Loading any existing data for '+br+' '+dateVal+'…';statusEl.style.color='var(--muted)';
   return Promise.all([
-    sb.from('stock_counts').select('count_type,state,size,brand,qty').eq('branch',br).eq('date',dateVal),
+    sb.from('stock_counts').select('count_type,state,size,brand,qty,note,updated_by_name_snapshot,updated_at').eq('branch',br).eq('date',dateVal),
     sb.from('manifold_live_rows').select('row').eq('branch',br).eq('date',dateVal),
     sb.from('capture_live_rows').select('kind,row').eq('branch',br).eq('date',dateVal),
     sb.from('daily_sales').select('lines').eq('branch',br).eq('date',dateVal).maybeSingle()
@@ -3004,15 +3004,22 @@ function bdLoadExisting(dateVal){
       bdRenderForm();
       return;
     }
+    // Every pre-loaded line keeps WHO captured it and when (_operator/_role/_time) - bdDoSubmit
+    // only stamps the Manager doing the backdate on lines they add themselves. Without this every
+    // operator's line was re-sent to the Sheet and saved on the close under the Manager's name
+    // (found 2026-10-12: Kleinmond 9 Oct showed Jean-Siri as the operator for Rickus's Opening
+    // and Thabo's Closing).
+    function _by(name,when,r0){return {_operator:name||'',_role:(r0&&r0._role)||_levelForName(name||'')||'',_time:when||''};}
     (res[0].data||[]).forEach(function(r){
-      (r.count_type==='Closing'?bdData.closing:bdData.opening).push({state:(r.state==='Empty'?'Empty':'Full'),size:r.size,brand:r.brand,qty:num(r.qty)});
+      (r.count_type==='Closing'?bdData.closing:bdData.opening).push(Object.assign({state:(r.state==='Empty'?'Empty':'Full'),size:r.size,brand:r.brand,qty:num(r.qty),note:r.note||''},
+        _by(r.updated_by_name_snapshot,r.updated_at?nowStamp(new Date(r.updated_at)):'')));
     });
-    (res[1].data||[]).forEach(function(x){var r=x.row||{};bdData.manifold.push({stage:r.stage||'Opening',cyl:r.cyl||'',brand:r.brand||'',gasType:r.gasType||'LPG',scale:r.scale,tare:r.tare,notes:r.notes||'',_photoLink:(r._photoLink||'')});});
-    (res[2].data||[]).forEach(function(x){var r=x.row||{},k=x.kind;
-      if(k==='refill')bdData.refill.push({size:r.size,brand:r.brand,gasType:r.gasType||'LPG',pumped:num(r.pumped),seal:r.seal||'',notes:r.notes||'',_photoLink:(r._photoLink||'')});
-      else if(k==='private')bdData.private.push({cylBrand:r.cylBrand||'',otherBrand:r.otherBrand||'',gasType:r.gasType||'LPG',pumped:num(r.pumped),customer:r.customer||'',filledBy:r.filledBy||'Us',fillSupplier:r.fillSupplier||'',invoiceNo:r.invoiceNo||'',photoLinks:(r.photoLinks||r._photoLink||'')});
-      else if(k==='received')bdData.received.push({size:r.size,brand:r.brand,fullIn:num(r.fullIn),emptyOut:num(r.emptyOut),supplier:r.supplier||'',deliveryNote:r.deliveryNote||'',invoiceNo:r.invoiceNo||'',photoLinks:(r.photoLinks||r._photoLink||'')});
-      else if(k==='residual')bdData.residual.push({Brand:r.Brand||r.brand||'',Size:r.Size||r.size||'',CylScale:num(r.CylScale),CylTare:num(r.CylTare),Note:r.Note||r.note||''});
+    (res[1].data||[]).forEach(function(x){var r=x.row||{};bdData.manifold.push(Object.assign({stage:r.stage||'Opening',cyl:r.cyl||'',brand:r.brand||'',gasType:r.gasType||'LPG',scale:r.scale,tare:r.tare,notes:r.notes||'',_photoLink:(r._photoLink||'')},_by(r._operator,r._time,r)));});
+    (res[2].data||[]).forEach(function(x){var r=x.row||{},k=x.kind,by=_by(r._operator,r._time,r);
+      if(k==='refill')bdData.refill.push(Object.assign({size:r.size,brand:r.brand,gasType:r.gasType||'LPG',pumped:num(r.pumped),seal:r.seal||'',notes:r.notes||'',_photoLink:(r._photoLink||'')},by));
+      else if(k==='private')bdData.private.push(Object.assign({cylBrand:r.cylBrand||'',otherBrand:r.otherBrand||'',gasType:r.gasType||'LPG',pumped:num(r.pumped),customer:r.customer||'',filledBy:r.filledBy||'Us',fillSupplier:r.fillSupplier||'',invoiceNo:r.invoiceNo||'',photoLinks:(r.photoLinks||r._photoLink||'')},by));
+      else if(k==='received')bdData.received.push(Object.assign({size:r.size,brand:r.brand,fullIn:num(r.fullIn),emptyOut:num(r.emptyOut),supplier:r.supplier||'',deliveryNote:r.deliveryNote||'',invoiceNo:r.invoiceNo||'',photoLinks:(r.photoLinks||r._photoLink||'')},by));
+      else if(k==='residual')bdData.residual.push(Object.assign({Brand:r.Brand||r.brand||'',Size:r.Size||r.size||'',CylScale:num(r.CylScale),CylTare:num(r.CylTare),Note:r.Note||r.note||''},by));
     });
     var ds=res[3].data||null;
     if(ds&&ds.lines){(ds.lines||[]).forEach(function(l){bdData.dailysales.push({size:l.size,brand:l.brand,sold:num(l.sold),returned:num(l.returned)});});}
@@ -3281,34 +3288,38 @@ function bdDoSubmit(auth,totalLines,privateKg){
   var d=bdData.date, br=bdData.branch;
   var snap={count:[],manifold:[],refill:[],private:[],received:[],residual:[]};
   var queuedPhotos=0;
+  // Who captured each line: a pre-loaded line keeps its original operator (see bdLoadExisting);
+  // only a line added in this form is the signed-in Manager's. syncRows*'s _who() reads these.
+  var _bdStamp=nowStamp();
+  function who(r){return r._operator?{_operator:r._operator,_role:r._role||'',_time:r._time||''}:{_operator:operator||'',_role:role||'',_time:_bdStamp};}
   function pushCount(rows,countType){
-    rows.forEach(function(r){snap.count.push({countType:countType,state:r.state,size:r.size,brand:r.brand,qty:num(r.qty),branch:br,_date:d});});
+    rows.forEach(function(r){snap.count.push(Object.assign({countType:countType,state:r.state,size:r.size,brand:r.brand,qty:num(r.qty),note:r.note||'',branch:br,_date:d},who(r)));});
   }
   pushCount(bdData.opening,'Opening');
   pushCount(bdData.closing,'Closing');
   bdData.manifold.forEach(function(r){
     var rid=_rid();var scale=num(r.scale),tare=num(r.tare);
-    snap.manifold.push({branch:br,cyl:r.cyl,stage:r.stage,brand:r.brand,gasType:r.gasType,scale:scale,tare:tare,gasLeft:scale-tare,notes:r.notes||'',_date:d,_rid:rid,_committed:true,_photoLink:(r._photoLink||'')});
+    snap.manifold.push(Object.assign({branch:br,cyl:r.cyl,stage:r.stage,brand:r.brand,gasType:r.gasType,scale:scale,tare:tare,gasLeft:scale-tare,notes:r.notes||'',_date:d,_rid:rid,_committed:true,_photoLink:(r._photoLink||'')},who(r)));
     if(r._photos&&r._photos.length){_photoQueueAdd({capType:'manifold',branch:br,date:d,rowRid:rid,category:'Manifold',photos:r._photos});queuedPhotos+=r._photos.length;}
   });
   bdData.refill.forEach(function(r){
     var rid=_rid();
-    snap.refill.push({branch:br,size:r.size,brand:r.brand,gasType:r.gasType,pumped:num(r.pumped),seal:r.seal||'',notes:r.notes||'',_date:d,_rid:rid,_committed:true,_photoLink:(r._photoLink||'')});
+    snap.refill.push(Object.assign({branch:br,size:r.size,brand:r.brand,gasType:r.gasType,pumped:num(r.pumped),seal:r.seal||'',notes:r.notes||'',_date:d,_rid:rid,_committed:true,_photoLink:(r._photoLink||'')},who(r)));
     if(r._photos&&r._photos.length){_photoQueueAdd({capType:'refill',branch:br,date:d,rowRid:rid,category:'Refill',photos:r._photos});queuedPhotos+=r._photos.length;}
   });
   bdData.private.forEach(function(r){
     var rid=_rid();
-    snap.private.push({branch:br,cylBrand:r.cylBrand,otherBrand:r.otherBrand||'',gasType:r.gasType,pumped:num(r.pumped),customer:r.customer||'',filledBy:r.filledBy,fillSupplier:r.fillSupplier||'',fillSupplierOther:'',invoiceNo:r.invoiceNo||'',_date:d,_rid:rid,_committed:true,photoLinks:(r.photoLinks||'')});
+    snap.private.push(Object.assign({branch:br,cylBrand:r.cylBrand,otherBrand:r.otherBrand||'',gasType:r.gasType,pumped:num(r.pumped),customer:r.customer||'',filledBy:r.filledBy,fillSupplier:r.fillSupplier||'',fillSupplierOther:'',invoiceNo:r.invoiceNo||'',_date:d,_rid:rid,_committed:true,photoLinks:(r.photoLinks||'')},who(r)));
     if(r._photos&&r._photos.length){_photoQueueAdd({capType:'private',branch:br,date:d,rowRid:rid,category:'Private',photos:r._photos});queuedPhotos+=r._photos.length;}
   });
   bdData.received.forEach(function(r){
     var rid=_rid();var fullIn=num(r.fullIn),emptyOut=num(r.emptyOut);
-    snap.received.push({branch:br,size:r.size,brand:r.brand,fullIn:fullIn,emptyOut:emptyOut,_side:(fullIn>0?'recv':'ret'),supplier:r.supplier||'',deliveryNote:r.deliveryNote||'',invoiceNo:r.invoiceNo||'',_date:d,_rid:rid,_committed:true,photoLinks:(r.photoLinks||'')});
+    snap.received.push(Object.assign({branch:br,size:r.size,brand:r.brand,fullIn:fullIn,emptyOut:emptyOut,_side:(fullIn>0?'recv':'ret'),supplier:r.supplier||'',deliveryNote:r.deliveryNote||'',invoiceNo:r.invoiceNo||'',_date:d,_rid:rid,_committed:true,photoLinks:(r.photoLinks||'')},who(r)));
     if(r._photos&&r._photos.length){_photoQueueAdd({capType:'received',branch:br,date:d,rowRid:rid,category:'Received',photos:r._photos});queuedPhotos+=r._photos.length;}
   });
   bdData.residual.forEach(function(r){
     var rid=_rid();var cylScale=num(r.CylScale),cylTare=num(r.CylTare);
-    snap.residual.push({Branch:br,Brand:r.Brand,Size:r.Size,GasType:RESIDUAL_GASTYPE[r.Size]||'',CylScale:cylScale,CylTare:cylTare,Residual:cylScale-cylTare,Note:r.Note||'',_operator:operator,_date:d,_committed:true,_rid:rid});
+    snap.residual.push(Object.assign({Branch:br,Brand:r.Brand,Size:r.Size,GasType:RESIDUAL_GASTYPE[r.Size]||'',CylScale:cylScale,CylTare:cylTare,Residual:cylScale-cylTare,Note:r.Note||'',_date:d,_committed:true,_rid:rid},who(r)));
     if(r._photos&&r._photos.length){_photoQueueAdd({capType:'residual',branch:br,date:d,rowRid:rid,category:'Residual',photos:r._photos});queuedPhotos+=r._photos.length;}
   });
   var record={branch:br,date:d,closed_by:currentProfile.id,authoriser_name:auth.name+' (Backdated '+today+')',authoriser_level:auth.level,store_snapshot:snap,manifold_balance:null};
@@ -5960,6 +5971,7 @@ function _finishLogin(u,b){
     }
   }
   _countFlushQueue();
+  setTimeout(_repairBackdateNamesInSheet,5000);
   _updateCountPendingBadge();
   _updateMinFullHoldBadge();
   _updateMaxThresholdBadge();
@@ -8120,6 +8132,36 @@ function _cCommitReal(){
   // with them rather than adding information.
   if(!mm.length)toast('Count committed ✓');
   goHome();
+}
+// ONE-TIME REPAIR (2026-10-12) - safe to delete once app_config shows it done. Backdate Stock
+// Take used to re-send every pre-loaded count line to the Sheet under the Manager's name (see
+// bdLoadExisting). These days' closed records were corrected in the database (corrected_snapshot:
+// each line carries who really captured it); this re-sends their Counts to the Sheet from those
+// records so the Sheet's Operator column matches. Runs once, from the first Owner sign-in.
+var _BD_NAMES_REPAIR_KEY='repair_backdate_names_20261012';
+var _BD_NAMES_REPAIR_DAYS=[['Helderberg','2026-10-01'],['Kleinmond','2026-10-03'],['Kleinmond','2026-10-06'],['Helderberg','2026-10-07'],['Kleinmond','2026-10-07'],['Helderberg','2026-10-08'],['Kleinmond','2026-10-09']];
+function _repairBackdateNamesInSheet(){
+  if(role!=='Owner')return;
+  sb.from('app_config').select('value').eq('key',_BD_NAMES_REPAIR_KEY).maybeSingle().then(function(res){
+    if(res.error||(res.data&&res.data.value&&res.data.value.done))return;
+    return Promise.all(_BD_NAMES_REPAIR_DAYS.map(function(p){
+      return sb.from('day_closes').select('corrected_snapshot,store_snapshot').eq('branch',p[0]).eq('date',p[1]).maybeSingle().then(function(r){
+        if(r.error)throw new Error(p[0]+' '+p[1]+': '+r.error.message);
+        var snap=r.data&&(r.data.corrected_snapshot||r.data.store_snapshot), lines=(snap&&snap.count)||[];
+        if(!lines.length)return p[0]+' '+p[1]+': 0';
+        var rows=syncRowsCount(lines,p[0]).map(function(x,i){
+          x.date=p[1];x._replaceKey=p[1]+'|'+p[0];
+          var t=lines[i]._time;if(t){var dt=new Date(String(t).replace(' ','T'));if(!isNaN(dt))x.ts=dt.toISOString();}
+          return x;
+        });
+        syncPush('Counts',rows); // queues and retries on its own if the Sheet can't be reached
+        return p[0]+' '+p[1]+': '+rows.length;
+      });
+    })).then(function(done){
+      _pushAppConfig(_BD_NAMES_REPAIR_KEY,{done:true,at:new Date().toISOString(),by:operator,days:done});
+      auditLog('Sheet counts re-sent with corrected names','One-time repair after the backdate name fix - '+done.join(' · '));
+    });
+  }).catch(function(e){console.error('_repairBackdateNamesInSheet failed:',e&&e.message);});
 }
 function _countQueueKey(){return 'gs_stockcount_pending';}
 function _countQueueLoad(){
