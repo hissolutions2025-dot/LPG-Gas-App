@@ -1846,7 +1846,7 @@ function dsLoad(){
   // _refreshDayCloseSignatures's staleness-token comment for the same class of bug).
   Promise.all([
     sb.from('daily_sales').select('lines,private_refill_kg').eq('branch',br).eq('date',today).maybeSingle().then(function(res){return res.data||null;},function(){return null;}),
-    sb.from('capture_live_rows').select('row').eq('kind','private').eq('branch',br).eq('date',today).then(function(res){
+    sb.from('capture_live_rows_lite').select('row').eq('kind','private').eq('branch',br).eq('date',today).then(function(res){
       return ((res.data||[]).map(function(r){return r.row||{};}).filter(function(r){return r.filledBy!=='Supplier';})
         .reduce(function(s,r){return s+num(r.pumped);},0));
     },function(){return null;})
@@ -2533,8 +2533,13 @@ function _resolvePendingOverrideFinish(id,decision,note,auth,item){
 // side. Every row this pulls in is forced _committed=true regardless of what's stored -
 // this table only ever holds already-committed rows by construction, and a device that
 // later commits something else must never mistake one of these for "still needs sending."
+// Reads the photo-free view (supabase/migrations/20261013010000): photos come back as a small
+// placeholder, Drive links intact. Pulling every row's photo bytes on each open/commit is what
+// used up the Supabase data allowance and got the project blocked on 13 Oct 2026. Anything that
+// writes a row back must keep reading manifold_live_rows itself, or it would save the placeholder
+// over the real photo.
 function _fetchManifoldLiveRows(br,date){
-  return sb.from('manifold_live_rows').select('row').eq('branch',br).eq('date',date).then(function(res){
+  return sb.from('manifold_live_rows_lite').select('row').eq('branch',br).eq('date',date).then(function(res){
     if(res.error){console.error('_fetchManifoldLiveRows failed for '+br+'/'+date+':',res.error.message);return;}
     var liveRows=(res.data||[]).map(function(r){var row=r.row||{};row._committed=true;return row;});
     // Dedup by _rid before use - a retried-but-already-succeeded push (a connection drop
@@ -2567,7 +2572,7 @@ var _manifoldPrevClose={};
 function _fetchManifoldPrevClose(br){
   _lastCloseDate(br,today).then(function(yDate){
     if(!yDate){delete _manifoldPrevClose[br];return;} // no prior close - tier 3 has nothing, tier 4 (no baseline) applies
-    return sb.from('day_closes').select('store_snapshot,corrected_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
+    return sb.from('day_closes_lite').select('store_snapshot,corrected_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
       if(res.error){console.error('_fetchManifoldPrevClose failed for '+br+':',res.error.message);return;}
       if(!res.data){delete _manifoldPrevClose[br];return;} // no prior close - tier 3 has nothing, tier 4 (no baseline) applies
       // Same fix as _fetchPrevCloseExpected - see its own comment. Without this, a Manifold
@@ -6922,7 +6927,7 @@ function _fetchLiveExpectedOpening(br){
   // of the fetch firing with nothing ever repainting once it arrived).
   return _lastCloseDate(br,today).then(function(yDate){
     if(!yDate){delete _liveExpectedOpening[br];return false;} // no prior close - local carry-forward fallback applies
-    return sb.from('day_closes').select('store_snapshot,corrected_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
+    return sb.from('day_closes_lite').select('store_snapshot,corrected_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
       if(res.error){console.error('_fetchLiveExpectedOpening failed for '+br+':',res.error.message);return false;}
       if(!res.data){delete _liveExpectedOpening[br];return false;} // no prior close - local carry-forward fallback applies
       // corrected_snapshot (see _corrSyncSnapshot's own comment) - without this, a correction to
@@ -7543,8 +7548,9 @@ setInterval(function(){
 // Fetch-on-open: pulls kind+branch+date's live rows into store[storeKey], same merge
 // _fetchManifoldLiveRows already does (dedup by _rid, preserve any not-yet-synced local
 // pending row not yet visible in the live table, leave every other branch/date untouched).
+// Photo-free view - see _fetchManifoldLiveRows.
 function _fetchCaptureLiveRows(kind,storeKey,br,date){
-  return sb.from('capture_live_rows').select('row').eq('kind',kind).eq('branch',br).eq('date',date).then(function(res){
+  return sb.from('capture_live_rows_lite').select('row').eq('kind',kind).eq('branch',br).eq('date',date).then(function(res){
     if(res.error){console.error('_fetchCaptureLiveRows('+kind+') failed for '+br+'/'+date+':',res.error.message);return;}
     var liveRows=(res.data||[]).map(function(r){var row=r.row||{};row._committed=true;return row;});
     var _seenRid={};
@@ -7600,7 +7606,7 @@ function _fetchRangeClosingCounts(br,endDate){
 // committed row in the table - _fetchCaptureLiveRows/_fetchManifoldLiveRows both already
 // filter this by _rid for a single day; this does the same across the whole range.
 function _fetchRangeCaptureLiveRows(kind,br,startDate,endDate){
-  return sb.from('capture_live_rows').select('row').eq('kind',kind).eq('branch',br).gte('date',startDate).lte('date',endDate).then(function(res){
+  return sb.from('capture_live_rows_lite').select('row').eq('kind',kind).eq('branch',br).gte('date',startDate).lte('date',endDate).then(function(res){
     if(res.error){console.error('_fetchRangeCaptureLiveRows('+kind+') failed:',res.error.message);return [];}
     var rows=(res.data||[]).map(function(r){return r.row||{};});
     var seen={};
@@ -7618,8 +7624,8 @@ function _fetchRangeCaptureLiveRows(kind,br,startDate,endDate){
 // two different dates instead of one.
 function _fetchRangeManifold(br,startDate,endDate){
   return Promise.all([
-    sb.from('manifold_live_rows').select('row').eq('branch',br).eq('date',startDate).then(function(res){return (res.data||[]).map(function(r){return r.row||{};});},function(){return [];}),
-    sb.from('manifold_live_rows').select('row').eq('branch',br).eq('date',endDate).then(function(res){return (res.data||[]).map(function(r){return r.row||{};});},function(){return [];})
+    sb.from('manifold_live_rows_lite').select('row').eq('branch',br).eq('date',startDate).then(function(res){return (res.data||[]).map(function(r){return r.row||{};});},function(){return [];}),
+    sb.from('manifold_live_rows_lite').select('row').eq('branch',br).eq('date',endDate).then(function(res){return (res.data||[]).map(function(r){return r.row||{};});},function(){return [];})
   ]).then(function(results){
     function latestPerSlot(rows,stage){
       var bySlot={};
@@ -8219,7 +8225,7 @@ function _repairBackdateNamesInSheet(){
     var done=[];
     return _BD_NAMES_REPAIR_DAYS.reduce(function(chain,p){
       return chain.then(function(){
-        return sb.from('day_closes').select('corrected_snapshot,store_snapshot').eq('branch',p[0]).eq('date',p[1]).maybeSingle().then(function(r){
+        return sb.from('day_closes_lite').select('corrected_snapshot,store_snapshot').eq('branch',p[0]).eq('date',p[1]).maybeSingle().then(function(r){
           if(r.error)throw new Error(p[0]+' '+p[1]+': '+r.error.message);
           var snap=r.data&&(r.data.corrected_snapshot||r.data.store_snapshot), lines=(snap&&snap.count)||[];
           if(!lines.length){done.push(p[0]+' '+p[1]+': 0');return;}
@@ -8495,7 +8501,7 @@ function _refreshCountMismatches(br, localOverlayRows){
       // same "nothing found" shape maybeSingle() itself returns for a miss, so every check
       // below (dcRes.error, dcRes.data) behaves exactly as it already did for that outcome.
       var dcPromise=yDate
-        ? sb.from('day_closes').select('store_snapshot,corrected_snapshot').eq('branch',br).eq('date',yDate).maybeSingle()
+        ? sb.from('day_closes_lite').select('store_snapshot,corrected_snapshot').eq('branch',br).eq('date',yDate).maybeSingle()
         : Promise.resolve({data:null,error:null});
       // op is read live from the shared stock_counts table (the Phase 2b pilot's table),
       // never from local store.count - a device that hasn't itself committed or synced
@@ -12684,8 +12690,8 @@ function _fetchWorkedPeople(br,date){
   }catch(e){}
   return Promise.all([
     sb.from('stock_counts').select('updated_by_name_snapshot').eq('branch',br).eq('date',date),
-    sb.from('manifold_live_rows').select('row').eq('branch',br).eq('date',date),
-    sb.from('capture_live_rows').select('row').eq('branch',br).eq('date',date)
+    sb.from('manifold_live_rows_lite').select('row').eq('branch',br).eq('date',date),
+    sb.from('capture_live_rows_lite').select('row').eq('branch',br).eq('date',date)
   ]).then(function(r){
     ((r[0]&&r[0].data)||[]).forEach(function(x){add(x.updated_by_name_snapshot);});
     ((r[1]&&r[1].data)||[]).forEach(function(x){add(x.row&&x.row._operator);});
@@ -15297,7 +15303,7 @@ function _corrSyncSnapshot(rec){
   //     );
   // .select() added below so THIS kind of RLS-silent-filter (zero rows, no error) is caught
   // and surfaced immediately going forward, instead of looking identical to success.
-  sb.from('day_closes').update({corrected_snapshot:rec.store}).eq('id',rec._sharedId).select().then(function(r){
+  sb.from('day_closes').update({corrected_snapshot:rec.store}).eq('id',rec._sharedId).select('id').then(function(r){
     if(r.error)toast('Correction saved locally, but could not sync to the shared record: '+r.error.message,true);
     else if(!r.data||!r.data.length)toast('Correction saved locally, but the shared record refused the update (likely past the 48-hour window at the database level) - tell your Owner this exact message',true);
   }).catch(function(){
@@ -15315,7 +15321,7 @@ function _pushSharedCorrection(sharedId, correction){
     // Same RLS-silent-filter risk as _corrSyncSnapshot's own comment - .select() added so a
     // past-48h update that matches zero rows (no error, just nothing updated) is caught
     // instead of looking like success.
-    sb.from('day_closes').update({corrections:updated}).eq('id',sharedId).select().then(function(r2){
+    sb.from('day_closes').update({corrections:updated}).eq('id',sharedId).select('id').then(function(r2){
       if(r2.error)toast('Correction saved locally, but could not sync to the shared record: '+r2.error.message,true);
       else if(!r2.data||!r2.data.length)toast('Correction saved locally, but the shared record refused the update (likely past the 48-hour window at the database level) - tell your Owner this exact message',true);
     }).catch(function(){
@@ -15782,8 +15788,9 @@ function loadSavedDay(date,br){try{var r=localStorage.getItem(histKey(date,br));
 // Full record for the History screen: tries Supabase first (the shared,
 // cross-device copy), falls back to this device's local copy for days
 // closed before this migration (which never made it into day_closes).
+// Photo-free view (photos as placeholder, Drive links kept) - see _fetchManifoldLiveRows.
 function loadSavedDayShared(date,br){
-  return sb.from('day_closes').select('*').eq('branch',br).eq('date',date).maybeSingle().then(function(res){
+  return sb.from('day_closes_lite').select('*').eq('branch',br).eq('date',date).maybeSingle().then(function(res){
     if(res.data){
       var d=res.data;
       return {
@@ -15816,7 +15823,7 @@ function loadSavedDayShared(date,br){
 // knows locally - safe to call on every open/branch-switch, not just once per session.
 function _adoptRemoteCloseIfNeeded(br){
   if(loadSavedDay(today,br))return Promise.resolve(false); // already known locally
-  return sb.from('day_closes').select('*').eq('branch',br).eq('date',today).maybeSingle().then(function(res){
+  return sb.from('day_closes_lite').select('*').eq('branch',br).eq('date',today).maybeSingle().then(function(res){
     if(res.error||!res.data)return false;
     if(loadSavedDay(today,br))return false; // adopted by a concurrent call while this one was in flight
     var d=res.data;
@@ -16386,7 +16393,7 @@ function _fetchFaultyHeld(br){
 function _fetchPrevCloseExpected(br,date){
   return _lastCloseDate(br,date).then(function(yDate){
     if(!yDate)return {};
-    return sb.from('day_closes').select('store_snapshot,corrected_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
+    return sb.from('day_closes_lite').select('store_snapshot,corrected_snapshot').eq('branch',br).eq('date',yDate).maybeSingle().then(function(res){
       if(res.error||!res.data)return {};
       // corrected_snapshot (see _corrSyncSnapshot's own comment) holds the current, corrected
       // store once a historical correction has been made to that Closing - reads the same way
