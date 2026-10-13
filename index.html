@@ -5982,6 +5982,7 @@ function _finishLogin(u,b){
     }
   }
   _countFlushQueue();
+  _popRescuePurgeOthers();
   setTimeout(_repairBackdateNamesInSheet,5000);
   _updateCountPendingBadge();
   _updateMinFullHoldBadge();
@@ -6017,9 +6018,12 @@ function logout(){
   // branch-switch reset in _refreshDayCloseSignatures only fires when the branch actually changes,
   // so a same-branch user switch would otherwise repaint the old signature from sigData.
   try{sigData={sigOp:'',sigMgr:''};sigSignedBy={sigOp:'',sigMgr:''};sigUnlocked={sigOp:false,sigMgr:false};sigAuthUser={sigOp:null,sigMgr:null};_sigStateBranch=null;}catch(e){}
-  // Popup rescue + camera are per user: drop the in-memory copy (the stored one is keyed to this
-  // user and only ever restored for them) and never leave the camera running for the next person.
-  try{clearTimeout(_popRescueTimer);_popRescueArmed=false;_popRescueRec=null;_popRescueLoaded=null;_popRescueLoadedKey=null;_camClose();}catch(e){}
+  // Popup rescue + camera are per user. Signing out abandons any unsaved popup (same as closing
+  // it), so every rescued reading and its photos are removed from the device - the next person on
+  // a shared phone never has the previous operator's photos sitting in storage. Never leave the
+  // camera running for the next person either.
+  try{clearTimeout(_popRescueTimer);_popRescueArmed=false;_popRescueRec=null;_popRescueLoaded=null;_popRescueLoadedKey=null;_popRescueGen++;_camClose();
+    _rescueIdb('readwrite',function(st){return st.clear();}).catch(function(){});}catch(e){}
   // idle lock must not be able to outlive its own session - clear it unconditionally on
   // every logout, whether that's a normal sign-out or the lock screen's own "Not you? Sign
   // out instead" escape hatch (which just calls this function directly).
@@ -10507,6 +10511,18 @@ function _popRescueClear(){
   _popRescueRec=null;_popRescueGen++;
   var key=_popRescueKey();
   _rescueIdb('readwrite',function(st){return st.delete(key);}).catch(function(){});
+}
+// Shared phones: an unsaved reading and its photos belong to one person. On every sign-in, any
+// rescued popup belonging to someone else is deleted (keys end in '|'+_opKey(), see
+// _popRescueKey), so only the signed-in user's own rescue can stay on the device.
+function _popRescuePurgeOthers(){
+  if(!operator)return;
+  var mine='|'+_opKey();
+  _rescueIdb('readwrite',function(st){
+    var ks=st.getAllKeys();
+    ks.onsuccess=function(){(ks.result||[]).forEach(function(k){var s=String(k);if(s.slice(-mine.length)!==mine)st.delete(k);});};
+    return ks;
+  }).catch(function(){});
 }
 // Called at the end of openModal(): if the rescued popup is for exactly this slot/stage, put its
 // fields and photos back.
