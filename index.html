@@ -2992,7 +2992,11 @@ function bdLoadExisting(dateVal){
     sb.from('stock_counts').select('count_type,state,size,brand,qty,note,updated_by_name_snapshot,updated_at').eq('branch',br).eq('date',dateVal),
     sb.from('manifold_live_rows').select('row').eq('branch',br).eq('date',dateVal),
     sb.from('capture_live_rows').select('kind,row').eq('branch',br).eq('date',dateVal),
-    sb.from('daily_sales').select('lines').eq('branch',br).eq('date',dateVal).maybeSingle()
+    sb.from('daily_sales').select('lines').eq('branch',br).eq('date',dateVal).maybeSingle(),
+    // Role of each pre-loaded line's capturer comes from this list (_levelForName). It's normally
+    // loaded at the sign-in screen; fetch it here if that load failed. Never fails the pre-load.
+    (_loginNamesCache&&_loginNamesCache.length)?Promise.resolve(null)
+      :sb.from('login_names').select('id,name,level,branches').order('name').then(function(r){return r;},function(){return null;})
   ]).then(function(res){
     // If ANY section failed to load, do NOT silently treat it as "no data" - that would let the
     // form open looking authoritative while an existing Opening (or other section) is missing, and
@@ -3009,6 +3013,7 @@ function bdLoadExisting(dateVal){
     // operator's line was re-sent to the Sheet and saved on the close under the Manager's name
     // (found 2026-10-12: Kleinmond 9 Oct showed Jean-Siri as the operator for Rickus's Opening
     // and Thabo's Closing).
+    if(res[4]&&!res[4].error&&res[4].data&&res[4].data.length)_loginNamesCache=res[4].data;
     function _by(name,when,r0){return {_operator:name||'',_role:(r0&&r0._role)||_levelForName(name||'')||'',_time:when||''};}
     (res[0].data||[]).forEach(function(r){
       (r.count_type==='Closing'?bdData.closing:bdData.opening).push(Object.assign({state:(r.state==='Empty'?'Empty':'Full'),size:r.size,brand:r.brand,qty:num(r.qty),note:r.note||''},
@@ -5579,7 +5584,13 @@ function adjustFaultyRow(id,photoLink){
 // build row objects for each type from the committed data
 // Full-schema sync (v3). Every row carries ts + date + branch + Operator + Role + section fields.
 function _nowISO(){return new Date().toISOString();}
-function _who(r){return {Operator:(r._operator||operator||''),Role:(r._role||role||'')};}
+// A row captured by SOMEONE ELSE (reconciled from another device, or pre-loaded into a backdate)
+// keeps that person's own role - falling back to the signed-in user's role would label e.g.
+// Rickus's line "Manager" when Jean-Siri backdates the day.
+function _who(r){
+  if(r._operator&&r._operator!==operator)return {Operator:r._operator,Role:(r._role||_levelForName(r._operator)||'')};
+  return {Operator:(r._operator||operator||''),Role:(r._role||role||'')};
+}
 function syncRowsCount(list,br){return list.map(function(r){var w=_who(r);return {ts:_nowISO(),date:today,branch:br,Operator:w.Operator,Role:w.Role,CountType:r.countType,State:r.state,Size:r.size,Brand:r.brand,Qty:r.qty,Note:(r.note||''),Adjusted:(r._adjusted?'Y':''),AdjustedBy:(r._adjustedBy||''),OverrideReason:(r.overrideReason||'')};});}
 function syncRowsReceived(list,br){return list.map(function(r){var w=_who(r);
   // Field name here MUST match the backend's TABS.Received key ('Invoice', not 'InvoiceNo') -
@@ -7374,8 +7385,11 @@ function _mergeSharedCountRows(rows){
     if(lines.length===1)return lines[0];
     var row=Object.assign({},lines[lines.length-1]); // latest line's who/when
     row.qty=lines.reduce(function(s,l){return s+num(l.qty);},0);
-    row.note=lines.filter(function(l){return String(l.note||'').trim();})
-      .map(function(l){return String(l.note).trim()+' '+num(l.qty);}).join(' · ');
+    // Breakdown only when some line has a note; then every non-zero line is listed (un-noted ones
+    // as "no note") so the parts always add up to qty.
+    var noted=lines.some(function(l){return String(l.note||'').trim();});
+    row.note=noted?lines.filter(function(l){return num(l.qty)!==0;})
+      .map(function(l){return (String(l.note||'').trim()||'no note')+' '+num(l.qty);}).join(' · '):'';
     return row;
   });
 }
@@ -8144,24 +8158,39 @@ function _repairBackdateNamesInSheet(){
   if(role!=='Owner')return;
   sb.from('app_config').select('value').eq('key',_BD_NAMES_REPAIR_KEY).maybeSingle().then(function(res){
     if(res.error||(res.data&&res.data.value&&res.data.value.done))return;
-    return Promise.all(_BD_NAMES_REPAIR_DAYS.map(function(p){
-      return sb.from('day_closes').select('corrected_snapshot,store_snapshot').eq('branch',p[0]).eq('date',p[1]).maybeSingle().then(function(r){
-        if(r.error)throw new Error(p[0]+' '+p[1]+': '+r.error.message);
-        var snap=r.data&&(r.data.corrected_snapshot||r.data.store_snapshot), lines=(snap&&snap.count)||[];
-        if(!lines.length)return p[0]+' '+p[1]+': 0';
-        var rows=syncRowsCount(lines,p[0]).map(function(x,i){
-          x.date=p[1];x._replaceKey=p[1]+'|'+p[0];
-          var t=lines[i]._time;if(t){var dt=new Date(String(t).replace(' ','T'));if(!isNaN(dt))x.ts=dt.toISOString();}
-          return x;
+    // One day at a time, sending directly (not syncPush, which treats any non-401 reply as sent)
+    // and checking the Sheet's reply - only when every day is accepted is the repair marked done.
+    // Any failure leaves it undone, so it simply runs again at the next Owner sign-in (each send
+    // replaces that day's rows, so a re-run is harmless).
+    var done=[];
+    return _BD_NAMES_REPAIR_DAYS.reduce(function(chain,p){
+      return chain.then(function(){
+        return sb.from('day_closes').select('corrected_snapshot,store_snapshot').eq('branch',p[0]).eq('date',p[1]).maybeSingle().then(function(r){
+          if(r.error)throw new Error(p[0]+' '+p[1]+': '+r.error.message);
+          var snap=r.data&&(r.data.corrected_snapshot||r.data.store_snapshot), lines=(snap&&snap.count)||[];
+          if(!lines.length){done.push(p[0]+' '+p[1]+': 0');return;}
+          var rows=syncRowsCount(lines,p[0]).map(function(x,i){
+            x.date=p[1];x._replaceKey=p[1]+'|'+p[0];
+            var t=lines[i]._time;if(t){var dt=new Date(String(t).replace(' ','T'));if(!isNaN(dt))x.ts=dt.toISOString();}
+            return x;
+          });
+          return _sheetsSyncSend(syncCfg().url,{type:'Counts',rows:rows}).then(function(resp){
+            return resp.text().then(function(txt){
+              var j=null;try{j=JSON.parse(txt);}catch(e){}
+              if(!resp.ok||(j&&(j.ok===false||j.error)))throw new Error(p[0]+' '+p[1]+': Sheet replied '+resp.status+(j&&j.error?(' - '+j.error):''));
+              done.push(p[0]+' '+p[1]+': '+rows.length);
+            });
+          });
         });
-        syncPush('Counts',rows); // queues and retries on its own if the Sheet can't be reached
-        return p[0]+' '+p[1]+': '+rows.length;
       });
-    })).then(function(done){
+    },Promise.resolve()).then(function(){
       _pushAppConfig(_BD_NAMES_REPAIR_KEY,{done:true,at:new Date().toISOString(),by:operator,days:done});
       auditLog('Sheet counts re-sent with corrected names','One-time repair after the backdate name fix - '+done.join(' · '));
     });
-  }).catch(function(e){console.error('_repairBackdateNamesInSheet failed:',e&&e.message);});
+  }).catch(function(e){
+    console.error('_repairBackdateNamesInSheet failed (will retry next Owner sign-in):',e&&e.message);
+    auditLog('Sheet counts re-send failed','Will retry at the next Owner sign-in - '+((e&&e.message)||'error'),null,null,'failure');
+  });
 }
 function _countQueueKey(){return 'gs_stockcount_pending';}
 function _countQueueLoad(){
@@ -10817,6 +10846,9 @@ function _addLineFinish(c,d,onDone){
   if(c===CAP.manifold && Array.isArray(d.photo) && !d.photo.length){
     var _np=String(d.notes||'').trim();
     if(!_np){toast('Take a photo of the scale & tare first. If the camera won\'t work, type the reason in Note to save without a photo.',true);if(onDone)onDone(false);return;}
+    // A Note on its own isn't a decision to skip the photo - it may explain something else
+    // (a tare change, a new valve). Ask, so a forgotten photo is never waived silently.
+    if(!confirm('No photo of the scale & tare for '+(d._capturedModalItem||modalItem||'this cylinder')+'.\n\nOK = save WITHOUT a photo. Your Note will be recorded as the reason: "'+_np+'"\nCancel = go back and take the photo.')){if(onDone)onDone(false);return;}
     d._noPhotoReason=_np;
   }
   // Two-tier weight validation (manifold). Applies at every stage (Opening/Added/Removed/
@@ -13846,16 +13878,24 @@ function _adoptLegacyDraft(legacyKey,newKey){
 // Operator sits BEFORE branch so the branch stays the second-to-last '_' segment - the shape
 // _purgeForeignBranchLocalData() already parses (gs_draft_<date>_<op>_<branch>_<type>).
 function draftKey(date,br,type){return 'gs_draft_'+date+'_'+_opKey()+'_'+br+'_'+type;}
+var _draftSaveWarned=false;
+function _isQuotaErr(e){return !!e&&(e.name==='QuotaExceededError'||e.name==='NS_ERROR_DOM_QUOTA_REACHED'||e.code===22||e.code===1014);}
 function saveDraft(){
   try{ if(!today||!capBranch||!capType)return;
     var k=draftKey(today,capBranch,capType), v=JSON.stringify({data:capData,ts:nowStamp(),by:operator});
     // Draft lines carry their photos inline, so this is the write most likely to hit the phone's
     // storage limit - and it used to fail in silence, leaving the reading in memory only (gone if
-    // the app restarts). Prune old local history and retry; if it still won't fit, say so.
-    try{localStorage.setItem(k,v);}
+    // the app restarts). On a quota error prune old local history and retry; if it still fails,
+    // say so - once, until a save works again (toasts here stay until tapped).
+    try{localStorage.setItem(k,v);_draftSaveWarned=false;}
     catch(e){
-      if(_pruneOldLocalHistory()>0){try{localStorage.setItem(k,v);return;}catch(e2){}}
-      toast('Phone storage is full — this reading is NOT saved on the phone yet. Review & commit it now so it isn\'t lost.',true);
+      if(_isQuotaErr(e)&&_pruneOldLocalHistory()>0){try{localStorage.setItem(k,v);_draftSaveWarned=false;return;}catch(e2){e=e2;}}
+      console.error('saveDraft failed:',e&&e.name,e&&e.message);
+      if(!_draftSaveWarned){
+        _draftSaveWarned=true;
+        toast(_isQuotaErr(e)?'Phone storage is full — this reading is NOT saved on the phone yet. Review & commit it now so it isn\'t lost.'
+          :'This reading could not be saved on the phone ('+((e&&e.name)||'error')+'). Review & commit it now so it isn\'t lost.',true);
+      }
     }
   }catch(e){}
 }
@@ -17009,7 +17049,9 @@ function buildCountDocAsync(src){
       }
     }
 
-    var times=(st.count||[]).filter(inBr).map(function(r){return r._time;}).filter(Boolean).sort();
+    // Only times on this report's own date - lines added later in a Backdate Stock Take are
+    // stamped with the day they were entered, which would stretch the range into the next day.
+    var times=(st.count||[]).filter(inBr).map(function(r){return r._time;}).filter(function(t){return t&&String(t).slice(0,10)===src.date;}).sort();
     var timeRange=times.length?(times[0]+(times.length>1?' \u2192 '+times[times.length-1]:'')):'\u2014';
     var sig=src.sig||{};
     var signedBy=src.signedBy||{};
@@ -17179,7 +17221,7 @@ function buildCountCSVAsync(src){
     var pv=(st.private||[]).filter(inBr);
     var recvRows=(st.received||[]).filter(inBr);
     var residualRows=(st.residual||[]).filter(function(r){return !r.Branch||!_b||r.Branch===_b;});
-    var times=(st.count||[]).filter(inBr).map(function(r){return r._time;}).filter(Boolean).sort();
+    var times=(st.count||[]).filter(inBr).map(function(r){return r._time;}).filter(function(t){return t&&String(t).slice(0,10)===src.date;}).sort(); // same date filter as the PDF
     var timeRange=times.length?(times[0]+(times.length>1?' -> '+times[times.length-1]:'')):'';
 
     row('Gas Sales - Daily Stock Count');
