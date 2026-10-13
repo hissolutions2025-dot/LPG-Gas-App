@@ -2435,8 +2435,13 @@ function _updateCaptureLiveRowFields(kind,rowRid,fields){
     if(!res.data||!res.data.length){console.error('_updateCaptureLiveRowFields: no capture_live_rows match for kind',kind,'row_id',rowRid,'- mirror row not updated yet, will retry');throw new Error('no capture_live_rows match for kind '+kind+' row_id '+rowRid);}
     return Promise.all(res.data.map(function(rec){
       var updatedRow=Object.assign({},rec.row,fields);
-      return sb.from('capture_live_rows').update({row:updatedRow}).eq('id',rec.id).then(function(ures){
+      // .select('id') + row check: with no UPDATE permission (the case until 2026-10-13) the
+      // database silently changes nothing and reports no error, so every photo-link write-back
+      // looked successful while the app's copy never got its link - and the photo recovery
+      // re-uploaded the same photos at every Manager/Owner sign-in.
+      return sb.from('capture_live_rows').update({row:updatedRow}).eq('id',rec.id).select('id').then(function(ures){
         if(ures.error){console.error('_updateCaptureLiveRowFields update failed:',ures.error.message);throw new Error('capture_live_rows update failed: '+ures.error.message);}
+        if(!ures.data||!ures.data.length){console.error('_updateCaptureLiveRowFields: update changed no rows for',rec.id);throw new Error('capture_live_rows update changed nothing (no permission?)');}
       });
     }));
   },function(e){console.error('_updateCaptureLiveRowFields rejected:',e&&e.message);throw e;});
@@ -5537,14 +5542,16 @@ function _rid(){return 'r'+Date.now().toString(36)+Math.random().toString(36).sl
 // _photoQueueWriteBack (see its own comment) which needs to know whether to keep an entry
 // queued for retry. Adding `return` here is purely additive - no existing bare-statement
 // caller is affected by suddenly having a return value available.
-function adjustSheetRow(sheet,rowId,updates){
+// quiet: no toast - for the photo queue's background write-back, which retries on its own. Its
+// "Correction saved locally..." toast every 45s read to operators like their capture had failed.
+function adjustSheetRow(sheet,rowId,updates,quiet){
   if(!rowId)return Promise.resolve(true); // no id to match on (predates row tracking) - nothing to correct, not a failure
   return apiPost('adjustRow',{sheet:sheet,rowId:rowId,updates:updates}).then(function(res){
     var ok=!!(res&&res.ok);
-    if(!ok)toast('Correction saved locally, but could not update the '+sheet+' sheet row (it may predate row tracking) - see Adjustments tab',true);
+    if(!ok&&!quiet)toast('Correction saved locally, but could not update the '+sheet+' sheet row (it may predate row tracking) - see Adjustments tab',true);
     return ok;
   }).catch(function(){
-    toast('Correction saved locally, but could not reach the server to update the '+sheet+' sheet row',true);
+    if(!quiet)toast('Correction saved locally, but could not reach the server to update the '+sheet+' sheet row',true);
     return false;
   });
 }
@@ -5573,11 +5580,11 @@ function adjustResidualRow(rowId,updates){
 // ONLY id+photoLink, no status/upliftDN/returnDN - the backend now only touches fields it
 // actually receives (fixed in the same v19 pass, see gas-sales-v19.gs), so this can never
 // blank an existing Uplift/Return DN it has no business touching.
-function adjustFaultyRow(id,photoLink){
+function adjustFaultyRow(id,photoLink,quiet){
   if(!id)return Promise.resolve(true);
   return apiPost('faultyUpdate',{id:id,photoLink:photoLink}).then(function(res){
     var ok=!!(res&&res.ok);
-    if(!ok)toast('Correction saved locally, but could not update the Faulty sheet row (backend may need updating to v19) - see Adjustments tab',true);
+    if(!ok&&!quiet)toast('Correction saved locally, but could not update the Faulty sheet row (backend may need updating to v19) - see Adjustments tab',true);
     return ok;
   }).catch(function(){
     toast('Correction saved locally, but could not reach the server to update the Faulty sheet row',true);
@@ -7493,11 +7500,20 @@ function _pushCaptureLiveRows(kind,rows,br){
   },function(e){console.error('_pushCaptureLiveRows('+kind+') rejected:',e&&e.message);_captureLiveQueue(payload);});
 }
 function _captureLiveQueue(payload){
-  try{
-    var q=JSON.parse(localStorage.getItem('gs_capturelive_queue')||'[]');
-    q.push(payload);
-    localStorage.setItem('gs_capturelive_queue',JSON.stringify(q.slice(-200)));
-  }catch(e){}
+  var q;try{q=JSON.parse(localStorage.getItem('gs_capturelive_queue')||'[]');}catch(e){q=[];}
+  q.push(payload);q=q.slice(-200);
+  try{localStorage.setItem('gs_capturelive_queue',JSON.stringify(q));return;}catch(e){}
+  // Too big for the phone's storage - keep the rows, drop the photo bytes (the photo queue holds
+  // its own copy and attaches the links once uploaded). This used to fail in silence, losing the
+  // whole capture from the app while the Sheet still got it.
+  var lean=q.map(function(p){return (p||[]).map(function(rec){
+    var row=Object.assign({},rec.row);
+    Object.keys(_HEAVY_PHOTO_FIELDS).forEach(function(f){if(Array.isArray(row[f])&&row[f].length)row[f]=[];});
+    return Object.assign({},rec,{row:row});
+  });});
+  try{localStorage.setItem('gs_capturelive_queue',JSON.stringify(lean));return;}catch(e){}
+  console.error('_captureLiveQueue: could not keep the capture for retry - storage full');
+  toast('This entry could not be kept on the phone for upload (phone storage full). Keep the phone online and tell your Manager.',true);
 }
 function _captureLiveFlush(){
   var q;try{q=JSON.parse(localStorage.getItem('gs_capturelive_queue')||'[]');}catch(e){return;}
@@ -9276,7 +9292,12 @@ async function rCommit(){
     if(newRows.length===0){toast('Nothing to commit',true);return;}
     store.received=(store.received||[]).concat(newRows);
     syncPush('Received',syncRowsReceived(newRows,rBranch));
-    _pushCaptureLiveRows('received',newRows,rBranch);
+    // Live copy: the delivery's photo set rides on its FIRST line only (it is uploaded once and
+    // its link is written to every line by the photo queue). Copying the photos onto every line
+    // made one delivery a ~7MB upload (17 lines x 2 photos) - too big to get through on a weak
+    // signal, and too big to keep on the phone for a retry, so it was silently lost (Kleinmond
+    // 12 Oct: in the Sheet, never in the app).
+    _pushCaptureLiveRows('received',newRows.map(function(r,i){return i===0?r:Object.assign({},r,{photos:[],_photoSetRid:newRows[0]._rid});}),rBranch);
     var _queuedPhotoCount=0;
     if((sup.photos||[]).length){
       _photoQueueAdd({capType:'received',branch:rBranch,date:today,rowRids:newRows.map(function(r){return r._rid;}),category:'Received',photos:sup.photos});
@@ -13410,7 +13431,7 @@ function _photoQueueAdd(entry){
   var newKey=_rowKey(entry);
   var q=_photoQueueLoad().filter(function(e){return !(e.capType===entry.capType && _rowKey(e)===newKey);});
   entry.id='p'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
-  entry.attempts=0;entry.lastAttemptAt=null;entry.lastError=null;
+  entry.attempts=0;entry.lastAttemptAt=null;entry.lastError=null;entry.queuedAt=Date.now();
   q.push(entry);
   _photoQueueSave(q);
   _updatePhotoQueuePendingBadge();
@@ -13433,10 +13454,28 @@ function _photoQueueAuditRowTag(e){
   var rid=(e.rowRids||[e.rowRid]).filter(Boolean).join(',');
   return (e.capType||'?')+' '+(e.branch||'?')+(rid?(' row '+rid):'');
 }
+// Saves an uploaded set's links on its queue entry and drops the photo bytes (they're on Drive
+// now) - frees phone storage and guarantees the set is never uploaded again.
+function _photoQueueSetLinks(id,links){
+  var q=_photoQueueLoad();
+  var e=q.filter(function(x){return x.id===id;})[0];
+  if(!e)return;
+  e.links=links;e.linksAt=Date.now();e.photos=[];
+  if(!e.queuedAt)e.queuedAt=Date.now();
+  _photoQueueSave(q);
+}
+var PHOTO_LINK_GIVE_UP_MS=3*24*3600*1000;
 function _photoQueueMarkAttempt(id,err){
   var q=_photoQueueLoad();
   var e=q.filter(function(x){return x.id===id;})[0];
   if(!e)return;
+  // Already on Drive but its line still can't be found after 3 days (the line never reached the
+  // app, or was removed): stop retrying for ever, and record the links so nothing is lost.
+  if(e.links && Date.now()-(e.queuedAt||e.linksAt||Date.now())>PHOTO_LINK_GIVE_UP_MS){
+    auditLog('Photo link not attached',_photoQueueAuditRowTag(e)+' - gave up after 3 days ('+(err||'unknown error')+'). Photos on Drive: '+e.links,undefined,undefined,'failure',e.branch);
+    _photoQueueRemove(id);
+    return;
+  }
   e.attempts=(e.attempts||0)+1;e.lastAttemptAt=nowStamp();e.lastError=err||null;
   // Audit-logged ONCE per entry, not on every retry - this can legitimately retry every 45s
   // for hours (offline overnight, a genuinely stuck row), and nobody wants an Audit Log
@@ -13528,8 +13567,8 @@ function _photoQueueWriteBack(entry,links){
     // META prefix, not a RowId - so its wire shape takes the links directly, not an
     // {updates} object (see adjustFaultyRow's own comment).
     var writeOne=(entry.capType==='faulty')
-      ? function(rid){return adjustFaultyRow(rid,links);}
-      : function(rid){return adjustSheetRow(sheet,rid,updates);};
+      ? function(rid){return adjustFaultyRow(rid,links,true);}
+      : function(rid){return adjustSheetRow(sheet,rid,updates,true);};
     sheetWrite=Promise.all(rowRids.map(writeOne)).then(function(results){
       // .some(r=>r!==true), not indexOf(false) (code-review fix) - indexOf only ever
       // catches a literal `false`; a future writer that resolves `undefined` on some path
@@ -13594,7 +13633,11 @@ function _photoQueueProcess(startIndex){
     _photoQueueBusy=false;
     _photoQueueProcess(idx+1);
   },60000);
-  uploadPhotoSet(entry.category,entry.branch,entry.photos).then(function(links){
+  // Upload ONCE per entry. The links are saved on the entry as soon as the upload succeeds, so a
+  // failed write-back (Sheet busy, or the line not in the live copy yet) retries only the
+  // write-back. It used to re-upload the whole photo set on every 45s retry - one stuck Kleinmond
+  // delivery put 100+ duplicate photos in Drive on 12 Oct alone.
+  (entry.links?Promise.resolve(entry.links):uploadPhotoSet(entry.category,entry.branch,entry.photos)).then(function(links){
     if(settled)return; // watchdog already fired and moved on - don't process this a second time
     if(!links){
       settled=true;clearTimeout(watchdog);
@@ -13603,6 +13646,7 @@ function _photoQueueProcess(startIndex){
       _photoQueueProcess(idx+1); // move on to the next entry instead of retrying this one immediately
       return;
     }
+    if(!entry.links){entry.links=links;_photoQueueSetLinks(entry.id,links);}
     return _photoQueueWriteBack(entry,links).then(function(){
       if(settled)return;
       settled=true;clearTimeout(watchdog);
@@ -13664,6 +13708,7 @@ window.addEventListener('online',_closeDayFlushQueue);
 // nothing is pending.
 var _PHOTO_CATEGORY={manifold:'Manifold',refill:'Refill',private:'Private',received:'Received',residual:'Residual'};
 var _reconcileBusy=false;
+var _reconcileLinkCache={};
 // Human-readable reason the last reconcile pass left photos pending (set at the deepest failing
 // step in _reconcileOnePhoto/uploadPhotoSet). Surfaced in the toast + audit so "0 recovered" is
 // actionable - Drive upload failed vs Sheet write failed vs timeout vs offline.
@@ -13677,6 +13722,7 @@ function reconcilePhotos(opts){
   _reconcileBusy=true;
   var recovered=0, failed=0, total=0;
   _lastReconcileReason='';_lastPhotoUploadErr=null; // fresh reason for this pass
+  _reconcileLinkCache={}; // photo set -> links, so a set shared by several lines uploads once per pass
   return sb.rpc('pending_photo_uploads').then(function(res){
     if(res.error)throw new Error('pending_photo_uploads rpc failed: '+res.error.message);
     var pending=res.data||[];
@@ -13717,13 +13763,18 @@ function _reconcileOnePhoto(d){
     var photos=rowObj[d.photo_field]||[];
     if(!photos.length){_lastReconcileReason='a pending row had no photo bytes to upload';return false;}
     var category=_PHOTO_CATEGORY[d.kind]||'Other';
-    return uploadPhotoSet(category, d.branch, photos).then(function(links){
+    // Every line of one Stock Received delivery carries the same photos - upload the set once and
+    // reuse its links for the other lines, instead of one Drive copy per line.
+    var fp=photos.map(function(p){p=String(p||'');return p.length+':'+p.slice(-64);}).join('|');
+    var cached=_reconcileLinkCache[fp];
+    return (cached?Promise.resolve(cached):uploadPhotoSet(category, d.branch, photos)).then(function(links){
       if(!links){_lastReconcileReason=_lastPhotoUploadErr||'Google Drive upload failed';return false;} // upload failed this attempt - left pending, next pass retries
+      _reconcileLinkCache[fp]=links;
       var sheet=PHOTO_QUEUE_SHEET[d.kind];
       var linkField=PHOTO_QUEUE_LINK_FIELD[d.kind];
       var localField=PHOTO_QUEUE_LOCAL_FIELD[d.kind];
       var sheetUpdates={}; sheetUpdates[linkField]=links;
-      var sheetWrite=sheet?adjustSheetRow(sheet,d.row_id,sheetUpdates):Promise.resolve(true);
+      var sheetWrite=sheet?adjustSheetRow(sheet,d.row_id,sheetUpdates,true):Promise.resolve(true); // quiet - the pass reports its own result
       var mirrorWrite;
       if(d.kind==='manifold'){
         mirrorWrite=_updateManifoldLiveRowFields(d.row_id,{_photoLink:links});
