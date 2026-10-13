@@ -2267,7 +2267,7 @@ function _fetchPendingOverrideLiveDetails(){
       var live=p.row_rid&&byRid[p.row_rid];
       if(!live)return;
       p._liveBrand=live.brand;p._liveGasType=live.gasType;p._liveScale=live.scale;
-      p._liveTare=live.tare;p._livePhoto=Array.isArray(live.photo)?live.photo:[];p._liveStage=live.stage||'Opening';
+      p._liveTare=live.tare;p._livePhoto=Array.isArray(live.photo)?live.photo:[];p._livePhotoLink=String(live._photoLink||'');p._liveStage=live.stage||'Opening';
     });
   },function(e){console.error('_fetchPendingOverrideLiveDetails rejected:',e&&e.message);});
 }
@@ -2327,7 +2327,15 @@ function renderPendingOverrides(){
     var expLine=_pendingOverrideExpectedLine(item);
     var hasDetail=item._liveBrand!==undefined||item._liveScale!==undefined;
     var detailLine=hasDetail?((item._liveBrand||'')+' '+(item._liveGasType||'')+' · Scale '+(item._liveScale!=null?num(item._liveScale).toFixed(2):'—')+'kg · Tare '+(item._liveTare!=null?num(item._liveTare).toFixed(2):'—')+'kg'):'';
-    var photoHtml=(item._livePhoto&&item._livePhoto.length)?('<div style="margin:6px 0">'+item._livePhoto.map(function(s){return '<img src="'+s+'" style="max-height:70px;border-radius:6px;margin-right:4px">';}).join('')+'</div>'):'';
+    // Once a photo is in Drive the database keeps only its link (the copy becomes a placeholder
+    // icon - see migration 20261013020000), so show the Drive link(s); a real thumbnail only while
+    // the photo is still waiting to upload.
+    var _ovLinks=String(item._livePhotoLink||'').split(',').map(function(u){return u.trim();}).filter(Boolean);
+    var _ovRaw=(item._livePhoto||[]).filter(function(s){return String(s).indexOf('data:image/svg')!==0;});
+    var photoHtml=(_ovLinks.length||_ovRaw.length)?('<div style="margin:6px 0">'+
+      _ovRaw.map(function(s){return '<img src="'+s+'" style="max-height:70px;border-radius:6px;margin-right:4px">';}).join('')+
+      _ovLinks.map(function(u,i){return '<a href="'+u+'" target="_blank" rel="noopener" style="display:inline-block;margin:2px 4px 2px 0;padding:6px 10px;border:1px solid var(--line);border-radius:8px;text-decoration:none">\ud83d\udcf7 Open photo'+(_ovLinks.length>1?' '+(i+1):'')+'</a>';}).join('')+
+      '</div>'):'';
     var othersCount=_manifoldPendingOverrides.filter(function(x){return x.id!==item.id && x.branch===item.branch && item.submitted_by_name_snapshot && x.submitted_by_name_snapshot===item.submitted_by_name_snapshot;}).length;
     var patternNote=othersCount?('<div style="font-size:11px;color:var(--amber);margin-top:4px">'+othersCount+' other pending item'+(othersCount===1?'':'s')+' from this operator/branch</div>'):'';
     html+='<div class="histSection" style="border-left:4px solid '+color+';border-top:1px solid var(--line);border-right:1px solid var(--line);border-bottom:1px solid var(--line)">'+
