@@ -5493,40 +5493,48 @@ function apiPost(action,extra){
     return r.json();
   });
 }
-// Uploads each captured photo (data URI) to Drive via the shared 'photoUpload' backend
-// action, returns a comma-joined string of the links that succeeded. Never throws - a
-// failed upload (e.g. no signal at commit time) is just skipped so the row still commits;
-// it ends up with fewer (or zero) links than photos actually taken, not blocked entirely.
-async function uploadPhotoSet(category, br, photos){
-  if(!photos || !photos.length) return '';
-  var links=[];
+// Uploads each captured photo (data URI) to Drive via the shared 'photoUpload' backend action.
+// uploadPhotoSlots works per photo: slots[i] is photos[i]'s Drive link ('' = not uploaded yet).
+// Pass the slots back in to retry ONLY the photos still missing - a set is only complete when
+// every slot has a link. Never throws.
+//
+// Root-caused 2026-10-13: 7 Helderberg Manifold lines kept 1 link for 2 photos, yet all 7 missing
+// photos were in Drive. The app gave up on each upload after 25s, but Google kept going and saved
+// the file (one took 31s); the app recorded only the links it got back, and "1 of 2" counted as
+// done, so nothing ever retried. Uploads now run in the background (the photo queue / photo
+// recovery), not inside Commit, so they can wait PHOTO_UPLOAD_TIMEOUT_MS; and a partial set is
+// kept and retried for the missing photo only, never treated as finished.
+var PHOTO_UPLOAD_TIMEOUT_MS=60000;
+async function uploadPhotoSlots(category, br, photos, slots){
+  photos=photos||[];
+  slots=(slots&&slots.length===photos.length)?slots.slice():photos.map(function(){return '';});
   for(var i=0;i<photos.length;i++){
+    if(slots[i])continue;
     var m=/^data:([^;]+);base64,(.*)$/.exec(photos[i]||'');
-    if(!m) continue;
+    if(!m||m[1].indexOf('svg')>-1)continue; // nothing uploadable (a placeholder left after the database copy was dropped)
     try{
-      // 25s cap per photo, added 2026-09-18 alongside _capCommitReal's new catch block (same
-      // "Coenie... app did not want to accept them" investigation) - apiPost's underlying
-      // fetch has no timeout of its own, and this is awaited one photo at a time inside the
-      // capture commit's own try block, so a genuinely stalled upload (weak signal, large
-      // base64 payload, slow proxy) could hang the whole commit indefinitely - no error, no
-      // toast, the button just never re-enables. Promise.race gives up on THAT photo after
-      // 25s and moves on, same "skip this one, keep the commit going" philosophy the catch
-      // below already has for an outright failure - a late-resolving background fetch is
-      // simply ignored, not cancelled (apiPost has no abort signal to pass through).
+      // apiPost's fetch has no timeout of its own - a stalled request (weak signal, phone
+      // backgrounded) would otherwise hang here forever. A late reply is ignored, not cancelled.
       var res=await Promise.race([
         apiPost('photoUpload',{branch:br,date:today,category:category,mimeType:m[1],dataBase64:m[2]}),
-        new Promise(function(_,rej){setTimeout(function(){rej(new Error('photo upload timed out'));},25000);})
+        new Promise(function(_,rej){setTimeout(function(){rej(new Error('photo upload timed out'));},PHOTO_UPLOAD_TIMEOUT_MS);})
       ]);
-      if(res && res.ok && res.url){ links.push(res.url); }
+      if(res && res.ok && res.url){ slots[i]=res.url; }
       else { _lastPhotoUploadErr = (res && (res.error||res.message)) ? ('backend rejected upload: '+(res.error||res.message)) : 'backend rejected the upload (no link returned) — likely a Google Drive/Apps Script quota or deploy issue'; }
     }catch(e){
-      // Record WHY, instead of only swallowing it - so the reconciler can tell the user timeout
-      // vs offline vs backend, not just "0 recovered". Still skips this photo and keeps going.
+      // Record WHY, so the reconciler can tell the user timeout vs offline vs backend.
       var msg=(e&&e.message)||'unknown error';
-      _lastPhotoUploadErr = /timed out/.test(msg) ? 'upload timed out (25s) — weak connection or a very large photo' : ('network/offline error — '+msg);
+      _lastPhotoUploadErr = /timed out/.test(msg) ? ('upload timed out ('+Math.round(PHOTO_UPLOAD_TIMEOUT_MS/1000)+'s) — weak connection or a very large photo') : ('network/offline error — '+msg);
     }
   }
-  return links.join(', ');
+  return slots;
+}
+// The whole set's links joined, or '' unless EVERY photo uploaded.
+async function uploadPhotoSet(category, br, photos){
+  photos=photos||[];
+  if(!photos.length)return '';
+  var slots=await uploadPhotoSlots(category, br, photos);
+  return slots.filter(Boolean).length===photos.length?slots.join(', '):'';
 }
 // Last photo-upload failure reason (set by uploadPhotoSet, read by the reconciler for its toast
 // + audit line). Best-effort, last-writer-wins across a batch - enough to point at the cause.
@@ -6008,6 +6016,7 @@ function _finishLogin(u,b){
   _countFlushQueue();
   _popRescuePurgeOthers();
   setTimeout(_repairBackdateNamesInSheet,5000);
+  setTimeout(_repairPhotoLinksInSheet,7000);
   _updateCountPendingBadge();
   _updateMinFullHoldBadge();
   _updateMaxThresholdBadge();
@@ -8258,6 +8267,37 @@ function _repairBackdateNamesInSheet(){
   }).catch(function(e){
     console.error('_repairBackdateNamesInSheet failed (will retry next Owner sign-in):',e&&e.message);
     auditLog('Sheet counts re-send failed','Will retry at the next Owner sign-in - '+((e&&e.message)||'error'),null,null,'failure');
+  });
+}
+// ONE-TIME REPAIR (2026-10-13) - safe to delete once app_config shows it done. 7 Helderberg
+// Manifold lines (10-30 Sep) had 2 photos but only 1 link; the missing photos were found in Drive
+// and both links attached in the database (migration 20261013030000). This writes the same links to
+// each line's Manifold Sheet row. Runs once, from the first Manager/Owner sign-in; a network
+// failure leaves it undone for the next sign-in, a row the Sheet can't find is recorded and skipped.
+var _PHOTO_LINKS_REPAIR_KEY='repair_photo_links_20261013';
+var _PHOTO_LINKS_REPAIR_RIDS=['rmu6jon8fbd6pug','rmtvmk9az4kaj5c','rmtvmk9b09zgtyh','rmtvmk9b03p0gfn','rmu28wbjwixebo1','rmulc92pkkkk9h4','rmuo7djsi0i5bfy'];
+function _repairPhotoLinksInSheet(){
+  if(role!=='Owner'&&role!=='Manager')return;
+  sb.from('app_config').select('value').eq('key',_PHOTO_LINKS_REPAIR_KEY).maybeSingle().then(function(res){
+    if(res.error||(res.data&&res.data.value&&res.data.value.done))return;
+    return sb.from('manifold_live_rows_lite').select('row_id,row').in('row_id',_PHOTO_LINKS_REPAIR_RIDS).then(function(r){
+      if(r.error)throw new Error(r.error.message);
+      var ok=[],notFound=[];
+      return (r.data||[]).reduce(function(chain,x){
+        return chain.then(function(){
+          var link=(x.row&&x.row._photoLink)||'';
+          if(!link)return;
+          return apiPost('adjustRow',{sheet:'Manifold',rowId:x.row_id,updates:{PhotoLink:link}}).then(function(resp){
+            if(resp&&resp.ok)ok.push(x.row_id);else notFound.push(x.row_id);
+          }); // a network error rejects - the whole repair is retried next sign-in
+        });
+      },Promise.resolve()).then(function(){
+        _pushAppConfig(_PHOTO_LINKS_REPAIR_KEY,{done:true,at:new Date().toISOString(),by:operator,ok:ok,notFound:notFound});
+        auditLog('Sheet photo links repaired','Second Manifold photo link written to '+ok.length+' Sheet row(s)'+(notFound.length?(' · not found on the Sheet: '+notFound.join(', ')):''));
+      });
+    });
+  }).catch(function(e){
+    console.error('_repairPhotoLinksInSheet failed (will retry next Manager/Owner sign-in):',e&&e.message);
   });
 }
 function _countQueueKey(){return 'gs_stockcount_pending';}
@@ -13468,6 +13508,15 @@ function _photoQueueAuditRowTag(e){
   var rid=(e.rowRids||[e.rowRid]).filter(Boolean).join(',');
   return (e.capType||'?')+' '+(e.branch||'?')+(rid?(' row '+rid):'');
 }
+// Keeps the links of the photos that did upload (slots[i] = photos[i]'s link, '' = still missing),
+// so the next attempt uploads only the missing ones instead of the whole set again.
+function _photoQueueSetSlots(id,slots){
+  var q=_photoQueueLoad();
+  var e=q.filter(function(x){return x.id===id;})[0];
+  if(!e)return;
+  e.slots=slots;
+  _photoQueueSave(q);
+}
 // Saves an uploaded set's links on its queue entry and drops the photo bytes (they're on Drive
 // now) - frees phone storage and guarantees the set is never uploaded again.
 function _photoQueueSetLinks(id,links){
@@ -13607,12 +13656,9 @@ function _photoQueueMirrorWrite(entry,links,rowRids,localField){
   return Promise.all(rowRids.map(function(rid){return _updateCaptureLiveRowFields(entry.capType,rid,mf);}));
 }
 // Processes one queue entry at a time (never parallel - a burst of retries hitting the same
-// flaky connection at once helps nobody). uploadPhotoSet already skips any individual photo
-// that fails and returns whatever DID succeed joined together - an empty return with photos
-// present means everything failed this attempt (kept queued, retried later); any non-empty
-// return is treated as this entry's best achievable result and the entry is removed, matching
-// the exact same "partial success is still success" behavior the old at-commit-time blocking
-// path already had (this isn't a new leniency, just preserving what existed).
+// flaky connection at once helps nobody). An entry is only finished when EVERY photo in it has a
+// Drive link: the links that did work are kept on the entry (entry.slots) and the next attempt
+// uploads only the missing photo(s) - see uploadPhotoSlots for why "partial is done" was wrong.
 var _photoQueueBusy=false;
 // Root-caused 2026-09-25: even after signing out and back in (which flushes the queue again
 // via _finishLogin), a Manifold Opening's photos still never reached the Sheet - sign-out is
@@ -13640,22 +13686,31 @@ function _photoQueueProcess(startIndex){
   var entry=q[idx];
   _photoQueueBusy=true;
   var settled=false;
+  // Long enough for every photo still to upload at PHOTO_UPLOAD_TIMEOUT_MS each, plus the write-back.
+  var _wdMs=entry.links?60000:(20000+PHOTO_UPLOAD_TIMEOUT_MS*Math.max(1,(entry.photos||[]).length));
   var watchdog=setTimeout(function(){
     if(settled)return;
     settled=true;
-    _photoQueueMarkAttempt(entry.id,'timed out waiting for a response (60s) - possibly backgrounded mid-request');
+    _photoQueueMarkAttempt(entry.id,'timed out waiting for a response ('+Math.round(_wdMs/1000)+'s) - possibly backgrounded mid-request');
     _photoQueueBusy=false;
     _photoQueueProcess(idx+1);
-  },60000);
+  },_wdMs);
   // Upload ONCE per entry. The links are saved on the entry as soon as the upload succeeds, so a
   // failed write-back (Sheet busy, or the line not in the live copy yet) retries only the
   // write-back. It used to re-upload the whole photo set on every 45s retry - one stuck Kleinmond
   // delivery put 100+ duplicate photos in Drive on 12 Oct alone.
-  (entry.links?Promise.resolve(entry.links):uploadPhotoSet(entry.category,entry.branch,entry.photos)).then(function(links){
+  var _partialMsg=null;
+  (entry.links?Promise.resolve(entry.links):uploadPhotoSlots(entry.category,entry.branch,entry.photos||[],entry.slots).then(function(slots){
+    var got=slots.filter(Boolean).length, want=(entry.photos||[]).length;
+    if(got)_photoQueueSetSlots(entry.id,slots); // keep what worked (even if the watchdog already moved on) - only missing photos are ever retried
+    if(want&&got===want)return slots.join(', ');
+    _partialMsg=got?(got+' of '+want+' photo(s) uploaded - the rest will be retried'):null;
+    return '';
+  })).then(function(links){
     if(settled)return; // watchdog already fired and moved on - don't process this a second time
     if(!links){
       settled=true;clearTimeout(watchdog);
-      _photoQueueMarkAttempt(entry.id,'no photo(s) uploaded this attempt');
+      _photoQueueMarkAttempt(entry.id,_partialMsg||'no photo(s) uploaded this attempt');
       _photoQueueBusy=false;
       _photoQueueProcess(idx+1); // move on to the next entry instead of retrying this one immediately
       return;
@@ -13773,16 +13828,20 @@ function _reconcileOnePhoto(d){
     var rowObj=res.data.row||{};
     // Another device (or a prior pass) may have linked this row between the rpc list and now -
     // if so, skip, so we never upload a duplicate to Drive or overwrite a good link.
-    if((rowObj._photoLink&&String(rowObj._photoLink).trim())||(rowObj.photoLinks&&String(rowObj.photoLinks).trim()))return false;
+    // ...but "linked" means a link for EVERY photo - a row with 1 link for 2 photos still needs work.
     var photos=rowObj[d.photo_field]||[];
+    var haveLinks=(String(rowObj._photoLink||rowObj.photoLinks||'').match(/https?:\/\//g)||[]).length;
+    if(haveLinks>=photos.length)return false;
+    if(photos.some(function(p){return String(p).indexOf('data:image/svg')===0;})){_lastReconcileReason='a row is missing a photo link, but its photo is no longer stored to upload again';return false;}
     if(!photos.length){_lastReconcileReason='a pending row had no photo bytes to upload';return false;}
     var category=_PHOTO_CATEGORY[d.kind]||'Other';
     // Every line of one Stock Received delivery carries the same photos - upload the set once and
     // reuse its links for the other lines, instead of one Drive copy per line.
     var fp=photos.map(function(p){p=String(p||'');return p.length+':'+p.slice(-64);}).join('|');
     var cached=_reconcileLinkCache[fp];
+    // uploadPhotoSet returns '' unless every photo uploaded - a partial set is never written.
     return (cached?Promise.resolve(cached):uploadPhotoSet(category, d.branch, photos)).then(function(links){
-      if(!links){_lastReconcileReason=_lastPhotoUploadErr||'Google Drive upload failed';return false;} // upload failed this attempt - left pending, next pass retries
+      if(!links){_lastReconcileReason=_lastPhotoUploadErr||'Google Drive upload failed';return false;} // not all uploaded this attempt - left pending, next pass retries
       _reconcileLinkCache[fp]=links;
       var sheet=PHOTO_QUEUE_SHEET[d.kind];
       var linkField=PHOTO_QUEUE_LINK_FIELD[d.kind];
