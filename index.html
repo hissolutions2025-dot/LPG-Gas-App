@@ -2594,8 +2594,11 @@ let operator=null, branch=null, role=null, today='';
 function _sessionBranch(){return branch;}
 var currentProfile=null;
 // ===== TEST-ONLY date control (demo aid; remove for production) =====
-function getDateOffset(){try{return parseInt(localStorage.getItem('gs_test_offset')||'0',10)||0;}catch(e){return 0;}}
-function setDateOffset(n){try{localStorage.setItem('gs_test_offset',String(n));}catch(e){}}
+// Per person (was one setting for the whole phone): an Owner testing on an operator's phone must
+// never leave every other user on it saving under a shifted date.
+function _testOffsetKey(){return 'gs_test_offset_'+_opKey();}
+function getDateOffset(){try{return parseInt(localStorage.getItem(_testOffsetKey())||'0',10)||0;}catch(e){return 0;}}
+function setDateOffset(n){try{localStorage.setItem(_testOffsetKey(),String(n));}catch(e){}}
 function computeToday(){var d=new Date();d.setDate(d.getDate()+getDateOffset());return d.toISOString().slice(0,10);}
 function refreshTestDateUI(){
   var box=document.getElementById('testDateBox');if(!box)return;
@@ -5891,6 +5894,7 @@ function _finishLogin(u,b){
     return;
   }
   currentProfile=u;
+  try{localStorage.removeItem('gs_test_offset');}catch(e){} // old phone-wide test date - see _testOffsetKey
   operator=u.name;role=u.level;branch=b;today=computeToday();currentPerms=userPerms(u);
   // Branch separation guarantee: every screen keeps its OWN branch selector, and most are declared
   // with a hardcoded 'Helderberg' default. Reset them all to the signed-in branch at every login so
@@ -5999,10 +6003,14 @@ function _finishLogin(u,b){
   _armIdleTimer();
   _usageStart();
 }
-function logout(){
+function logout(afterMsg){
+  if(typeof afterMsg!=='string')afterMsg='';
   if(operator)auditLog('Logout','Signed out');
   _usageEnd();
-  sb.auth.signOut();
+  // signOut() only drops the saved session once the server confirms it - with no signal it fails
+  // and the previous person's session stays saved, so the next app open would sign THEM back in.
+  // _signOutRestartFresh also removes the saved session directly.
+  var _so=Promise.resolve().then(function(){return sb.auth.signOut();}).catch(function(){});
   operator=null;branch=null;role=null;currentProfile=null;_liveExpectedOpening={};_sessionGen++;
   // Shared operator devices: one session's IN-MEMORY data must not bleed into the next login
   // before a page reload. logout() used to reset identity but leave `store` (the report's data
@@ -6031,8 +6039,33 @@ function logout(){
   idleLockActive=false;
   var _ilo=document.getElementById('idleLockOverlay');if(_ilo)_ilo.style.display='none';
   document.getElementById('who').style.display='none';document.getElementById('loginPin').value='';document.getElementById('loginUser').value='';loginUserChanged();
+  try{[].slice.call(document.querySelectorAll('.modal.show')).forEach(function(m){m.classList.remove('show');});dismissToast();}catch(e){}
   initLoginScreen();
   show('login');
+  _signOutRestartFresh(_so,afterMsg);
+}
+// Shared phones: every sign-out restarts the app from scratch, so NOTHING the previous person had
+// open or typed - a popup, a half-drawn signature, picked photos, unlocked Admin tabs, the last
+// message on screen, cached lists - is still in memory when the next person signs in. What
+// belongs on the phone survives the restart: committed captures waiting to upload, the branch's
+// shared day data, and each person's own unsaved drafts, which only ever come back for that same
+// person. Waits for the sign-out (and the Logout audit entry) to reach the server, at most 2.5s.
+function _signOutRestartFresh(signOutPromise,afterMsg){
+  var cover=document.getElementById('signOutCover');
+  if(!cover){
+    cover=document.createElement('div');cover.id='signOutCover';
+    cover.style.cssText='position:fixed;left:0;top:0;right:0;bottom:0;z-index:100001;background:#F5F6F8;color:#1F3A5F;display:flex;align-items:center;justify-content:center;font:700 15px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif';
+    cover.textContent='Signing out…';
+    document.body.appendChild(cover);
+  }
+  cover.style.display='flex';
+  try{if(afterMsg)sessionStorage.setItem('gs_after_signout_msg',afterMsg);}catch(e){}
+  function go(){
+    try{Object.keys(localStorage).forEach(function(k){if(/^sb-.+-auth-token$/.test(k))localStorage.removeItem(k);});}catch(e){}
+    location.reload();
+  }
+  Promise.race([Promise.resolve(signOutPromise),new Promise(function(r){setTimeout(r,2500);})])
+    .then(function(){setTimeout(go,300);},function(){setTimeout(go,300);});
 }
 // What the signed-in operator still has that is NOT safely in the day's shared record. Uses the
 // exact same "pending" rules the capture grids already colour cells by, so the warning matches
@@ -6116,7 +6149,7 @@ function _proceedSignOut(kind,alreadyConfirmed){
     if(r==='cancel')return; // stay signed in
     if(r==='skipped')auditLog('Shift not signed off',operator+' signed out without signing off their '+branch+' shift','','','failure',branch);
     if(r==='signed'||r==='skipped'||kind==='switch'||alreadyConfirmed){
-      logout();if(kind==='switch')toast('Signed out — next user can sign in');return;
+      logout(kind==='switch'?'Signed out — next user can sign in':'');return;
     }
     if(confirm('Sign out now?'))logout();
   });
@@ -6398,11 +6431,12 @@ var HOME_MIN_W=90, HOME_MIN_H=64, HOME_MAX_H=340;
 var _homeEditing=false, _homeLongPressTimer=null, _homeSuppressNextClick=false;
 var _homeMoveKey=null, _homeMoveOrder=[], _homeMoveGhost=null, _homeMoveStartX=0, _homeMoveStartY=0, _homeMoveOffX=0, _homeMoveOffY=0, _homeMoveMoved=false;
 var _homeResizeTile=null, _homeResizeEdgeX=false, _homeResizeEdgeY=false, _homeResizeStartX=0, _homeResizeStartY=0, _homeResizeStartW=0, _homeResizeStartH=0, _homeResizeMaxW=0;
+function _homeLayoutKey(){return HOME_LAYOUT_KEY+'_'+_opKey();} // per person on a shared phone
 function _loadHomeLayout(){
-  try{var r=localStorage.getItem(HOME_LAYOUT_KEY);var d=r?JSON.parse(r):null;return (d&&d.order)?d:{order:[],sizes:{}};}
+  try{var r=localStorage.getItem(_homeLayoutKey())||localStorage.getItem(HOME_LAYOUT_KEY);var d=r?JSON.parse(r):null;return (d&&d.order)?d:{order:[],sizes:{}};}
   catch(e){return {order:[],sizes:{}};}
 }
-function _saveHomeLayoutData(layout){try{localStorage.setItem(HOME_LAYOUT_KEY,JSON.stringify(layout));}catch(e){}}
+function _saveHomeLayoutData(layout){try{localStorage.setItem(_homeLayoutKey(),JSON.stringify(layout));}catch(e){}}
 // Scales the icon and heading, and hides the description once too cramped to read, as a
 // tile's own current box size changes - continuous, not stepped, so any size the frame gets
 // dragged to still looks intentional rather than clipped or comically empty. Reference size
@@ -10709,13 +10743,13 @@ function _refillSealHint(d){
   if(!d.brand){if(existing)existing.remove();return;}
   var key=today+'|'+capBranch;
   var alreadyShownToday=false;
-  try{alreadyShownToday=(localStorage.getItem('gs_seal_hint_shown')===key);}catch(e){}
+  try{alreadyShownToday=(localStorage.getItem('gs_seal_hint_shown_'+_opKey())===key);}catch(e){}
   if(alreadyShownToday){if(existing)existing.remove();return;}
   var r=activeRollForBrand(capBranch,d.brand);
   var expected=r?(r.start+rollUsedList(r.id).length):null;
   if(!r || expected>r.end){if(existing)existing.remove();return;}
   // Showing it now consumes today's one-time hint, even if the user doesn't end up adding.
-  try{localStorage.setItem('gs_seal_hint_shown',key);}catch(e){}
+  try{localStorage.setItem('gs_seal_hint_shown_'+_opKey(),key);}catch(e){}
   if(!existing){
     existing=document.createElement('div');existing.id='sealNextHint';
     existing.style.cssText='font-size:11px;color:var(--steel);font-weight:700;margin-top:4px;';
@@ -17725,6 +17759,7 @@ function dismissToast(){
 }
 document.body.setAttribute('data-view','login');
 function _bootApp(){
+  try{var _som=sessionStorage.getItem('gs_after_signout_msg');if(_som){sessionStorage.removeItem('gs_after_signout_msg');setTimeout(function(){toast(_som);},300);}}catch(e){}
   initLoginScreen(); // always populate the login name dropdown, even when we're about to auto-resume straight past it - otherwise a later logout leaves the dropdown permanently empty
   sb.auth.getSession().then(function(res){
     var session=res.data && res.data.session;
